@@ -1,0 +1,50 @@
+{
+  "name": "@stackone/injection-guard",
+  "version": "0.1.0",
+  "description": "Prompt injection defense framework for AI tool-calling",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "prompt-injection",
+    "ai-safety",
+    "llm",
+    "guardrails",
+    "security"
+  ],
+  "author": "StackOne",
+  "license": "MIT",
+  "devDependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@types/node": "^20.11.0",
+    "eslint": "^8.56.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "nanoid": "^5.0.4"
+  },
+  "peerDependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
