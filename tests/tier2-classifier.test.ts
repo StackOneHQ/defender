@@ -103,7 +103,7 @@ describe('Tier2Classifier', () => {
   beforeAll(() => {
     const json = readFileSync(weightsPath, 'utf-8');
     const weights = JSON.parse(json) as MLPWeights;
-    classifier = createTier2Classifier();
+    classifier = createTier2Classifier({ mode: 'mlp' });
     classifier.loadWeights(weights);
   });
 
@@ -111,12 +111,22 @@ describe('Tier2Classifier', () => {
     expect(classifier.isReady()).toBe(true);
   });
 
-  it('should skip classification without weights', async () => {
-    const emptyClassifier = createTier2Classifier();
+  it('should skip classification without weights (mlp mode)', async () => {
+    const emptyClassifier = createTier2Classifier({ mode: 'mlp' });
     const result = await emptyClassifier.classify('test');
 
     expect(result.skipped).toBe(true);
     expect(result.skipReason).toContain('weights not loaded');
+  });
+
+  it('should auto-load and classify in onnx mode when model files exist', async () => {
+    const onnxClassifier = createTier2Classifier({ mode: 'onnx' });
+    // ONNX model auto-loads on first classify call when model files are present
+    const result = await onnxClassifier.classify('This is a test sentence for classification.');
+
+    expect(result.skipped).toBe(false);
+    expect(result.score).toBeGreaterThanOrEqual(0);
+    expect(result.score).toBeLessThanOrEqual(1);
   });
 
   it('should skip very short texts', async () => {
@@ -141,6 +151,7 @@ describe('Tier2 Integration with ToolResultSanitizer', () => {
 
     const sanitizer = createToolResultSanitizer({
       useTier2Classification: true,
+      tier2Config: { mode: 'mlp' },
       tier2Weights: weights,
     });
 
@@ -170,13 +181,13 @@ describe('Tier2 Integration with ToolResultSanitizer', () => {
 
 // Integration test - requires embedding model download
 // Skipped by default, run with: npm test -- --run tests/tier2-classifier.test.ts
-describe.skip('Tier2Classifier Full Pipeline', () => {
+describe.skip('Tier2Classifier Full Pipeline (MLP mode)', () => {
   let classifier: Tier2Classifier;
 
   beforeAll(async () => {
     const json = readFileSync(weightsPath, 'utf-8');
     const weights = JSON.parse(json) as MLPWeights;
-    classifier = createTier2Classifier();
+    classifier = createTier2Classifier({ mode: 'mlp' });
     classifier.loadWeights(weights);
     await classifier.warmup();
   }, 120000); // 2 minute timeout for model download

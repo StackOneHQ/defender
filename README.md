@@ -11,14 +11,12 @@ npm install @stackone/injection-guard
 ## Quick Start
 
 ```typescript
-import { createPromptDefense, MLP_WEIGHTS } from '@stackone/injection-guard';
+import { createPromptDefense } from '@stackone/injection-guard';
 
 // Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
 const defense = createPromptDefense({ enableTier2: true });
-defense.loadTier2Weights(MLP_WEIGHTS);
-await defense.warmupTier2();
 
-// Defend a tool result
+// Defend a tool result — ONNX model (~22MB) auto-loads on first call
 const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
 
 if (!result.allowed) {
@@ -45,22 +43,21 @@ Regex-based detection and sanitization:
 
 ### Tier 2 — ML Classification (async)
 
-MLP classifier with sentence-level analysis:
+Fine-tuned MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
-- Uses all-MiniLM-L6-v2 embeddings (384-dim, ~30MB ONNX download, cached locally)
+- **ONNX mode (default):** Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
+- **MLP mode (legacy):** Frozen MiniLM embeddings + MLP head, requires separate embedding model download (~30MB)
 - Catches attacks that evade pattern-based detection
-- Pre-bundled MLP weights included via `MLP_WEIGHTS` (~0.5MB)
-- Latency: ~2ms/sentence (after model warmup)
+- Latency: ~10ms/sample (ONNX, after model warmup)
 
-**Benchmark results** (F1 score at threshold 0.5):
+**Benchmark results** (ONNX mode, F1 score at threshold 0.5):
 
 | Benchmark | F1 | Samples |
 |-----------|-----|---------|
-| Qualifire (in-distribution) | 0.84 | ~1.5k |
-| xxz224 (out-of-distribution) | 0.73 | ~22.5k |
-| Jayavibhav (out-of-distribution) | 0.54 | ~65k |
+| Qualifire (in-distribution) | 0.87 | ~1.5k |
+| xxz224 (out-of-distribution) | 0.88 | ~22.5k |
 
-See [classifier-eval](../classifier-eval/) for full evaluation details and alternative models.
+See [classifier-eval](https://github.com/StackOneHQ/stackone-redteaming/tree/main/guard/classifier-eval) for full evaluation details and alternative models.
 
 ### Risk Levels
 
@@ -135,15 +132,21 @@ console.log(result.matches);       // [{ pattern: '...', severity: 'high', ... }
 
 ### Tier 2 Setup
 
+ONNX mode auto-loads the bundled model on first `defendToolResult()` call. Use `warmupTier2()` at startup to avoid first-call latency:
+
 ```typescript
-// Load weights (pre-bundled)
-defense.loadTier2Weights(MLP_WEIGHTS);
+// ONNX mode (default) — optional warmup to pre-load at startup
+const defense = createPromptDefense({ enableTier2: true });
+await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
 
-// Pre-load embedding model (~30MB, cached locally)
-await defense.warmupTier2();
-
-// Check readiness
-defense.isTier2Ready(); // true
+// MLP mode (legacy) — requires loading weights explicitly
+import { createPromptDefense, MLP_WEIGHTS } from '@stackone/injection-guard';
+const mlpDefense = createPromptDefense({
+  enableTier2: true,
+  tier2Config: { mode: 'mlp' },
+});
+mlpDefense.loadTier2Weights(MLP_WEIGHTS);
+await mlpDefense.warmupTier2();
 ```
 
 ## Integration Example
@@ -152,11 +155,10 @@ defense.isTier2Ready(); // true
 
 ```typescript
 import { generateText, tool } from 'ai';
-import { createPromptDefense, MLP_WEIGHTS } from '@stackone/injection-guard';
+import { createPromptDefense } from '@stackone/injection-guard';
 
 const defense = createPromptDefense({ enableTier2: true });
-defense.loadTier2Weights(MLP_WEIGHTS);
-await defense.warmupTier2();
+await defense.warmupTier2(); // optional, avoids first-call latency
 
 const result = await generateText({
   model: anthropic('claude-sonnet-4-20250514'),

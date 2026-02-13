@@ -14,3 +14,6 @@ export * from './mlp';
 export * from './embedder';
 export * from './tier2-classifier';
 export * from './weights';
+
+// Tier 2: ONNX classifier (fine-tuned MiniLM)
+export * from './onnx-classifier';

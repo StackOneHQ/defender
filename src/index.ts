@@ -5,10 +5,9 @@
  *
  * @example
  * ```typescript
- * import { createPromptDefense, MLP_WEIGHTS } from '@stackone/injection-guard';
+ * import { createPromptDefense } from '@stackone/injection-guard';
  *
  * const defense = createPromptDefense({ enableTier2: true });
- * defense.loadTier2Weights(MLP_WEIGHTS);
  * await defense.warmupTier2();
  *
  * const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');

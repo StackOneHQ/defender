@@ -1,22 +1,25 @@
 /**
- * Tier 2 Classifier: MLP-based prompt injection detection
+ * Tier 2 Classifier: ML-based prompt injection detection
  *
- * Pipeline: text -> embedding (Xenova/MiniLM) -> MLP -> probability score
+ * Supports two modes:
+ * - 'onnx': Fine-tuned MiniLM end-to-end ONNX inference (default, higher accuracy)
+ * - 'mlp': Frozen embeddings + MLP head (legacy, smaller download)
  *
- * This classifier is designed for higher accuracy at the cost of:
- * - Higher latency (~10-50ms vs ~1ms for Tier 1)
- * - Dependency on @huggingface/transformers
- * - Model download on first use (~100MB)
+ * ONNX pipeline: text -> Tokenizer -> ONNX Runtime (fine-tuned MiniLM + head) -> logit -> sigmoid -> score
+ * MLP pipeline:  text -> Embedder (generic MiniLM) -> 384-dim -> MLP forward pass -> sigmoid -> score
  */
 
 import type { Tier2Result } from '../types';
 import { Embedder, createEmbedder, type EmbedderConfig } from './embedder';
 import { loadMLPWeights, mlpForward, type MLPModel, type MLPWeights } from './mlp';
+import { OnnxClassifier } from './onnx-classifier';
 
 /**
  * Tier 2 classifier configuration
  */
 export interface Tier2ClassifierConfig {
+  /** Inference mode: 'onnx' for fine-tuned MiniLM, 'mlp' for frozen embeddings + MLP head */
+  mode: 'mlp' | 'onnx';
   /** Score threshold for high risk (default: 0.8) */
   highRiskThreshold: number;
   /** Score threshold for medium risk (default: 0.5) */
@@ -25,14 +28,17 @@ export interface Tier2ClassifierConfig {
   minTextLength: number;
   /** Maximum text length to classify (longer texts are truncated) */
   maxTextLength: number;
-  /** Embedder configuration */
+  /** Embedder configuration (MLP mode only) */
   embedder?: Partial<EmbedderConfig>;
+  /** Path to ONNX model directory (ONNX mode only, defaults to bundled model) */
+  onnxModelPath?: string;
 }
 
 /**
  * Default Tier 2 configuration
  */
 export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
+  mode: 'onnx',
   highRiskThreshold: 0.8,
   mediumRiskThreshold: 0.5,
   minTextLength: 10,
@@ -40,57 +46,88 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
 };
 
 /**
- * Tier 2 Classifier using MLP + embeddings
+ * Tier 2 Classifier using ONNX or MLP + embeddings
  *
- * Usage:
+ * Usage (ONNX mode - default):
  * ```typescript
  * const classifier = new Tier2Classifier();
- * await classifier.loadWeights(weightsJson);
- * await classifier.warmup(); // Optional: pre-load embedding model
+ * await classifier.warmup(); // loads ONNX model + tokenizer
  *
  * const result = await classifier.classify("Ignore previous instructions");
  * console.log(result.score); // 0.95 (high = likely injection)
  * ```
+ *
+ * Usage (MLP mode - legacy):
+ * ```typescript
+ * const classifier = new Tier2Classifier({ mode: 'mlp' });
+ * classifier.loadWeights(weightsJson);
+ * await classifier.warmup(); // pre-load embedding model
+ *
+ * const result = await classifier.classify("Ignore previous instructions");
+ * ```
  */
 export class Tier2Classifier {
   private config: Tier2ClassifierConfig;
-  private embedder: Embedder;
+  private embedder: Embedder | null = null;
   private model: MLPModel | null = null;
+  private onnxClassifier: OnnxClassifier | null = null;
 
   constructor(config: Partial<Tier2ClassifierConfig> = {}) {
     this.config = { ...DEFAULT_TIER2_CLASSIFIER_CONFIG, ...config };
-    this.embedder = createEmbedder(config.embedder);
+
+    if (this.config.mode === 'mlp') {
+      this.embedder = createEmbedder(config.embedder);
+    } else {
+      this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath);
+    }
   }
 
   /**
-   * Load MLP weights from exported JSON
+   * Load MLP weights from exported JSON (MLP mode only)
    *
    * @param weights - Weights exported from export_mlp_weights.py
    */
   loadWeights(weights: MLPWeights): void {
+    if (this.config.mode === 'onnx') {
+      // No-op for ONNX mode — weights are baked into the ONNX model
+      return;
+    }
     this.model = loadMLPWeights(weights);
   }
 
   /**
-   * Check if weights are loaded
+   * Check if the classifier is ready for inference
    */
   isReady(): boolean {
+    if (this.config.mode === 'onnx') {
+      return this.onnxClassifier?.isLoaded() ?? false;
+    }
     return this.model !== null;
   }
 
   /**
-   * Check if embedding model is loaded
+   * Check if embedding model is loaded (MLP mode only)
    */
   isEmbedderLoaded(): boolean {
-    return this.embedder.isLoaded();
+    if (this.config.mode === 'onnx') {
+      return this.onnxClassifier?.isLoaded() ?? false;
+    }
+    return this.embedder?.isLoaded() ?? false;
   }
 
   /**
-   * Pre-load the embedding model
-   * Call this at startup to avoid latency on first classify() call
+   * Pre-load the model.
+   * - ONNX mode: loads ONNX model + tokenizer
+   * - MLP mode: pre-loads the embedding model
+   *
+   * Call this at startup to avoid latency on first classify() call.
    */
   async warmup(): Promise<void> {
-    await this.embedder.warmup();
+    if (this.config.mode === 'onnx') {
+      await this.onnxClassifier!.warmup();
+    } else {
+      await this.embedder!.warmup();
+    }
   }
 
   /**
@@ -102,15 +139,27 @@ export class Tier2Classifier {
   async classify(text: string): Promise<Tier2Result> {
     const startTime = performance.now();
 
-    // Check if weights are loaded
-    if (!this.model) {
-      return {
-        score: 0,
-        confidence: 0,
-        skipped: true,
-        skipReason: 'MLP weights not loaded',
-        latencyMs: performance.now() - startTime,
-      };
+    // Check readiness
+    if (this.config.mode === 'onnx') {
+      if (!this.onnxClassifier) {
+        return {
+          score: 0,
+          confidence: 0,
+          skipped: true,
+          skipReason: 'ONNX classifier not initialized',
+          latencyMs: performance.now() - startTime,
+        };
+      }
+    } else {
+      if (!this.model) {
+        return {
+          score: 0,
+          confidence: 0,
+          skipped: true,
+          skipReason: 'MLP weights not loaded',
+          latencyMs: performance.now() - startTime,
+        };
+      }
     }
 
     // Skip very short texts
@@ -131,14 +180,17 @@ export class Tier2Classifier {
         : text;
 
     try {
-      // Generate embedding
-      const embedding = await this.embedder.embedOne(analysisText);
+      let score: number;
 
-      // Run MLP forward pass
-      const score = mlpForward(this.model, embedding);
+      if (this.config.mode === 'onnx') {
+        score = await this.onnxClassifier!.classify(analysisText);
+      } else {
+        // MLP mode: embed then forward pass
+        const embedding = await this.embedder!.embedOne(analysisText);
+        score = mlpForward(this.model!, embedding);
+      }
 
       // Calculate confidence based on how far from 0.5 the score is
-      // Score of 0 or 1 = high confidence, score of 0.5 = low confidence
       const confidence = Math.abs(score - 0.5) * 2;
 
       return {
@@ -165,8 +217,6 @@ export class Tier2Classifier {
    * @returns Array of Tier2Results
    */
   async classifyBatch(texts: string[]): Promise<Tier2Result[]> {
-    // For now, classify sequentially
-    // Could be optimized with batch embedding in the future
     const results: Tier2Result[] = [];
     for (const text of texts) {
       results.push(await this.classify(text));
@@ -185,13 +235,19 @@ export class Tier2Classifier {
   async classifyBySentence(text: string): Promise<Tier2Result & { maxSentence?: string; sentenceScores?: Array<{ sentence: string; score: number }> }> {
     const startTime = performance.now();
 
-    // Check if weights are loaded
-    if (!this.model) {
+    // Check readiness
+    const notReady = this.config.mode === 'onnx'
+      ? !this.onnxClassifier
+      : !this.model;
+
+    if (notReady) {
       return {
         score: 0,
         confidence: 0,
         skipped: true,
-        skipReason: 'MLP weights not loaded',
+        skipReason: this.config.mode === 'onnx'
+          ? 'ONNX classifier not initialized'
+          : 'MLP weights not loaded',
         latencyMs: performance.now() - startTime,
       };
     }
@@ -220,8 +276,14 @@ export class Tier2Classifier {
       }
 
       try {
-        const embedding = await this.embedder.embedOne(sentence);
-        const score = mlpForward(this.model, embedding);
+        let score: number;
+
+        if (this.config.mode === 'onnx') {
+          score = await this.onnxClassifier!.classify(sentence);
+        } else {
+          const embedding = await this.embedder!.embedOne(sentence);
+          score = mlpForward(this.model!, embedding);
+        }
 
         sentenceScores.push({ sentence, score });
 
@@ -230,7 +292,7 @@ export class Tier2Classifier {
           maxSentence = sentence;
         }
       } catch {
-        // Skip sentences that fail to embed
+        // Skip sentences that fail to classify
         continue;
       }
     }
@@ -325,9 +387,9 @@ export class Tier2Classifier {
   }
 
   /**
-   * Get the underlying embedder
+   * Get the underlying embedder (MLP mode only, returns null in ONNX mode)
    */
-  getEmbedder(): Embedder {
+  getEmbedder(): Embedder | null {
     return this.embedder;
   }
 }

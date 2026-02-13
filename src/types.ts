@@ -309,6 +309,8 @@ export interface PromptDefenseConfig {
   tier2: {
     /** Whether Tier 2 is enabled */
     enabled: boolean;
+    /** Inference mode: 'onnx' for fine-tuned MiniLM, 'mlp' for frozen embeddings + MLP head */
+    mode?: 'mlp' | 'onnx';
     /** Score threshold for high risk */
     highRiskThreshold: number;
     /** Score threshold for medium risk */
