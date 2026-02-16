@@ -199,4 +199,4 @@ npm test
 
 ## License
 
-MIT
+SSPL-1.0 — See [LICENSE](./LICENSE) for details.
