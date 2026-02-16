@@ -103,7 +103,7 @@ export interface PromptDefenseOptions {
  *
  * @example
  * ```typescript
- * import { createPromptDefense } from '@stackone/injection-guard';
+ * import { createPromptDefense } from '@stackone/defender';
  *
  * const defense = createPromptDefense({ enableTier2: true });
  * await defense.warmupTier2();

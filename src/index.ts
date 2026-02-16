@@ -1,11 +1,11 @@
 /**
- * @stackone/injection-guard
+ * @stackone/defender
  *
  * Prompt injection defense framework for AI tool-calling
  *
  * @example
  * ```typescript
- * import { createPromptDefense } from '@stackone/injection-guard';
+ * import { createPromptDefense } from '@stackone/defender';
  *
  * const defense = createPromptDefense({ enableTier2: true });
  * await defense.warmupTier2();

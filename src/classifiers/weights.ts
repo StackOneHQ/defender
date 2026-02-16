@@ -19,7 +19,7 @@ import mlpWeightsJson from './mlp_weights.json';
  *
  * @example
  * ```typescript
- * import { MLP_WEIGHTS, createTier2Classifier } from '@stackone/injection-guard';
+ * import { MLP_WEIGHTS, createTier2Classifier } from '@stackone/defender';
  *
  * const classifier = createTier2Classifier();
  * classifier.loadWeights(MLP_WEIGHTS);

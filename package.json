@@ -1,5 +1,5 @@
 {
-  "name": "@stackone/injection-guard",
+  "name": "@stackone/defender",
   "version": "0.2.0",
   "description": "Prompt injection defense framework for AI tool-calling",
   "main": "dist/index.js",

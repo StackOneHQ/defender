@@ -1,17 +1,17 @@
-# @stackone/injection-guard
+# @stackone/defender
 
 Prompt injection defense framework for AI tool-calling. Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
 ## Installation
 
 ```bash
-npm install @stackone/injection-guard
+npm install @stackone/defender
 ```
 
 ## Quick Start
 
 ```typescript
-import { createPromptDefense } from '@stackone/injection-guard';
+import { createPromptDefense } from '@stackone/defender';
 
 // Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
 const defense = createPromptDefense({ enableTier2: true });
@@ -140,7 +140,7 @@ const defense = createPromptDefense({ enableTier2: true });
 await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
 
 // MLP mode (legacy) — requires loading weights explicitly
-import { createPromptDefense, MLP_WEIGHTS } from '@stackone/injection-guard';
+import { createPromptDefense, MLP_WEIGHTS } from '@stackone/defender';
 const mlpDefense = createPromptDefense({
   enableTier2: true,
   tier2Config: { mode: 'mlp' },
@@ -155,7 +155,7 @@ await mlpDefense.warmupTier2();
 
 ```typescript
 import { generateText, tool } from 'ai';
-import { createPromptDefense } from '@stackone/injection-guard';
+import { createPromptDefense } from '@stackone/defender';
 
 const defense = createPromptDefense({ enableTier2: true });
 await defense.warmupTier2(); // optional, avoids first-call latency
