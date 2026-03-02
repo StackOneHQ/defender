@@ -5,15 +5,13 @@
  * Tier 2: MLP-based detection (accurate, requires embeddings)
  */
 
-// Tier 1: Pattern detection
-export * from './patterns';
-export * from './pattern-detector';
-
+export * from './embedder';
 // Tier 2: MLP classifier
 export * from './mlp';
-export * from './embedder';
-export * from './tier2-classifier';
-export * from './weights';
-
 // Tier 2: ONNX classifier (fine-tuned MiniLM)
 export * from './onnx-classifier';
+export * from './pattern-detector';
+// Tier 1: Pattern detection
+export * from './patterns';
+export * from './tier2-classifier';
+export * from './weights';

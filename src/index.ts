@@ -17,16 +17,14 @@
  * ```
  */
 
-// Types
-export type { RiskLevel, Tier1Result } from './types';
-
 // Pre-bundled Tier 2 weights
 export { MLP_WEIGHTS } from './classifiers/weights';
-
 // Core API
 export {
-  PromptDefense,
-  createPromptDefense,
-  type PromptDefenseOptions,
-  type DefenseResult,
+    createPromptDefense,
+    type DefenseResult,
+    PromptDefense,
+    type PromptDefenseOptions,
 } from './core/prompt-defense';
+// Types
+export type { RiskLevel, Tier1Result } from './types';

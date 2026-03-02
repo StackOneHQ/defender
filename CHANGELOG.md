@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.1](https://github.com/StackOneHQ/connect/compare/defender-v0.3.0...defender-v0.3.1) (2026-02-19)
+
+
+### Bug Fixes
+
+* **ENG-12119:** release v0.3.1 - add SSPL-1.0 LICENSE and update docs ([#767](https://github.com/StackOneHQ/connect/issues/767)) ([d250563](https://github.com/StackOneHQ/connect/commit/d250563fff5ab013bbd5dad1388511d733cd728c))
+
+## [0.3.0](https://github.com/StackOneHQ/connect/compare/defender-v0.2.0...defender-v0.3.0) (2026-02-19)
+
+
+### Features
+
+* **ENG-12119:** add @stackone/defender package   ([#747](https://github.com/StackOneHQ/connect/issues/747)) ([55f4ffb](https://github.com/StackOneHQ/connect/commit/55f4ffbda979946a0270309b6ccea75228d70bf3))
+
+
+### Bug Fixes
+
+* **ENG-11940:** update core dependency ([#702](https://github.com/StackOneHQ/connect/issues/702)) ([abbc31c](https://github.com/StackOneHQ/connect/commit/abbc31c29c3c4cb9c1daf9c8c3cd5807df2d189e))
+
 ## 0.2.0
 
 ### Added
