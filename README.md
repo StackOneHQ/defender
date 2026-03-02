@@ -8,13 +8,16 @@ Prompt injection defense framework for AI tool-calling. Detects and neutralizes 
 npm install @stackone/defender
 ```
 
+The ONNX model (~22MB) is bundled in the package — no extra downloads needed.
+
 ## Quick Start
 
 ```typescript
 import { createPromptDefense } from '@stackone/defender';
 
 // Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
-const defense = createPromptDefense({ enableTier2: true });
+// blockHighRisk: true enables the allowed/blocked decision
+const defense = createPromptDefense({ enableTier2: true, blockHighRisk: true });
 
 // Defend a tool result — ONNX model (~22MB) auto-loads on first call
 const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
@@ -54,19 +57,37 @@ Fine-tuned MiniLM classifier with sentence-level analysis:
 
 | Benchmark | F1 | Samples |
 |-----------|-----|---------|
-| Qualifire (in-distribution) | 0.87 | ~1.5k |
-| xxz224 (out-of-distribution) | 0.88 | ~22.5k |
+| Qualifire (in-distribution) | 0.8686 | ~1.5k |
+| xxz224 (out-of-distribution) | 0.8834 | ~22.5k |
+| jayavibhav (adversarial) | 0.9717 | ~1k |
+| **Average** | **0.9079** | ~25k |
 
-See [classifier-eval](https://github.com/StackOneHQ/stackone-redteaming/tree/main/guard/classifier-eval) for full evaluation details and alternative models.
+### Understanding `allowed` vs `riskLevel`
 
-### Risk Levels
+Use `allowed` for blocking decisions:
+- `allowed: true` — safe to pass to the LLM
+- `allowed: false` — content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-| Level | Meaning | Action |
-|-------|---------|--------|
-| `low` | No threats detected | Allowed |
-| `medium` | Suspicious patterns, role markers stripped | Allowed |
-| `high` | Injection detected, patterns redacted | **Blocked** |
-| `critical` | Severe injection attempt | **Blocked** |
+`riskLevel` is diagnostic metadata. It starts at the tool's base risk level and can only be escalated by detections — never reduced. Use it for logging and monitoring, not for allow/block logic.
+
+| Tool Pattern | Base Risk | Why |
+|--------------|-----------|-----|
+| `gmail_*`, `email_*` | `high` | Emails are the #1 injection vector |
+| `unified_documents_*` | `medium` | User-generated content |
+| `unified_hris_*` | `medium` | Employee data with free-text fields |
+| `github_*` | `medium` | PRs/issues with user-generated content |
+| All other tools | `medium` | Default cautious level |
+
+A safe email with no detections will have `riskLevel: 'high'` (tool base risk) but `allowed: true` (no threats found).
+
+Risk escalation from detections:
+
+| Level | Detection Trigger |
+|-------|-------------------|
+| `low` | No threats detected |
+| `medium` | Suspicious patterns, role markers stripped |
+| `high` | Injection patterns detected, content redacted |
+| `critical` | Severe injection attempt with multiple indicators |
 
 ## API
 
@@ -89,8 +110,8 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 
 ```typescript
 interface DefenseResult {
-  allowed: boolean;                       // Whether the content should be passed to the LLM
-  riskLevel: RiskLevel;                   // 'low' | 'medium' | 'high' | 'critical'
+  allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
+  riskLevel: RiskLevel;                   // Diagnostic: tool base risk + detection escalation (see docs above)
   sanitized: unknown;                     // The sanitized tool result
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
@@ -157,7 +178,7 @@ await mlpDefense.warmupTier2();
 import { generateText, tool } from 'ai';
 import { createPromptDefense } from '@stackone/defender';
 
-const defense = createPromptDefense({ enableTier2: true });
+const defense = createPromptDefense({ enableTier2: true, blockHighRisk: true });
 await defense.warmupTier2(); // optional, avoids first-call latency
 
 const result = await generateText({
@@ -182,16 +203,31 @@ const result = await generateText({
 
 ## Tool-Specific Rules
 
-Built-in rules for common tool providers:
+Built-in rules define which fields to sanitize and what base risk level to use for each tool provider. See the [base risk table](#understanding-allowed-vs-risklevel) for risk levels.
 
-- `gmail_*` — Gmail messages
-- `unified_documents_*` — Document APIs
-- `github_*` — GitHub PRs, issues
-- `unified_hris_*` — HR systems
-- `unified_ats_*` — Applicant tracking
-- `unified_crm_*` — CRM systems
+| Tool Pattern | Risky Fields | Notes |
+|---|---|---|
+| `gmail_*`, `email_*` | subject, body, snippet, content | Base risk `high` — primary injection vector |
+| `unified_documents_*` | name, description, content, title | User-generated content |
+| `github_*` | name, title, body, description | PRs, issues, comments |
+| `unified_hris_*` | name, notes, bio, description | Employee free-text fields |
+| `unified_ats_*`, `unified_crm_*` | _(default risky fields)_ | Uses global defaults |
 
-## Testing
+Tools not matching any pattern use `medium` base risk with default risky field detection.
+
+## Development
+
+### Git LFS
+
+The ONNX model source files are stored with [Git LFS](https://git-lfs.com/). Contributors working on the model files need LFS installed:
+
+```bash
+brew install git-lfs
+git lfs install
+git lfs pull  # if you cloned before LFS was set up
+```
+
+### Testing
 
 ```bash
 npm test

@@ -202,7 +202,7 @@ describe('ToolResultSanitizer', () => {
 });
 
 describe('PromptDefense', () => {
-  const defense = createPromptDefense();
+  const defense = createPromptDefense({ blockHighRisk: true });
 
   describe('defendToolResult', () => {
     it('should defend tool results with role markers', async () => {
