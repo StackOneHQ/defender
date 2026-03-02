@@ -1,0 +1,46 @@
+on:
+  push:
+    branches:
+      - main
+
+name: release-please
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@c2a5a2bd6a758a0937f1ddb1e8950609867ed15c # v4
+        id: release
+        with:
+          token: ${{ secrets.REPO_GH_PAT }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Checkout Repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        if: steps.release.outputs.paths_released != '[]'
+        with:
+          lfs: true
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: steps.release.outputs.paths_released != '[]'
+        with:
+          node-version: 22.14.0
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true
+      - name: Build
+        if: steps.release.outputs.paths_released != '[]'
+        run: |
+          npm install -g npm@11.6.4
+          npm ci
+          npm run build
+      - name: Publish
+        if: steps.release.outputs.paths_released != '[]'
+        run: |
+          npm run publish-release
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
