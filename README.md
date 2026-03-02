@@ -242,4 +242,4 @@ npm test
 
 ## License
 
-SSPL-1.0 — See [LICENSE](./LICENSE) for details.
+Apache-2.0 — See [LICENSE](./LICENSE) for details.

@@ -48,7 +48,7 @@
         "security"
     ],
     "author": "StackOne",
-    "license": "SSPL-1.0",
+    "license": "Apache-2.0",
     "dependencies": {
         "nanoid": "5.0.9"
     },
