@@ -99,6 +99,32 @@ export const DEFAULT_TOOL_RULES: ToolSanitizationRule[] = [
 		skipFields: ["id", "employee_id", "created_at", "updated_at"],
 	},
 
+	// ATS tools - candidate data with free-text fields
+	{
+		toolPattern: /^ats_/,
+		sanitizationLevel: "medium",
+		maxFieldLengths: {
+			name: 200,
+			notes: 5000,
+			description: 2000,
+			summary: 2000,
+		},
+		skipFields: ["id", "candidate_id", "application_id", "created_at", "updated_at"],
+	},
+
+	// CRM tools - customer data with free-text fields
+	{
+		toolPattern: /^crm_/,
+		sanitizationLevel: "medium",
+		maxFieldLengths: {
+			name: 200,
+			description: 2000,
+			notes: 5000,
+			content: 10000,
+		},
+		skipFields: ["id", "contact_id", "account_id", "created_at", "updated_at"],
+	},
+
 	// Email tools - higher risk due to external content
 	{
 		toolPattern: /^gmail_|^email_/,

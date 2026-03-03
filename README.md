@@ -18,7 +18,11 @@ import { createPromptDefense } from '@stackone/defender';
 
 // Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
 // blockHighRisk: true enables the allowed/blocked decision
-const defense = createPromptDefense({ enableTier2: true, blockHighRisk: true });
+const defense = createPromptDefense({
+  enableTier2: true,
+  blockHighRisk: true,
+  useDefaultToolRules: true, // Enable built-in per-tool base risk and field-handling rules (risky-field overrides always apply)
+});
 
 // Defend a tool result — ONNX model (~22MB) auto-loads on first call
 const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
@@ -71,6 +75,8 @@ Use `allowed` for blocking decisions:
 
 `riskLevel` is diagnostic metadata. It starts at the tool's base risk level and can only be escalated by detections — never reduced. Use it for logging and monitoring, not for allow/block logic.
 
+The following base risk levels apply when `useDefaultToolRules: true` is set. Without it, tools use `defaultRiskLevel` (defaults to `medium`).
+
 | Tool Pattern | Base Risk | Why |
 |--------------|-----------|-----|
 | `gmail_*`, `email_*` | `high` | Emails are the #1 injection vector |
@@ -98,9 +104,10 @@ Create a defense instance.
 
 ```typescript
 const defense = createPromptDefense({
-  enableTier1: true,      // Pattern detection (default: true)
-  enableTier2: true,      // ML classification (default: false)
-  blockHighRisk: true,    // Block high/critical content (default: false)
+  enableTier1: true,           // Pattern detection (default: true)
+  enableTier2: true,           // ML classification (default: false)
+  blockHighRisk: true,         // Block high/critical content (default: false)
+  useDefaultToolRules: true,   // Enable built-in per-tool base risk and field-handling rules (default: false)
   defaultRiskLevel: 'medium',
 });
 ```
@@ -179,7 +186,11 @@ await mlpDefense.warmupTier2();
 import { generateText, tool } from 'ai';
 import { createPromptDefense } from '@stackone/defender';
 
-const defense = createPromptDefense({ enableTier2: true, blockHighRisk: true });
+const defense = createPromptDefense({
+  enableTier2: true,
+  blockHighRisk: true,
+  useDefaultToolRules: true,
+});
 await defense.warmupTier2(); // optional, avoids first-call latency
 
 const result = await generateText({
@@ -204,7 +215,9 @@ const result = await generateText({
 
 ## Tool-Specific Rules
 
-Built-in rules define which fields to sanitize and what base risk level to use for each tool provider. See the [base risk table](#understanding-allowed-vs-risklevel) for risk levels.
+> **Note:** `useDefaultToolRules: true` enables built-in per-tool **risk rules** (base risk, skip fields, max lengths, thresholds). Risky-field detection (which fields get sanitized) uses tool-specific overrides regardless of this setting.
+
+Built-in per-tool rules define the base risk level and field-handling parameters for each tool provider. See the [base risk table](#understanding-allowed-vs-risklevel) for risk levels.
 
 | Tool Pattern | Risky Fields | Notes |
 |---|---|---|
@@ -212,7 +225,8 @@ Built-in rules define which fields to sanitize and what base risk level to use f
 | `documents_*` | name, description, content, title | User-generated content |
 | `github_*` | name, title, body, description | PRs, issues, comments |
 | `hris_*` | name, notes, bio, description | Employee free-text fields |
-| `ats_*`, `crm_*` | _(default risky fields)_ | Uses global defaults |
+| `ats_*` | name, notes, description, summary | Candidate data |
+| `crm_*` | name, description, notes, content | Customer data |
 
 Tools not matching any pattern use `medium` base risk with default risky field detection.
 
