@@ -54,6 +54,7 @@
         "nanoid": "5.0.9"
     },
     "devDependencies": {
+        "@biomejs/biome": "^2.4.5",
         "@huggingface/transformers": "3.8.1",
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",
