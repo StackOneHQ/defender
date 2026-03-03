@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/StackOneHQ/defender/compare/defender-v0.3.1...defender-v0.4.0) (2026-03-03)
+
+
+### Features
+
+* add biome configuration file and fix code formatting ([219526f](https://github.com/StackOneHQ/defender/commit/219526f13f2a24ac6034550a50c4f497447b56b6))
+* initial release of @stackone/injection-guard v0.1.0 ([039db9e](https://github.com/StackOneHQ/defender/commit/039db9eecf8a9125e0efbcfd40af45b12f922ec1))
+* v0.2.0 — ONNX-based Tier 2 classifier, API improvements ([bbb204d](https://github.com/StackOneHQ/defender/commit/bbb204d562c5d385149e627baea4f5ae888718cf))
+
 ## [0.3.1](https://github.com/StackOneHQ/connect/compare/defender-v0.3.0...defender-v0.3.1) (2026-02-19)
 
 
