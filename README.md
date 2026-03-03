@@ -1,10 +1,4 @@
 # @stackone/defender
-> ⚠️ **Repository Moved**
->
-> This package has been moved to:
-> https://github.com/StackOneHQ/connect/tree/main/packages/defender
->
-> Please update your bookmarks and dependencies. This repository is kept only for historical reference.
 
 ---
 Prompt injection defense framework for AI tool-calling. Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
