@@ -38,6 +38,7 @@
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
         "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
+        "prepublishOnly": "npm run build",
         "publish-release": "npm publish --access=public"
     },
     "keywords": [
@@ -48,11 +49,12 @@
         "security"
     ],
     "author": "StackOne",
-    "license": "SSPL-1.0",
+    "license": "Apache-2.0",
     "dependencies": {
         "nanoid": "5.0.9"
     },
     "devDependencies": {
+        "@biomejs/biome": "^2.4.5",
         "@huggingface/transformers": "3.8.1",
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",

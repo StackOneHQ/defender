@@ -104,7 +104,7 @@ describe('Field detection utilities', () => {
 
     it('should match wildcard patterns', () => {
       expect(matchesWildcard('gmail_get_message', 'gmail_*')).toBe(true);
-      expect(matchesWildcard('unified_documents_list_files', 'unified_documents_*')).toBe(true);
+      expect(matchesWildcard('documents_list_files', 'documents_*')).toBe(true);
     });
 
     it('should not match non-matching patterns', () => {

@@ -1,0 +1,26 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.0.x/schema.json",
+	"files": {
+		"maxSize": 5242880,
+		"includes": ["src/**", "specs/**"]
+	},
+	"formatter": {
+		"indentStyle": "tab",
+		"indentWidth": 4,
+		"lineWidth": 120
+	},
+	"linter": {
+		"rules": {
+			"suspicious": {
+				"noAssignInExpressions": "off"
+			}
+		}
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	}
+}
