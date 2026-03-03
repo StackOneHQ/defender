@@ -25,6 +25,8 @@ jobs:
             deps
             deps-dev
             workflow
+            release
+            main
           requireScope: true
           ignoreLabels: |
             autorelease: pending
