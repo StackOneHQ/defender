@@ -2,7 +2,7 @@
  * Structure detection and handling utilities
  */
 
-import type { SanitizableValue, SizeMetrics, StructureType } from '../types';
+import type { SanitizableValue, SizeMetrics, StructureType } from "../types";
 
 /**
  * Detect the structure type of a value
@@ -11,31 +11,26 @@ import type { SanitizableValue, SizeMetrics, StructureType } from '../types';
  * @returns Structure type classification
  */
 export function detectStructureType(value: unknown): StructureType {
-    if (value === null || value === undefined) {
-        return 'null';
-    }
+	if (value === null || value === undefined) {
+		return "null";
+	}
 
-    if (Array.isArray(value)) {
-        return 'array';
-    }
+	if (Array.isArray(value)) {
+		return "array";
+	}
 
-    if (typeof value === 'object') {
-        const keys = Object.keys(value);
+	if (typeof value === "object") {
+		const keys = Object.keys(value);
 
-        // Check for common wrapper patterns
-        if (
-            keys.includes('data') ||
-            keys.includes('results') ||
-            keys.includes('items') ||
-            keys.includes('records')
-        ) {
-            return 'wrapped';
-        }
+		// Check for common wrapper patterns
+		if (keys.includes("data") || keys.includes("results") || keys.includes("items") || keys.includes("records")) {
+			return "wrapped";
+		}
 
-        return 'object';
-    }
+		return "object";
+	}
 
-    return 'primitive';
+	return "primitive";
 }
 
 /**
@@ -45,32 +40,32 @@ export function detectStructureType(value: unknown): StructureType {
  * @returns Whether the value looks like a paginated response
  */
 export function isPaginatedResponse(value: unknown): boolean {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return false;
-    }
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
 
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj);
+	const obj = value as Record<string, unknown>;
+	const keys = Object.keys(obj);
 
-    // Common pagination indicators
-    const hasDataField = keys.some((k) => ['data', 'results', 'items', 'records'].includes(k));
+	// Common pagination indicators
+	const hasDataField = keys.some((k) => ["data", "results", "items", "records"].includes(k));
 
-    const hasPaginationField = keys.some((k) =>
-        [
-            'next',
-            'previous',
-            'nextPage',
-            'prevPage',
-            'pagination',
-            'page',
-            'total',
-            'totalCount',
-            'hasMore',
-            'cursor',
-        ].includes(k),
-    );
+	const hasPaginationField = keys.some((k) =>
+		[
+			"next",
+			"previous",
+			"nextPage",
+			"prevPage",
+			"pagination",
+			"page",
+			"total",
+			"totalCount",
+			"hasMore",
+			"cursor",
+		].includes(k),
+	);
 
-    return hasDataField && hasPaginationField;
+	return hasDataField && hasPaginationField;
 }
 
 /**
@@ -80,29 +75,29 @@ export function isPaginatedResponse(value: unknown): boolean {
  * @returns The data array or undefined if not found
  */
 export function getWrappedData(value: Record<string, unknown>): unknown[] | undefined {
-    const dataKeys = ['data', 'results', 'items', 'records'];
+	const dataKeys = ["data", "results", "items", "records"];
 
-    for (const key of dataKeys) {
-        if (Array.isArray(value[key])) {
-            return value[key] as unknown[];
-        }
-    }
+	for (const key of dataKeys) {
+		if (Array.isArray(value[key])) {
+			return value[key] as unknown[];
+		}
+	}
 
-    return undefined;
+	return undefined;
 }
 
 /**
  * Create initial size metrics
  */
 export function createSizeMetrics(): SizeMetrics {
-    return {
-        estimatedBytes: 0,
-        stringCount: 0,
-        objectCount: 0,
-        arrayCount: 0,
-        sizeLimitHit: false,
-        depthLimitHit: false,
-    };
+	return {
+		estimatedBytes: 0,
+		stringCount: 0,
+		objectCount: 0,
+		arrayCount: 0,
+		sizeLimitHit: false,
+		depthLimitHit: false,
+	};
 }
 
 /**
@@ -114,36 +109,36 @@ export function createSizeMetrics(): SizeMetrics {
  * @returns Estimated size in bytes
  */
 export function estimateSize(value: SanitizableValue): number {
-    if (value === null || value === undefined) {
-        return 4; // 'null'
-    }
+	if (value === null || value === undefined) {
+		return 4; // 'null'
+	}
 
-    if (typeof value === 'string') {
-        return value.length + 2; // quotes
-    }
+	if (typeof value === "string") {
+		return value.length + 2; // quotes
+	}
 
-    if (typeof value === 'number') {
-        return String(value).length;
-    }
+	if (typeof value === "number") {
+		return String(value).length;
+	}
 
-    if (typeof value === 'boolean') {
-        return value ? 4 : 5; // 'true' or 'false'
-    }
+	if (typeof value === "boolean") {
+		return value ? 4 : 5; // 'true' or 'false'
+	}
 
-    if (Array.isArray(value)) {
-        // Brackets + commas (rough estimate, actual content counted separately)
-        return 2 + Math.max(0, value.length - 1);
-    }
+	if (Array.isArray(value)) {
+		// Brackets + commas (rough estimate, actual content counted separately)
+		return 2 + Math.max(0, value.length - 1);
+	}
 
-    if (typeof value === 'object') {
-        const keys = Object.keys(value);
-        // Braces + colons + commas + key lengths
-        const keyOverhead = keys.reduce((sum, k) => sum + k.length + 3, 0); // "key":
-        const commaOverhead = Math.max(0, keys.length - 1);
-        return 2 + keyOverhead + commaOverhead;
-    }
+	if (typeof value === "object") {
+		const keys = Object.keys(value);
+		// Braces + colons + commas + key lengths
+		const keyOverhead = keys.reduce((sum, k) => sum + k.length + 3, 0); // "key":
+		const commaOverhead = Math.max(0, keys.length - 1);
+		return 2 + keyOverhead + commaOverhead;
+	}
 
-    return 0;
+	return 0;
 }
 
 /**
@@ -153,15 +148,15 @@ export function estimateSize(value: SanitizableValue): number {
  * @param value - Value being processed
  */
 export function updateSizeMetrics(metrics: SizeMetrics, value: SanitizableValue): void {
-    metrics.estimatedBytes += estimateSize(value);
+	metrics.estimatedBytes += estimateSize(value);
 
-    if (typeof value === 'string') {
-        metrics.stringCount++;
-    } else if (Array.isArray(value)) {
-        metrics.arrayCount++;
-    } else if (value !== null && typeof value === 'object') {
-        metrics.objectCount++;
-    }
+	if (typeof value === "string") {
+		metrics.stringCount++;
+	} else if (Array.isArray(value)) {
+		metrics.arrayCount++;
+	} else if (value !== null && typeof value === "object") {
+		metrics.objectCount++;
+	}
 }
 
 /**
@@ -174,32 +169,32 @@ export function updateSizeMetrics(metrics: SizeMetrics, value: SanitizableValue)
  * @returns Whether to continue traversal
  */
 export function shouldContinueTraversal(
-    metrics: SizeMetrics,
-    currentDepth: number,
-    maxSize: number,
-    maxDepth: number,
+	metrics: SizeMetrics,
+	currentDepth: number,
+	maxSize: number,
+	maxDepth: number,
 ): boolean {
-    if (currentDepth > maxDepth) {
-        metrics.depthLimitHit = true;
-        return false;
-    }
+	if (currentDepth > maxDepth) {
+		metrics.depthLimitHit = true;
+		return false;
+	}
 
-    if (metrics.estimatedBytes > maxSize) {
-        metrics.sizeLimitHit = true;
-        return false;
-    }
+	if (metrics.estimatedBytes > maxSize) {
+		metrics.sizeLimitHit = true;
+		return false;
+	}
 
-    return true;
+	return true;
 }
 
 /**
  * Check if a value is a plain object (not array, null, etc.)
  */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return (
-        value !== null &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        Object.getPrototypeOf(value) === Object.prototype
-    );
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.getPrototypeOf(value) === Object.prototype
+	);
 }
