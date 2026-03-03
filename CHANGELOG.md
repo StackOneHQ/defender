@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/StackOneHQ/defender/compare/defender-v0.4.1...defender-v0.4.2) (2026-03-03)
+
+
+### Bug Fixes
+
+* **DEF-1:** document useDefaultToolRules and add ATS/CRM tool rules ([53764e6](https://github.com/StackOneHQ/defender/commit/53764e625332b4de02d28875641c478dd487fb68))
+* **ENG-12236:** document useDefaultToolRules and add ATS/CRM tool rules ([a563ad3](https://github.com/StackOneHQ/defender/commit/a563ad3fa5875552417310f85b09a77d3151c42f))
+
 ## [0.4.1](https://github.com/StackOneHQ/defender/compare/defender-v0.4.0...defender-v0.4.1) (2026-03-03)
 
 
