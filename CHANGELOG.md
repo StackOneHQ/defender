@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/StackOneHQ/defender/compare/defender-v0.4.0...defender-v0.4.1) (2026-03-03)
+
+
+### Bug Fixes
+
+* **DEF-1:** fix tsconfig extending missing monorepo base and add biome linter config ([44993ba](https://github.com/StackOneHQ/defender/commit/44993ba2b3d6dcbf30e5f0d8e3e7f582ea67aa4f))
+* **DEF-1:** fix tsconfig extending missing monorepo base and add biome linter config ([2469987](https://github.com/StackOneHQ/defender/commit/2469987c0adaa2c653aebb08229463d8e5fc15f3))
+
 ## [0.4.0](https://github.com/StackOneHQ/defender/compare/defender-v0.3.1...defender-v0.4.0) (2026-03-03)
 
 
