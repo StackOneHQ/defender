@@ -1069,7 +1069,7 @@ export class ToolResultSanitizer {
     }
 
     /**
-     * Extract vertical from tool name (e.g., "unified_documents_list" -> "documents")
+     * Extract vertical from tool name (e.g., "documents_list" -> "documents")
      */
     private extractVertical(toolName: string): string {
         const parts = toolName.split('_');
@@ -1081,7 +1081,7 @@ export class ToolResultSanitizer {
     }
 
     /**
-     * Extract resource from tool name (e.g., "unified_documents_list_files" -> "files")
+     * Extract resource from tool name (e.g., "documents_list_files" -> "files")
      */
     private extractResource(toolName: string): string {
         const parts = toolName.split('_');

@@ -41,19 +41,15 @@ export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {
     ],
     toolOverrides: {
         // Document tools - focus on content fields
-        'unified_documents_*': ['name', 'description', 'content', 'title'],
         'documents_*': ['name', 'description', 'content', 'title'],
 
         // HRIS tools - employee data
-        'unified_hris_*': ['name', 'notes', 'bio', 'description'],
         'hris_*': ['name', 'notes', 'bio', 'description'],
 
         // ATS tools - candidate data
-        'unified_ats_*': ['name', 'notes', 'description', 'summary'],
         'ats_*': ['name', 'notes', 'description', 'summary'],
 
         // CRM tools - customer data
-        'unified_crm_*': ['name', 'description', 'notes', 'content'],
         'crm_*': ['name', 'description', 'notes', 'content'],
 
         // Email/messaging tools
@@ -81,7 +77,7 @@ export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
 export const DEFAULT_TOOL_RULES: ToolSanitizationRule[] = [
     // Document tools - higher risk due to content fields
     {
-        toolPattern: /^unified_documents_/,
+        toolPattern: /^documents_/,
         sanitizationLevel: 'medium',
         maxFieldLengths: {
             name: 500,
@@ -98,7 +94,7 @@ export const DEFAULT_TOOL_RULES: ToolSanitizationRule[] = [
 
     // HRIS tools - medium risk
     {
-        toolPattern: /^unified_hris_/,
+        toolPattern: /^hris_/,
         sanitizationLevel: 'medium',
         maxFieldLengths: {
             name: 200,

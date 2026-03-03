@@ -74,7 +74,7 @@ export function getToolOverrideFields(
  * @returns Whether the tool name matches
  *
  * @example
- * matchesWildcard('unified_documents_list_files', 'unified_documents_*') // true
+ * matchesWildcard('documents_list_files', 'documents_*') // true
  * matchesWildcard('gmail_get_message', 'gmail_*') // true
  */
 export function matchesWildcard(toolName: string, pattern: string): boolean {

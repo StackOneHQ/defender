@@ -80,8 +80,8 @@ Use `allowed` for blocking decisions:
 | Tool Pattern | Base Risk | Why |
 |--------------|-----------|-----|
 | `gmail_*`, `email_*` | `high` | Emails are the #1 injection vector |
-| `unified_documents_*` | `medium` | User-generated content |
-| `unified_hris_*` | `medium` | Employee data with free-text fields |
+| `documents_*` | `medium` | User-generated content |
+| `hris_*` | `medium` | Employee data with free-text fields |
 | `github_*` | `medium` | PRs/issues with user-generated content |
 | All other tools | `medium` | Default cautious level |
 
@@ -136,7 +136,7 @@ Batch method — defends multiple tool results concurrently.
 ```typescript
 const results = await defense.defendToolResults([
   { value: emailData, toolName: 'gmail_get_message' },
-  { value: docData, toolName: 'unified_documents_get' },
+  { value: docData, toolName: 'documents_get' },
   { value: prData, toolName: 'github_get_pull_request' },
 ]);
 
@@ -215,10 +215,10 @@ Built-in rules define which fields to sanitize and what base risk level to use f
 | Tool Pattern | Risky Fields | Notes |
 |---|---|---|
 | `gmail_*`, `email_*` | subject, body, snippet, content | Base risk `high` — primary injection vector |
-| `unified_documents_*` | name, description, content, title | User-generated content |
+| `documents_*` | name, description, content, title | User-generated content |
 | `github_*` | name, title, body, description | PRs, issues, comments |
-| `unified_hris_*` | name, notes, bio, description | Employee free-text fields |
-| `unified_ats_*`, `unified_crm_*` | _(default risky fields)_ | Uses global defaults |
+| `hris_*` | name, notes, bio, description | Employee free-text fields |
+| `ats_*`, `crm_*` | _(default risky fields)_ | Uses global defaults |
 
 Tools not matching any pattern use `medium` base risk with default risky field detection.
 
