@@ -38,6 +38,7 @@
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
         "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
+        "prepublishOnly": "npm run build",
         "publish-release": "npm publish --access=public"
     },
     "keywords": [
