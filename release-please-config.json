@@ -1,5 +1,7 @@
 {
     "packages": {
-        ".": {}
+        ".": {
+            "last-release-sha": "203ce0bc11f3cccc34a5eaa93c426ad6db1756bd"
+        }
     }
 }
