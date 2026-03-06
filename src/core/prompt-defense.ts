@@ -235,8 +235,12 @@ export class PromptDefense {
 		const tier2Index = riskLevels.indexOf(tier2Risk);
 		const riskLevel = riskLevels[Math.max(tier1Index, tier2Index)];
 
-		// Block on high or critical only when configured
-		const allowed = !this.config.blockHighRisk || (riskLevel !== "high" && riskLevel !== "critical");
+		// Block only when threats were actually detected and escalated the risk.
+		// Base risk from tool rules alone (e.g. gmail_* seeding 'high') should not
+		// block safe content — only detections that raise the risk should trigger blocking.
+		const hasThreats =
+			detections.length > 0 || (tier2Score !== undefined && tier2Score >= this.config.tier2.highRiskThreshold);
+		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
 
 		return {
 			allowed,

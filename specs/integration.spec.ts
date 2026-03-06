@@ -324,9 +324,10 @@ describe('PromptDefense', () => {
         const result = await defense.defendToolResult(input, 'gmail_get_message');
 
         // assert
-        // With useDefaultToolRules, gmail tool rule seeds sanitizationLevel: 'high'
+        // With useDefaultToolRules, gmail tool rule seeds riskLevel: 'high' as base risk,
+        // but safe content with no detections should still be allowed through.
         expect(result.riskLevel).toBe('high');
-        expect(result.allowed).toBe(false);
+        expect(result.allowed).toBe(true);
       });
 
       it('always applies custom toolRules from options.config regardless of useDefaultToolRules', async () => {
@@ -344,9 +345,10 @@ describe('PromptDefense', () => {
         const result = await defense.defendToolResult(input, 'custom_tool');
 
         // assert
-        // Custom rules should be applied even though useDefaultToolRules is false
+        // Custom rules set base riskLevel: 'high', but safe content with no detections
+        // should still be allowed through — base risk alone does not block.
         expect(result.riskLevel).toBe('high');
-        expect(result.allowed).toBe(false);
+        expect(result.allowed).toBe(true);
       });
     });
   });
