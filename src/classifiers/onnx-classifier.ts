@@ -9,8 +9,8 @@
  * a single logit, not class probabilities).
  */
 
-import { dirname, resolve } from "path";
-import { fileURLToPath } from "url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Default path to the bundled ONNX model directory (relative to dist/)
@@ -170,7 +170,7 @@ export class OnnxClassifier {
 			attention_mask: attentionMaskTensor,
 		});
 
-		const logit = results?.["logits"]?.data[0];
+		const logit = results?.logits?.data[0];
 		if (logit === undefined || logit === null) {
 			throw new Error("ONNX model returned no logits");
 		}
@@ -220,7 +220,7 @@ export class OnnxClassifier {
 			attention_mask: attentionMaskTensor,
 		});
 
-		const logits = results?.["logits"]?.data;
+		const logits = results?.logits?.data;
 		if (!logits) {
 			throw new Error("ONNX model returned no logits");
 		}
