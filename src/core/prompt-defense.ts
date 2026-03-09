@@ -128,7 +128,7 @@ export class PromptDefense {
 		this.toolResultSanitizer = createToolResultSanitizer({
 			riskyFields: this.config.riskyFields,
 			traversal: this.config.traversal,
-			toolRules: options.useDefaultToolRules ? this.config.toolRules : [],
+			toolRules: options.config?.toolRules ?? (options.useDefaultToolRules === true ? this.config.toolRules : []),
 			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
 			useTier1Classification: options.enableTier1 ?? true,
 			useTier2Classification: false,
@@ -235,8 +235,19 @@ export class PromptDefense {
 		const tier2Index = riskLevels.indexOf(tier2Risk);
 		const riskLevel = riskLevels[Math.max(tier1Index, tier2Index)];
 
-		// Block on high or critical only when configured
-		const allowed = !this.config.blockHighRisk || (riskLevel !== "high" && riskLevel !== "critical");
+		// Determine whether any threat signals were found (Tier 1 or Tier 2).
+		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
+		// that may fire without adding named pattern detections, so we include it here.
+		const hasThreats =
+			detections.length > 0 ||
+			fieldsSanitized.length > 0 ||
+			(tier2Score !== undefined && tier2Score >= this.config.tier2.highRiskThreshold);
+
+		// Three cases for allowed:
+		// 1. blockHighRisk is off → always allow
+		// 2. No threat signals found → allow (base risk from tool rules alone does not block)
+		// 3. Risk did not reach high/critical → allow
+		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
 
 		return {
 			allowed,
