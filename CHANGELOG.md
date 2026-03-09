@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/StackOneHQ/defender/compare/defender-v0.4.2...defender-v0.4.3) (2026-03-09)
+
+
+### Bug Fixes
+
+* **ENG-12109:** sync toolRules passthrough fix and test updates from connect ([#13](https://github.com/StackOneHQ/defender/issues/13)) ([f1eb775](https://github.com/StackOneHQ/defender/commit/f1eb77595cf67c8f6ff8c8f768eeb30a1a5e6057))
+
 ## [0.4.2](https://github.com/StackOneHQ/defender/compare/defender-v0.4.1...defender-v0.4.2) (2026-03-03)
 
 
