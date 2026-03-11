@@ -169,7 +169,6 @@ export const DEFAULT_CUMULATIVE_RISK_THRESHOLDS = {
  * Default Tier 2 configuration
  */
 export const DEFAULT_TIER2_CONFIG = {
-	enabled: false, // Disabled until implemented
 	mode: "onnx" as const,
 	highRiskThreshold: 0.8,
 	mediumRiskThreshold: 0.5,

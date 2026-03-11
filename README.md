@@ -18,8 +18,9 @@ import { createPromptDefense } from '@stackone/defender';
 
 // Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
 // blockHighRisk: true enables the allowed/blocked decision
+// Tier 1 (patterns) + Tier 2 (ML classifier) are both on by default.
+// blockHighRisk: true enables the allowed/blocked decision.
 const defense = createPromptDefense({
-  enableTier2: true,
   blockHighRisk: true,
   useDefaultToolRules: true, // Enable built-in per-tool base risk and field-handling rules (risky-field overrides always apply)
 });
@@ -105,9 +106,10 @@ Create a defense instance.
 ```typescript
 const defense = createPromptDefense({
   enableTier1: true,           // Pattern detection (default: true)
-  enableTier2: true,           // ML classification (default: false)
+  enableTier2: true,           // ML classification (default: true) — set false to disable
   blockHighRisk: true,         // Block high/critical content (default: false)
   useDefaultToolRules: true,   // Enable built-in per-tool base risk and field-handling rules (default: false)
+  tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   defaultRiskLevel: 'medium',
 });
 ```
@@ -164,14 +166,13 @@ console.log(result.matches);       // [{ pattern: '...', severity: 'high', ... }
 ONNX mode auto-loads the bundled model on first `defendToolResult()` call. Use `warmupTier2()` at startup to avoid first-call latency:
 
 ```typescript
-// ONNX mode (default) — optional warmup to pre-load at startup
-const defense = createPromptDefense({ enableTier2: true });
+// ONNX mode (default) — Tier 2 is on by default, warmup is optional
+const defense = createPromptDefense();
 await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
 
 // MLP mode (legacy) — requires loading weights explicitly
 import { createPromptDefense, MLP_WEIGHTS } from '@stackone/defender';
 const mlpDefense = createPromptDefense({
-  enableTier2: true,
   tier2Config: { mode: 'mlp' },
 });
 mlpDefense.loadTier2Weights(MLP_WEIGHTS);
@@ -187,7 +188,6 @@ import { generateText, tool } from 'ai';
 import { createPromptDefense } from '@stackone/defender';
 
 const defense = createPromptDefense({
-  enableTier2: true,
   blockHighRisk: true,
   useDefaultToolRules: true,
 });

@@ -307,8 +307,6 @@ export interface PromptDefenseConfig {
 	};
 	/** Tier 2 configuration */
 	tier2: {
-		/** Whether Tier 2 is enabled */
-		enabled: boolean;
 		/** Inference mode: 'onnx' for fine-tuned MiniLM, 'mlp' for frozen embeddings + MLP head */
 		mode?: "mlp" | "onnx";
 		/** Score threshold for high risk */
@@ -317,6 +315,12 @@ export interface PromptDefenseConfig {
 		mediumRiskThreshold: number;
 		/** Size threshold to skip Tier 2 (bytes) */
 		skipBelowSize: number;
+		/**
+		 * Only run Tier 2 on strings extracted from these field names.
+		 * Strings under any other field key are skipped.
+		 * If omitted, Tier 2 runs on all strings in the tool result.
+		 */
+		tier2Fields?: string[];
 	};
 	/** Whether to block high/critical risk by default */
 	blockHighRisk: boolean;

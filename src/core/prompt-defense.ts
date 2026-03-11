@@ -37,6 +37,8 @@ export interface DefenseResult {
 	patternsByField: Record<string, string[]>;
 	/** Tier 2 ML score (0.0 = safe, 1.0 = injection), undefined if Tier 2 not enabled */
 	tier2Score?: number;
+	/** Reason Tier 2 was skipped (e.g. "No strings extracted") when tier2Score is undefined */
+	tier2SkipReason?: string;
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
 	/** Total processing time in milliseconds */
@@ -45,22 +47,44 @@ export interface DefenseResult {
 
 /**
  * Recursively extract all string values from an object.
- * Used to collect text content from tool results for Tier 2 classification.
+ * When `fields` is provided, only strings under matching field keys are collected;
+ * the traversal still descends into non-matching keys to find matching ones deeper.
  */
-function extractStrings(obj: unknown): string[] {
+function extractStrings(obj: unknown, fields?: string[]): string[] {
 	const strings: string[] = [];
 
-	function traverse(value: unknown): void {
+	function collectAll(value: unknown): void {
 		if (typeof value === "string") {
 			strings.push(value);
 		} else if (Array.isArray(value)) {
-			for (const item of value) {
-				traverse(item);
-			}
+			for (const item of value) collectAll(item);
 		} else if (value && typeof value === "object") {
-			for (const v of Object.values(value)) {
-				traverse(v);
+			for (const v of Object.values(value)) collectAll(v);
+		}
+	}
+
+	if (!fields || fields.length === 0) {
+		collectAll(obj);
+		return strings;
+	}
+
+	// Use a Set for O(1) key lookups during traversal
+	const fieldSet = new Set(fields);
+
+	function traverse(value: unknown): void {
+		if (Array.isArray(value)) {
+			for (const item of value) traverse(item);
+		} else if (value && typeof value === "object") {
+			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+				if (fieldSet.has(k)) {
+					collectAll(v);
+				} else {
+					traverse(v);
+				}
 			}
+		} else if (typeof value === "string") {
+			// Plain string — no field keys to filter on, fall back to collecting it
+			strings.push(value);
 		}
 	}
 
@@ -76,7 +100,7 @@ export interface PromptDefenseOptions {
 	config?: Partial<PromptDefenseConfig>;
 	/** Enable Tier 1 classification */
 	enableTier1?: boolean;
-	/** Enable Tier 2 ML classification */
+	/** Enable Tier 2 ML classification (default: true — set false to disable) */
 	enableTier2?: boolean;
 	/** Tier 2 classifier configuration */
 	tier2Config?: Partial<Tier2ClassifierConfig>;
@@ -91,6 +115,12 @@ export interface PromptDefenseOptions {
 	 * Defaults to false — tool rules are opt-in to avoid unexpected risk level inflation.
 	 */
 	useDefaultToolRules?: boolean;
+	/**
+	 * Only run Tier 2 on strings extracted from these field names.
+	 * Strings under any other field key are skipped.
+	 * If omitted, Tier 2 runs on all strings in the tool result.
+	 */
+	tier2Fields?: string[];
 }
 
 /**
@@ -114,6 +144,7 @@ export class PromptDefense {
 	private toolResultSanitizer: ToolResultSanitizer;
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
+	private tier2Fields: string[] | undefined;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -123,6 +154,8 @@ export class PromptDefense {
 		if (options.blockHighRisk !== undefined) {
 			this.config.blockHighRisk = options.blockHighRisk;
 		}
+
+		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
 
 		// Initialize components
 		this.toolResultSanitizer = createToolResultSanitizer({
@@ -141,7 +174,7 @@ export class PromptDefense {
 		this.patternDetector = createPatternDetector();
 
 		// Initialize Tier 2 classifier if enabled
-		if (options.enableTier2) {
+		if (options.enableTier2 ?? true) {
 			this.tier2Classifier = createTier2Classifier(options.tier2Config);
 			if (options.tier2Weights) {
 				this.tier2Classifier.loadWeights(options.tier2Weights);
@@ -212,11 +245,12 @@ export class PromptDefense {
 
 		// Tier 2: sentence-level ML classification on raw (unsanitized) value
 		let tier2Score: number | undefined;
+		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			const strings = extractStrings(value);
+			const strings = extractStrings(value, this.tier2Fields);
 			const combinedText = strings.join("\n\n");
 
 			if (combinedText.length > 0) {
@@ -225,7 +259,13 @@ export class PromptDefense {
 					tier2Score = tier2Result.score;
 					tier2Risk = this.tier2Classifier.getRiskLevel(tier2Result.score);
 					maxSentence = tier2Result.maxSentence;
+				} else {
+					tier2SkipReason = tier2Result.skipReason;
 				}
+			} else {
+				tier2SkipReason = this.tier2Fields?.length
+					? "No strings found in tier2Fields"
+					: "No strings extracted from tool result";
 			}
 		}
 
@@ -257,6 +297,7 @@ export class PromptDefense {
 			fieldsSanitized,
 			patternsByField: patternsRemovedByField,
 			tier2Score,
+			tier2SkipReason,
 			maxSentence,
 			latencyMs: performance.now() - startTime,
 		};
