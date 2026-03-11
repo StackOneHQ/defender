@@ -92,7 +92,7 @@ export interface PromptDefenseOptions {
 	config?: Partial<PromptDefenseConfig>;
 	/** Enable Tier 1 classification */
 	enableTier1?: boolean;
-	/** Enable Tier 2 ML classification */
+	/** Enable Tier 2 ML classification (default: true — set false to disable) */
 	enableTier2?: boolean;
 	/** Tier 2 classifier configuration */
 	tier2Config?: Partial<Tier2ClassifierConfig>;
