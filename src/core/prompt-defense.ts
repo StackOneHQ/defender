@@ -37,6 +37,8 @@ export interface DefenseResult {
 	patternsByField: Record<string, string[]>;
 	/** Tier 2 ML score (0.0 = safe, 1.0 = injection), undefined if Tier 2 not enabled */
 	tier2Score?: number;
+	/** Reason Tier 2 was skipped (e.g. "No strings extracted") when tier2Score is undefined */
+	tier2SkipReason?: string;
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
 	/** Total processing time in milliseconds */
@@ -240,6 +242,7 @@ export class PromptDefense {
 
 		// Tier 2: sentence-level ML classification on raw (unsanitized) value
 		let tier2Score: number | undefined;
+		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
 
@@ -253,7 +256,13 @@ export class PromptDefense {
 					tier2Score = tier2Result.score;
 					tier2Risk = this.tier2Classifier.getRiskLevel(tier2Result.score);
 					maxSentence = tier2Result.maxSentence;
+				} else {
+					tier2SkipReason = tier2Result.skipReason;
 				}
+			} else {
+				tier2SkipReason = this.tier2Fields?.length
+					? "No strings found in tier2Fields"
+					: "No strings extracted from tool result";
 			}
 		}
 
@@ -285,6 +294,7 @@ export class PromptDefense {
 			fieldsSanitized,
 			patternsByField: patternsRemovedByField,
 			tier2Score,
+			tier2SkipReason,
 			maxSentence,
 			latencyMs: performance.now() - startTime,
 		};
