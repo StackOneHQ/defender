@@ -61,12 +61,20 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		}
 	}
 
+	if (!fields || fields.length === 0) {
+		collectAll(obj);
+		return strings;
+	}
+
+	// Use a Set for O(1) key lookups during traversal
+	const fieldSet = new Set(fields);
+
 	function traverse(value: unknown): void {
 		if (Array.isArray(value)) {
 			for (const item of value) traverse(item);
 		} else if (value && typeof value === "object") {
 			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-				if (fields?.includes(k)) {
+				if (fieldSet.has(k)) {
 					collectAll(v);
 				} else {
 					traverse(v);
@@ -75,12 +83,7 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		}
 	}
 
-	if (!fields) {
-		collectAll(obj);
-	} else {
-		traverse(obj);
-	}
-
+	traverse(obj);
 	return strings;
 }
 
@@ -147,7 +150,7 @@ export class PromptDefense {
 			this.config.blockHighRisk = options.blockHighRisk;
 		}
 
-		this.tier2Fields = options.tier2Fields;
+		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
 
 		// Initialize components
 		this.toolResultSanitizer = createToolResultSanitizer({
