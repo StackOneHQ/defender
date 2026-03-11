@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/StackOneHQ/defender/compare/defender-v0.4.3...defender-v0.4.4) (2026-03-11)
+
+
+### Bug Fixes
+
+* **ENG-12332:** export ToolSanitizationRule and add tier2Fields option ([#16](https://github.com/StackOneHQ/defender/issues/16)) ([90bfa68](https://github.com/StackOneHQ/defender/commit/90bfa68a4b7ec99285ecb4889a4ef9caafea9561))
+
 ## [0.4.3](https://github.com/StackOneHQ/defender/compare/defender-v0.4.2...defender-v0.4.3) (2026-03-09)
 
 
