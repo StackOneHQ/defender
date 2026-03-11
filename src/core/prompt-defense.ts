@@ -82,6 +82,9 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 					traverse(v);
 				}
 			}
+		} else if (typeof value === "string") {
+			// Plain string — no field keys to filter on, fall back to collecting it
+			strings.push(value);
 		}
 	}
 
