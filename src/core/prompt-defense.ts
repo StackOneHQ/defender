@@ -45,26 +45,42 @@ export interface DefenseResult {
 
 /**
  * Recursively extract all string values from an object.
- * Used to collect text content from tool results for Tier 2 classification.
+ * When `fields` is provided, only strings under matching field keys are collected;
+ * the traversal still descends into non-matching keys to find matching ones deeper.
  */
-function extractStrings(obj: unknown): string[] {
+function extractStrings(obj: unknown, fields?: string[]): string[] {
 	const strings: string[] = [];
 
-	function traverse(value: unknown): void {
+	function collectAll(value: unknown): void {
 		if (typeof value === "string") {
 			strings.push(value);
 		} else if (Array.isArray(value)) {
-			for (const item of value) {
-				traverse(item);
-			}
+			for (const item of value) collectAll(item);
 		} else if (value && typeof value === "object") {
-			for (const v of Object.values(value)) {
-				traverse(v);
+			for (const v of Object.values(value)) collectAll(v);
+		}
+	}
+
+	function traverse(value: unknown): void {
+		if (Array.isArray(value)) {
+			for (const item of value) traverse(item);
+		} else if (value && typeof value === "object") {
+			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+				if (fields?.includes(k)) {
+					collectAll(v);
+				} else {
+					traverse(v);
+				}
 			}
 		}
 	}
 
-	traverse(obj);
+	if (!fields) {
+		collectAll(obj);
+	} else {
+		traverse(obj);
+	}
+
 	return strings;
 }
 
@@ -91,6 +107,12 @@ export interface PromptDefenseOptions {
 	 * Defaults to false — tool rules are opt-in to avoid unexpected risk level inflation.
 	 */
 	useDefaultToolRules?: boolean;
+	/**
+	 * Only run Tier 2 on strings extracted from these field names.
+	 * Strings under any other field key are skipped.
+	 * If omitted, Tier 2 runs on all strings in the tool result.
+	 */
+	tier2Fields?: string[];
 }
 
 /**
@@ -114,6 +136,7 @@ export class PromptDefense {
 	private toolResultSanitizer: ToolResultSanitizer;
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
+	private tier2Fields: string[] | undefined;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -123,6 +146,8 @@ export class PromptDefense {
 		if (options.blockHighRisk !== undefined) {
 			this.config.blockHighRisk = options.blockHighRisk;
 		}
+
+		this.tier2Fields = options.tier2Fields;
 
 		// Initialize components
 		this.toolResultSanitizer = createToolResultSanitizer({
@@ -216,7 +241,7 @@ export class PromptDefense {
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			const strings = extractStrings(value);
+			const strings = extractStrings(value, this.tier2Fields);
 			const combinedText = strings.join("\n\n");
 
 			if (combinedText.length > 0) {
