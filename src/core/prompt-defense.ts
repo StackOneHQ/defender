@@ -166,7 +166,7 @@ export class PromptDefense {
 		this.patternDetector = createPatternDetector();
 
 		// Initialize Tier 2 classifier if enabled
-		if (options.enableTier2) {
+		if (options.enableTier2 ?? true) {
 			this.tier2Classifier = createTier2Classifier(options.tier2Config);
 			if (options.tier2Weights) {
 				this.tier2Classifier.loadWeights(options.tier2Weights);
