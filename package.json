@@ -1,6 +1,6 @@
 {
     "name": "@stackone/defender",
-    "version": "0.4.4",
+    "version": "0.4.5",
     "description": "Prompt injection defense framework for AI tool-calling",
     "main": "dist/index.cjs",
     "module": "dist/index.mjs",
