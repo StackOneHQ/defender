@@ -1,7 +1,6 @@
-# @stackone/defender
+# @StackOne/defender — Indirect Prompt Injection Protection for MCP Tools
 
----
-Prompt injection defense framework for AI tool-calling. Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+Indirect prompt injection defense and protection for AI agents using MCP tool calls. Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
 ## Installation
 
