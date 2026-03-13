@@ -1,4 +1,30 @@
-# @StackOne/defender — Indirect Prompt Injection Protection for Agents
+<div align="center">
+  <a href="https://stackone.com">
+    <img src="https://stackone.com/favicon.svg" width="52" height="52" alt="StackOne" />
+  </a>
+
+  <h1>@stackone/defender — Indirect Prompt Injection Protection for Agents</h1>
+
+  <p><strong>Indirect prompt injection protection for MCP tool calls, CLI tools, and direct function calling</strong></p>
+
+  <p>
+    <a href="https://www.npmjs.com/package/@stackone/defender"><img src="https://img.shields.io/npm/v/%40stackone%2Fdefender?style=flat-square&color=047B43&label=npm" alt="npm version" /></a>
+    <a href="https://www.npmjs.com/package/@stackone/defender"><img src="https://img.shields.io/npm/dm/%40stackone%2Fdefender?style=flat-square&color=047B43&label=downloads" alt="npm downloads" /></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/npm/l/%40stackone%2Fdefender?style=flat-square&color=047B43" alt="License" /></a>
+    <a href="https://bundlephobia.com/package/@stackone/defender"><img src="https://img.shields.io/badge/model-22MB-047B43?style=flat-square" alt="Model size: 22MB" /></a>
+    <img src="https://img.shields.io/badge/latency-~10ms-047B43?style=flat-square" alt="Latency: ~10ms" />
+    <img src="https://img.shields.io/badge/CPU--only-no%20GPU%20needed-047B43?style=flat-square" alt="CPU only" />
+    <img src="https://img.shields.io/badge/F1%20Score-90.8%25-047B43?style=flat-square" alt="F1 Score: 90.8%" />
+  </p>
+
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://www.stackone.com/images/blog/indirect-prompt-injection-mcp-tools-defense.svg" />
+    <img src="https://www.stackone.com/og/blog/indirect-prompt-injection-mcp-tools-defense.png" alt="Indirect prompt injection defense: without defender, a poisoned email reaches your AI agent and leaks data; with defender, the injection is blocked in under 2ms" width="640" />
+  </picture>
+
+</div>
+
+---
 
 Indirect prompt injection defense and protection for AI agents using tools calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
