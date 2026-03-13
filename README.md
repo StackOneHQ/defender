@@ -1,7 +1,30 @@
-# @stackone/defender
+<div align="center">
+
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg" />
+    <img src="assets/banner-light.svg" alt="Defender by StackOne — Indirect prompt injection protection for MCP tool calls" width="800" />
+  </picture>
+
+  <p>
+    <a href="https://www.npmjs.com/package/@stackone/defender"><img src="https://img.shields.io/npm/v/%40stackone%2Fdefender?style=flat-square&color=047B43&label=npm" alt="npm version" /></a>
+    <a href="https://www.npmjs.com/package/@stackone/defender"><img src="https://img.shields.io/npm/dm/%40stackone%2Fdefender?style=flat-square&color=047B43&label=downloads" alt="npm downloads" /></a>
+    <a href="https://github.com/StackOneHQ/defender/releases"><img src="https://img.shields.io/github/v/release/StackOneHQ/defender?style=flat-square&color=047B43&label=release" alt="latest release" /></a>
+    <a href="https://github.com/StackOneHQ/defender/stargazers"><img src="https://img.shields.io/github/stars/StackOneHQ/defender?style=flat-square&color=047B43" alt="GitHub stars" /></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/npm/l/%40stackone%2Fdefender?style=flat-square&color=047B43" alt="License" /></a>
+    <img src="https://img.shields.io/badge/TypeScript-typed-047B43?style=flat-square" alt="TypeScript" />
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/model-22MB-047B43?style=flat-square" alt="Model size: 22MB" />
+    <img src="https://img.shields.io/badge/latency-~10ms-047B43?style=flat-square" alt="Latency: ~10ms" />
+    <img src="https://img.shields.io/badge/CPU--only-no%20GPU%20needed-047B43?style=flat-square" alt="CPU only" />
+    <img src="https://img.shields.io/badge/F1%20Score-90.8%25-047B43?style=flat-square" alt="F1 Score: 90.8%" />
+  </p>
+
+</div>
 
 ---
-Prompt injection defense framework for AI tool-calling. Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+
+Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
 ## Installation
 
@@ -38,6 +61,11 @@ if (!result.allowed) {
 ```
 
 ## How It Works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.svg" />
+  <img src="assets/demo-light.svg" alt="Defender flow: a poisoned email with an injection payload is intercepted by @stackone/defender and blocked before reaching the LLM, with riskLevel: critical and tier2Score: 0.97" width="900" />
+</picture>
 
 `defendToolResult()` runs a two-tier defense pipeline:
 
