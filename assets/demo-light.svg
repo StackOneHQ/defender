@@ -71,10 +71,10 @@
 
   <!-- Shield (proportional: 72px wide × 98px tall → ratio 1.36:1) -->
   <!-- M left-top → right-top → right-side → curve-to-point → curve-back → close -->
-  <path d="M564,82 L636,82 L636,138 Q636,182 600,190 Q564,182 564,138 Z"
+  <path d="M554,82 L646,82 L646,134 Q646,170 600,174 Q554,170 554,134 Z"
         fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.35)" stroke-width="1.5"/>
   <!-- Checkmark: bottom-left → middle → top-right -->
-  <path d="M576,134 L591,151 L622,116"
+  <path d="M574,128 L590,146 L623,108"
         fill="none" stroke="white" stroke-width="3.5"
         stroke-linecap="round" stroke-linejoin="round"/>
 
