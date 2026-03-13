@@ -24,7 +24,7 @@
 
 ---
 
-Indirect prompt injection defense and protection for AI agents using tools calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
 ## Installation
 
