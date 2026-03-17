@@ -161,6 +161,7 @@ export class Tier2Classifier {
 		const sentenceScores: Array<{ sentence: string; score: number }> = [];
 		let maxScore = 0;
 		let maxSentence = "";
+		let lastError: unknown;
 
 		for (const sentence of sentences) {
 			if (sentence.length < this.config.minTextLength) {
@@ -176,15 +177,20 @@ export class Tier2Classifier {
 					maxScore = score;
 					maxSentence = sentence;
 				}
-			} catch {}
+			} catch (err) {
+				lastError = err;
+			}
 		}
 
 		if (sentenceScores.length === 0) {
+			const skipReason = lastError
+				? `Classification error: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+				: "No classifiable sentences";
 			return {
 				score: 0,
 				confidence: 0,
 				skipped: true,
-				skipReason: "No classifiable sentences",
+				skipReason,
 				latencyMs: performance.now() - startTime,
 			};
 		}
