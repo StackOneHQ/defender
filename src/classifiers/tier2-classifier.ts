@@ -108,7 +108,7 @@ export class Tier2Classifier {
 				score: 0,
 				confidence: 0,
 				skipped: true,
-				skipReason: `Classification error: ${(error as Error).message}`,
+				skipReason: `Classification error: ${error instanceof Error ? error.message : String(error)}`,
 				latencyMs: performance.now() - startTime,
 			};
 		}
