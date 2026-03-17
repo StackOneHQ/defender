@@ -97,9 +97,8 @@ export interface SanitizeToolResultOptions {
  * 2. Traversing recursively with depth/size limits
  * 3. Identifying risky fields based on configuration
  * 4. Classifying content risk using Tier 1 patterns
- * 5. Optionally classifying with Tier 2 MLP classifier
- * 6. Applying appropriate sanitization methods
- * 7. Tracking cumulative risk for fragmented attack detection
+ * 5. Applying appropriate sanitization methods
+ * 6. Tracking cumulative risk for fragmented attack detection
  */
 export class ToolResultSanitizer {
 	private config: ToolResultSanitizerConfig;

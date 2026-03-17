@@ -94,7 +94,7 @@ export class Tier2Classifier {
 		const analysisText = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
 
 		try {
-			const score = (await this.onnxClassifier.classify(analysisText)) ?? 0;
+			const score = await this.onnxClassifier.classify(analysisText);
 			const confidence = Math.abs(score - 0.5) * 2;
 
 			return {
@@ -169,7 +169,7 @@ export class Tier2Classifier {
 			}
 
 			try {
-				const score = (await this.onnxClassifier.classify(sentence)) ?? 0;
+				const score = await this.onnxClassifier.classify(sentence);
 
 				sentenceScores.push({ sentence, score });
 
