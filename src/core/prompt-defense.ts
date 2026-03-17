@@ -174,10 +174,10 @@ export class PromptDefense {
 	}
 
 	/**
-	 * Pre-load the Tier 2 embedding model
+	 * Pre-load the Tier 2 ONNX model and tokenizer
 	 *
 	 * Call this at startup to avoid latency on first classification.
-	 * The embedding model download (~30MB) is cached locally.
+	 * Loads the bundled ONNX model and tokenizer into memory; no downloads are performed.
 	 */
 	async warmupTier2(): Promise<void> {
 		if (this.tier2Classifier) {
