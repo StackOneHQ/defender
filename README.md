@@ -232,16 +232,6 @@ Tools not matching any pattern use `medium` base risk with default risky field d
 
 ## Development
 
-### Git LFS
-
-The ONNX model source files are stored with [Git LFS](https://git-lfs.com/). Contributors working on the model files need LFS installed:
-
-```bash
-brew install git-lfs
-git lfs install
-git lfs pull  # if you cloned before LFS was set up
-```
-
 ### Testing
 
 ```bash
