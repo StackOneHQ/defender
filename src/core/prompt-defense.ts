@@ -161,8 +161,6 @@ export class PromptDefense {
 			toolRules: options.config?.toolRules ?? (options.useDefaultToolRules === true ? this.config.toolRules : []),
 			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
 			useTier1Classification: options.enableTier1 ?? true,
-			useTier2Classification: false,
-			tier2Config: options.tier2Config,
 			blockHighRisk: options.blockHighRisk ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});

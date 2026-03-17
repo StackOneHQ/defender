@@ -51,20 +51,10 @@ describe('#Tier2Classifier', () => {
 });
 
 describe('#Tier2Classifier integration with ToolResultSanitizer', () => {
-	it('initialises tier2 classifier when useTier2Classification is true', async () => {
+	it('sanitizer runs tier 1 classification on risky fields', async () => {
 		const { createToolResultSanitizer } = await import('../src/core/tool-result-sanitizer');
-		const sanitizer = createToolResultSanitizer({ useTier2Classification: true });
-		// not ready until warmup() is called, but classifier is initialized
-		expect(sanitizer.isTier2Ready()).toBe(false);
-	});
-
-	it('exposes async sanitize method without tier2', async () => {
-		const { createToolResultSanitizer } = await import('../src/core/tool-result-sanitizer');
-		const sanitizer = createToolResultSanitizer({
-			useTier1Classification: true,
-			useTier2Classification: false,
-		});
-		const result = await sanitizer.sanitizeAsync(
+		const sanitizer = createToolResultSanitizer({ useTier1Classification: true });
+		const result = sanitizer.sanitize(
 			{ name: 'Test document', content: 'Hello world' },
 			{ toolName: 'test_tool' },
 		);

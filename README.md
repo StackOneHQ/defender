@@ -39,8 +39,6 @@ The ONNX model (~22MB) is bundled in the package — no extra downloads needed.
 ```typescript
 import { createPromptDefense } from '@stackone/defender';
 
-// Create defense with Tier 1 (patterns) + Tier 2 (ML classifier)
-// blockHighRisk: true enables the allowed/blocked decision
 // Tier 1 (patterns) + Tier 2 (ML classifier) are both on by default.
 // blockHighRisk: true enables the allowed/blocked decision.
 const defense = createPromptDefense({
@@ -82,10 +80,9 @@ Regex-based detection and sanitization:
 
 Fine-tuned MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
-- **ONNX mode (default):** Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
-- **MLP mode (legacy):** Frozen MiniLM embeddings + MLP head, requires separate embedding model download (~30MB)
+- Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
 - Catches attacks that evade pattern-based detection
-- Latency: ~10ms/sample (ONNX, after model warmup)
+- Latency: ~10ms/sample (after model warmup)
 
 **Benchmark results** (ONNX mode, F1 score at threshold 0.5):
 
@@ -191,20 +188,11 @@ console.log(result.matches);       // [{ pattern: '...', severity: 'high', ... }
 
 ### Tier 2 Setup
 
-ONNX mode auto-loads the bundled model on first `defendToolResult()` call. Use `warmupTier2()` at startup to avoid first-call latency:
+The bundled model auto-loads on first `defendToolResult()` call. Use `warmupTier2()` at startup to avoid first-call latency:
 
 ```typescript
-// ONNX mode (default) — Tier 2 is on by default, warmup is optional
 const defense = createPromptDefense();
 await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
-
-// MLP mode (legacy) — requires loading weights explicitly
-import { createPromptDefense, MLP_WEIGHTS } from '@stackone/defender';
-const mlpDefense = createPromptDefense({
-  tier2Config: { mode: 'mlp' },
-});
-mlpDefense.loadTier2Weights(MLP_WEIGHTS);
-await mlpDefense.warmupTier2();
 ```
 
 ## Integration Example
