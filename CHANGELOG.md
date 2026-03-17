@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/StackOneHQ/defender/compare/defender-v0.4.4...defender-v0.4.5) (2026-03-12)
+
+
+### Bug Fixes
+
+* downgrade nanoid to 3.3.11 to fix CJS compatibility ([#19](https://github.com/StackOneHQ/defender/issues/19)) ([06c1713](https://github.com/StackOneHQ/defender/commit/06c17136c454e5fbb03258183e5a2568417cacc5))
+
 ## [0.4.4](https://github.com/StackOneHQ/defender/compare/defender-v0.4.3...defender-v0.4.4) (2026-03-11)
 
 
