@@ -28,26 +28,37 @@ describe('#Tier2Classifier', () => {
 	});
 
 	describe('.getRiskLevel', () => {
-		it('returns correct risk levels for given scores', () => {
+		it('returns high for scores above the high threshold', () => {
 			const classifier = createTier2Classifier();
 			expect(classifier.getRiskLevel(0.9)).toBe('high');
+		});
+
+		it('returns medium for scores above the medium threshold', () => {
+			const classifier = createTier2Classifier();
 			expect(classifier.getRiskLevel(0.6)).toBe('medium');
+		});
+
+		it('returns low for scores below the medium threshold', () => {
+			const classifier = createTier2Classifier();
 			expect(classifier.getRiskLevel(0.3)).toBe('low');
 		});
 	});
 
 	describe('.getConfig', () => {
-		it('returns the current configuration', () => {
+		it('returns the configured highRiskThreshold', () => {
 			const classifier = createTier2Classifier();
-			const config = classifier.getConfig();
-			expect(config.highRiskThreshold).toBe(0.8);
-			expect(config.mediumRiskThreshold).toBe(0.5);
+			expect(classifier.getConfig().highRiskThreshold).toBe(0.8);
+		});
+
+		it('returns the configured mediumRiskThreshold', () => {
+			const classifier = createTier2Classifier();
+			expect(classifier.getConfig().mediumRiskThreshold).toBe(0.5);
 		});
 	});
 });
 
 describe('#Tier2Classifier integration with ToolResultSanitizer', () => {
-	it('sanitizer runs tier 1 classification on risky fields', async () => {
+	it('sanitizer returns a sanitized result', async () => {
 		const { createToolResultSanitizer } = await import('../src/core/tool-result-sanitizer');
 		const sanitizer = createToolResultSanitizer({ useTier1Classification: true });
 		const result = sanitizer.sanitize(
@@ -55,6 +66,15 @@ describe('#Tier2Classifier integration with ToolResultSanitizer', () => {
 			{ toolName: 'test_tool' },
 		);
 		expect(result.sanitized).toBeDefined();
+	});
+
+	it('sanitizer returns metadata', async () => {
+		const { createToolResultSanitizer } = await import('../src/core/tool-result-sanitizer');
+		const sanitizer = createToolResultSanitizer({ useTier1Classification: true });
+		const result = sanitizer.sanitize(
+			{ name: 'Test document', content: 'Hello world' },
+			{ toolName: 'test_tool' },
+		);
 		expect(result.metadata).toBeDefined();
 	});
 });
