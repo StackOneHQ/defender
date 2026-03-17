@@ -17,8 +17,6 @@
  * ```
  */
 
-// Pre-bundled Tier 2 weights
-export { MLP_WEIGHTS } from "./classifiers/weights";
 // Core API
 export {
 	createPromptDefense,
@@ -26,5 +24,6 @@ export {
 	PromptDefense,
 	type PromptDefenseOptions,
 } from "./core/prompt-defense";
+
 // Types
 export type { RiskLevel, Tier1Result, ToolSanitizationRule } from "./types";

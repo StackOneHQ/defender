@@ -84,7 +84,6 @@ describe.skipIf(!!process.env.CI)('Tier2Classifier ONNX mode', () => {
 
   beforeAll(async () => {
     classifier = createTier2Classifier({
-      mode: 'onnx',
       onnxModelPath: modelPath,
     });
     await classifier.warmup();
@@ -134,13 +133,5 @@ describe.skipIf(!!process.env.CI)('Tier2Classifier ONNX mode', () => {
     expect(classifier.getRiskLevel(0.3)).toBe('low');
   });
 
-  it('loadWeights should be no-op in ONNX mode', () => {
-    // Should not throw
-    classifier.loadWeights({} as any);
-    expect(classifier.isReady()).toBe(true);
-  });
 
-  it('getEmbedder should return null in ONNX mode', () => {
-    expect(classifier.getEmbedder()).toBeNull();
-  });
 });

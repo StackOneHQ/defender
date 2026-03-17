@@ -6,7 +6,6 @@
  * appropriate sanitization based on risk level.
  */
 
-import type { MLPWeights } from "../classifiers/mlp";
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
 import {
 	createTier2Classifier,
@@ -56,8 +55,6 @@ export interface ToolResultSanitizerConfig {
 	useTier2Classification: boolean;
 	/** Tier 2 classifier configuration */
 	tier2Config?: Partial<Tier2ClassifierConfig>;
-	/** MLP weights for Tier 2 (must be provided if useTier2Classification is true) */
-	tier2Weights?: MLPWeights;
 	/** Whether to block high/critical risk entirely */
 	blockHighRisk: boolean;
 	/** Cumulative risk thresholds */
@@ -128,21 +125,7 @@ export class ToolResultSanitizer {
 		// Initialize Tier 2 classifier if enabled
 		if (this.config.useTier2Classification) {
 			this.tier2Classifier = createTier2Classifier(this.config.tier2Config);
-			if (this.config.tier2Weights) {
-				this.tier2Classifier.loadWeights(this.config.tier2Weights);
-			}
 		}
-	}
-
-	/**
-	 * Load MLP weights for Tier 2 classification
-	 * Call this after construction if weights weren't provided in config
-	 */
-	loadTier2Weights(weights: MLPWeights): void {
-		if (!this.tier2Classifier) {
-			this.tier2Classifier = createTier2Classifier(this.config.tier2Config);
-		}
-		this.tier2Classifier.loadWeights(weights);
 	}
 
 	/**
