@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/StackOneHQ/defender/compare/defender-v0.4.5...defender-v0.5.0) (2026-03-23)
+
+
+### Features
+
+* **ENG-12396:** upgrade ML classifier to jbv5 (AgentShield 73.7 → 81.1) ([#22](https://github.com/StackOneHQ/defender/issues/22)) ([51f50ce](https://github.com/StackOneHQ/defender/commit/51f50ce8af1859468ffb400bac3212a074cfaa6a))
+* **ENG-12397:** remove legacy MLP inference mode ([#23](https://github.com/StackOneHQ/defender/issues/23)) ([556dc38](https://github.com/StackOneHQ/defender/commit/556dc38af0148c5bac0580d6b63c11db7387b5d5))
+
 ## [0.4.5](https://github.com/StackOneHQ/defender/compare/defender-v0.4.4...defender-v0.4.5) (2026-03-12)
 
 
