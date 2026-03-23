@@ -169,7 +169,10 @@ export class Tier2Classifier {
 			}
 
 			try {
-				const truncatedSentence = sentence.length > this.config.maxTextLength ? sentence.slice(0, this.config.maxTextLength) : sentence;
+				const truncatedSentence =
+					sentence.length > this.config.maxTextLength
+						? sentence.slice(0, this.config.maxTextLength)
+						: sentence;
 				const score = await this.onnxClassifier.classify(truncatedSentence);
 
 				sentenceScores.push({ sentence, score });
