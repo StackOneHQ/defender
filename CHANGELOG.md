@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/StackOneHQ/defender/compare/defender-v0.5.0...defender-v0.5.1) (2026-03-25)
+
+
+### Bug Fixes
+
+* **ENG-12448:** upgrade ML classifier to jbv2 (AgentShield 73.7 → 79.8) ([#25](https://github.com/StackOneHQ/defender/issues/25)) ([3061239](https://github.com/StackOneHQ/defender/commit/30612391690390112fe5da5eb065c7205da43378))
+
 ## [0.5.0](https://github.com/StackOneHQ/defender/compare/defender-v0.4.5...defender-v0.5.0) (2026-03-23)
 
 
