@@ -2,7 +2,7 @@
 	"$schema": "https://biomejs.dev/schemas/2.0.x/schema.json",
 	"files": {
 		"maxSize": 5242880,
-		"includes": ["src/**", "specs/**"]
+		"includes": ["src/**", "specs/**", "!src/classifiers/models/**"]
 	},
 	"formatter": {
 		"indentStyle": "tab",
