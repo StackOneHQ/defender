@@ -127,7 +127,7 @@ export interface PromptDefenseOptions {
  * ```typescript
  * import { createPromptDefense } from '@stackone/defender';
  *
- * const defense = createPromptDefense({ enableTier2: true });
+ * const defense = createPromptDefense();
  * await defense.warmupTier2();
  *
  * const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
