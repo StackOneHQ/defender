@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/StackOneHQ/defender/compare/defender-v0.5.1...defender-v0.5.2) (2026-03-26)
+
+
+### Bug Fixes
+
+* use absolute URLs for README images to fix npm display ([#28](https://github.com/StackOneHQ/defender/issues/28)) ([beeb2ef](https://github.com/StackOneHQ/defender/commit/beeb2ef1e2c1dd0806045846f66a586d2576c804))
+
 ## [0.5.1](https://github.com/StackOneHQ/defender/compare/defender-v0.5.0...defender-v0.5.1) (2026-03-25)
 
 
