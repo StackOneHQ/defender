@@ -217,6 +217,8 @@ export interface SanitizationMetadata {
 	totalLatencyMs: number;
 	/** Size metrics */
 	sizeMetrics: SizeMetrics;
+	/** Unique field names (leaf keys) that Tier 1 identified as risky */
+	riskyFieldNames: string[];
 }
 
 /**

@@ -127,7 +127,7 @@ export interface PromptDefenseOptions {
  * ```typescript
  * import { createPromptDefense } from '@stackone/defender';
  *
- * const defense = createPromptDefense({ enableTier2: true });
+ * const defense = createPromptDefense();
  * await defense.warmupTier2();
  *
  * const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
@@ -226,7 +226,11 @@ export class PromptDefense {
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			const strings = extractStrings(value, this.tier2Fields);
+			// Use explicit tier2Fields override, or fall back to the risky field names
+			// identified by Tier 1. If neither is available, scan all strings.
+			const { riskyFieldNames } = sanitized.metadata;
+			const fieldsForTier2 = this.tier2Fields ?? (riskyFieldNames.length > 0 ? riskyFieldNames : undefined);
+			const strings = extractStrings(value, fieldsForTier2);
 			const combinedText = strings.join("\n\n");
 
 			if (combinedText.length > 0) {
@@ -241,7 +245,9 @@ export class PromptDefense {
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
-					: "No strings extracted from tool result";
+					: riskyFieldNames.length > 0
+						? "No strings found in Tier 1 risky fields"
+						: "No strings extracted from tool result";
 			}
 		}
 
