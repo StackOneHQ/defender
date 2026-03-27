@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/StackOneHQ/defender/compare/defender-v0.5.2...defender-v0.5.3) (2026-03-27)
+
+
+### Bug Fixes
+
+* **ENG-12470:** update inline docs to match implementation, scope Tier 2 to Tier 1 risky fields by default    ([#30](https://github.com/StackOneHQ/defender/issues/30)) ([c103072](https://github.com/StackOneHQ/defender/commit/c10307242ac214e27cb207a876c729ddea5d4e5f))
+
 ## [0.5.2](https://github.com/StackOneHQ/defender/compare/defender-v0.5.1...defender-v0.5.2) (2026-03-26)
 
 
