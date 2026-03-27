@@ -154,6 +154,7 @@ export class ToolResultSanitizer {
 			cumulativeRiskEscalated: false,
 			totalLatencyMs: 0,
 			sizeMetrics,
+			riskyFieldNames: [],
 		};
 
 		// Sanitize the value
@@ -167,6 +168,7 @@ export class ToolResultSanitizer {
 
 		metadata.totalLatencyMs = performance.now() - startTime;
 		metadata.sizeMetrics = sizeMetrics;
+		metadata.riskyFieldNames = [...new Set(metadata.riskyFieldNames)];
 
 		return {
 			sanitized: sanitized as T,
@@ -304,6 +306,7 @@ export class ToolResultSanitizer {
 
 			// Check if this is a risky field that needs sanitization
 			if (this.isFieldRisky(key, context.toolName) && typeof val === "string") {
+				metadata.riskyFieldNames.push(key);
 				result[key] = this.sanitizeStringField(val, fieldContext, toolRule, metadata);
 			} else {
 				// Recurse into non-risky fields
