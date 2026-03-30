@@ -69,6 +69,23 @@ interface OrtTensorConstructor {
 }
 
 /**
+ * Module-level session cache — shared across all OnnxClassifier instances in this process.
+ *
+ * Keyed by model path. Populated on first successful _loadModel() call and reused by every
+ * subsequent instance. Sharing InferenceSession across concurrent run() calls is safe —
+ * ONNX Runtime guarantees thread safety for concurrent Run() from v1.7.0. Sharing the
+ * tokenizer is safe — tokenize() is synchronous and never mutates the tokenizer object.
+ */
+const _sessionCache = new Map<
+	string,
+	{
+		session: OrtInferenceSession;
+		OrtTensor: OrtTensorConstructor;
+		tokenizer: Tokenizer;
+	}
+>();
+
+/**
  * ONNX Classifier for fine-tuned MiniLM models
  *
  * Usage:
@@ -116,11 +133,20 @@ export class OnnxClassifier {
 			await this.loadingPromise;
 		} catch (error) {
 			this.loadingPromise = null;
+			console.warn("[defender] ONNX model failed to load:", error instanceof Error ? error.message : String(error));
 			throw error;
 		}
 	}
 
 	private async _loadModel(): Promise<void> {
+		const cached = _sessionCache.get(this.modelPath);
+		if (cached) {
+			this.session = cached.session;
+			this.OrtTensor = cached.OrtTensor;
+			this.tokenizer = cached.tokenizer;
+			return;
+		}
+
 		// Dynamic imports — these are optional peer dependencies
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
 		const transformers = (await import("@huggingface/transformers")) as unknown as {
@@ -144,6 +170,12 @@ export class OnnxClassifier {
 		this.OrtTensor = ort.Tensor;
 		const onnxPath = resolve(this.modelPath, "model_quantized.onnx");
 		this.session = await ort.InferenceSession.create(onnxPath);
+
+		_sessionCache.set(this.modelPath, {
+			session: this.session,
+			OrtTensor: this.OrtTensor,
+			tokenizer: this.tokenizer,
+		});
 	}
 
 	/**
