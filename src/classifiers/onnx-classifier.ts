@@ -86,6 +86,13 @@ const _sessionCache = new Map<
 >();
 
 /**
+ * Module-level in-flight load promises — prevents duplicate concurrent loads when multiple
+ * OnnxClassifier instances target the same modelPath simultaneously (e.g. warmup + first request).
+ * Entries are removed after the load resolves or rejects.
+ */
+const _loadingPromises = new Map<string, Promise<void>>();
+
+/**
  * ONNX Classifier for fine-tuned MiniLM models
  *
  * Usage:
@@ -150,35 +157,47 @@ export class OnnxClassifier {
 			return;
 		}
 
-		// Dynamic imports — these are optional peer dependencies
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const transformers = (await import("@huggingface/transformers")) as unknown as {
-			AutoTokenizer: {
-				from_pretrained: (path: string, options?: { local_files_only: boolean }) => Promise<Tokenizer>;
-			};
-		};
+		// Share a single in-flight load across concurrent instances targeting the same path
+		let inFlight = _loadingPromises.get(this.modelPath);
+		if (!inFlight) {
+			const modelPath = this.modelPath;
+			inFlight = (async () => {
+				// Dynamic imports — these are optional peer dependencies
+				// eslint-disable-next-line @typescript-eslint/no-require-imports
+				const transformers = (await import("@huggingface/transformers")) as unknown as {
+					AutoTokenizer: {
+						from_pretrained: (path: string, options?: { local_files_only: boolean }) => Promise<Tokenizer>;
+					};
+				};
+				const tokenizer = await transformers.AutoTokenizer.from_pretrained(modelPath, {
+					local_files_only: true,
+				});
 
-		this.tokenizer = await transformers.AutoTokenizer.from_pretrained(this.modelPath, {
-			local_files_only: true,
-		});
+				// eslint-disable-next-line @typescript-eslint/no-require-imports
+				const ort = (await import("onnxruntime-node")) as unknown as {
+					InferenceSession: {
+						create: (path: string) => Promise<OrtInferenceSession>;
+					};
+					Tensor: OrtTensorConstructor;
+				};
+				const OrtTensor = ort.Tensor;
+				const onnxPath = resolve(modelPath, "model_quantized.onnx");
+				const session = await ort.InferenceSession.create(onnxPath);
 
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const ort = (await import("onnxruntime-node")) as unknown as {
-			InferenceSession: {
-				create: (path: string) => Promise<OrtInferenceSession>;
-			};
-			Tensor: OrtTensorConstructor;
-		};
+				_sessionCache.set(modelPath, { session, OrtTensor, tokenizer });
+			})();
+			_loadingPromises.set(this.modelPath, inFlight);
+			void inFlight.finally(() => _loadingPromises.delete(this.modelPath));
+		}
 
-		this.OrtTensor = ort.Tensor;
-		const onnxPath = resolve(this.modelPath, "model_quantized.onnx");
-		this.session = await ort.InferenceSession.create(onnxPath);
+		await inFlight;
 
-		_sessionCache.set(this.modelPath, {
-			session: this.session,
-			OrtTensor: this.OrtTensor,
-			tokenizer: this.tokenizer,
-		});
+		const loaded = _sessionCache.get(this.modelPath);
+		if (loaded) {
+			this.session = loaded.session;
+			this.OrtTensor = loaded.OrtTensor;
+			this.tokenizer = loaded.tokenizer;
+		}
 	}
 
 	/**
