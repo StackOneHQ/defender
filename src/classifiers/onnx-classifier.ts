@@ -133,7 +133,10 @@ export class OnnxClassifier {
 			await this.loadingPromise;
 		} catch (error) {
 			this.loadingPromise = null;
-			console.warn("[defender] ONNX model failed to load:", error instanceof Error ? error.message : String(error));
+			console.warn(
+				"[defender] ONNX model failed to load:",
+				error instanceof Error ? error.message : String(error),
+			);
 			throw error;
 		}
 	}
