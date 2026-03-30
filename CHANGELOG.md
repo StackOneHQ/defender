@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/StackOneHQ/defender/compare/defender-v0.5.3...defender-v0.5.4) (2026-03-30)
+
+
+### Bug Fixes
+
+* **ENG-12506:** cache ONNX session at module level to eliminate per-request ([#33](https://github.com/StackOneHQ/defender/issues/33)) ([bd1c580](https://github.com/StackOneHQ/defender/commit/bd1c5806ac4a55703d081d984ec4566efd4d2a3d))
+
 ## [0.5.3](https://github.com/StackOneHQ/defender/compare/defender-v0.5.2...defender-v0.5.3) (2026-03-27)
 
 
