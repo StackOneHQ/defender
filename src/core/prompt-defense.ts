@@ -67,9 +67,9 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		return strings;
 	}
 
-	// Handle bare string input — no keys to match against, collect it directly
-	if (typeof obj === "string") {
-		strings.push(obj);
+	// Handle bare string/array input — no keys to match against, collect directly
+	if (typeof obj === "string" || Array.isArray(obj)) {
+		collectAll(obj);
 		return strings;
 	}
 

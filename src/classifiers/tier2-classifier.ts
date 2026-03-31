@@ -199,7 +199,8 @@ export class Tier2Classifier {
 		let maxSentence = "";
 
 		for (let i = 0; i < scores.length; i++) {
-			const score = scores[i] ?? 0;
+			const rawScore = scores[i];
+			const score = Number.isFinite(rawScore) ? rawScore : 0;
 			const sentence = originalSentences[i] ?? "";
 			sentenceScores.push({ sentence, score });
 			if (score > maxScore) {
