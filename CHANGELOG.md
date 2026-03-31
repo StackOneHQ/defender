@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/StackOneHQ/defender/compare/defender-v0.5.4...defender-v0.5.5) (2026-03-31)
+
+
+### Bug Fixes
+
+* **ENG-12518:** fix field filter and batch sentence classification ([#35](https://github.com/StackOneHQ/defender/issues/35)) ([878b542](https://github.com/StackOneHQ/defender/commit/878b542261feab7d32b1a24db73a55521bf1930d))
+
 ## [0.5.4](https://github.com/StackOneHQ/defender/compare/defender-v0.5.3...defender-v0.5.4) (2026-03-30)
 
 
