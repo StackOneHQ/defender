@@ -67,6 +67,12 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		return strings;
 	}
 
+	// Handle bare string input — no keys to match against, collect it directly
+	if (typeof obj === "string") {
+		strings.push(obj);
+		return strings;
+	}
+
 	// Use a Set for O(1) key lookups during traversal
 	const fieldSet = new Set(fields);
 
@@ -81,10 +87,9 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 					traverse(v);
 				}
 			}
-		} else if (typeof value === "string") {
-			// Plain string — no field keys to filter on, fall back to collecting it
-			strings.push(value);
 		}
+		// Strings under non-matching keys are intentionally skipped —
+		// only strings under matching field names are collected.
 	}
 
 	traverse(obj);
