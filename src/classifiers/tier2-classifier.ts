@@ -157,46 +157,55 @@ export class Tier2Classifier {
 			};
 		}
 
-		// Classify each sentence
-		const sentenceScores: Array<{ sentence: string; score: number }> = [];
-		let maxScore = 0;
-		let maxSentence = "";
-		let lastError: unknown;
-
+		// Filter and truncate sentences
+		const classifiableSentences: string[] = [];
+		const originalSentences: string[] = [];
 		for (const sentence of sentences) {
 			if (sentence.length < this.config.minTextLength) {
 				continue;
 			}
-
-			try {
-				const truncatedSentence =
-					sentence.length > this.config.maxTextLength
-						? sentence.slice(0, this.config.maxTextLength)
-						: sentence;
-				const score = await this.onnxClassifier.classify(truncatedSentence);
-
-				sentenceScores.push({ sentence, score });
-
-				if (score > maxScore) {
-					maxScore = score;
-					maxSentence = sentence;
-				}
-			} catch (err) {
-				lastError = err;
-			}
+			originalSentences.push(sentence);
+			classifiableSentences.push(
+				sentence.length > this.config.maxTextLength ? sentence.slice(0, this.config.maxTextLength) : sentence,
+			);
 		}
 
-		if (sentenceScores.length === 0) {
-			const skipReason = lastError
-				? `Classification error: ${lastError instanceof Error ? lastError.message : String(lastError)}`
-				: "No classifiable sentences";
+		if (classifiableSentences.length === 0) {
 			return {
 				score: 0,
 				confidence: 0,
 				skipped: true,
-				skipReason,
+				skipReason: "No classifiable sentences",
 				latencyMs: performance.now() - startTime,
 			};
+		}
+
+		// Batch classify all sentences in a single ONNX call
+		let scores: number[];
+		try {
+			scores = await this.onnxClassifier.classifyBatch(classifiableSentences);
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Classification error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		const sentenceScores: Array<{ sentence: string; score: number }> = [];
+		let maxScore = 0;
+		let maxSentence = "";
+
+		for (let i = 0; i < scores.length; i++) {
+			const score = scores[i] ?? 0;
+			const sentence = originalSentences[i] ?? "";
+			sentenceScores.push({ sentence, score });
+			if (score > maxScore) {
+				maxScore = score;
+				maxSentence = sentence;
+			}
 		}
 
 		const confidence = Math.abs(maxScore - 0.5) * 2;
