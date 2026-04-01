@@ -79,6 +79,31 @@ describe.skipIf(!!process.env.CI)('OnnxClassifier', () => {
   });
 });
 
+describe('#OnnxClassifier load failure', () => {
+	it('does not emit unhandledRejection when model fails to load', async () => {
+		// arrange
+		const unhandledRejections: unknown[] = [];
+		const handler = (reason: unknown) => unhandledRejections.push(reason);
+		process.on('unhandledRejection', handler);
+
+		const badClassifier = new OnnxClassifier('/nonexistent/path/to/model');
+
+		// act
+		try {
+			await badClassifier.loadModel();
+		} catch {
+			// Expected — model doesn't exist
+		}
+
+		// Allow microtasks to flush (unhandled rejections are reported asynchronously)
+		await new Promise((r) => setTimeout(r, 100));
+
+		// assert
+		process.removeListener('unhandledRejection', handler);
+		expect(unhandledRejections).toHaveLength(0);
+	});
+});
+
 describe.skipIf(!!process.env.CI)('Tier2Classifier ONNX mode', () => {
   let classifier: Tier2Classifier;
 
