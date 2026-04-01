@@ -187,7 +187,7 @@ export class OnnxClassifier {
 				_sessionCache.set(modelPath, { session, OrtTensor, tokenizer });
 			})();
 			_loadingPromises.set(this.modelPath, inFlight);
-			void inFlight.finally(() => _loadingPromises.delete(this.modelPath));
+			inFlight.finally(() => _loadingPromises.delete(this.modelPath)).catch(() => {});
 		}
 
 		await inFlight;
