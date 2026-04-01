@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.6](https://github.com/StackOneHQ/defender/compare/defender-v0.5.5...defender-v0.5.6) (2026-04-01)
+
+
+### Bug Fixes
+
+* **ENG-12540:** prevent unhandled rejection cascade on ONNX load failure ([#37](https://github.com/StackOneHQ/defender/issues/37)) ([52c99e3](https://github.com/StackOneHQ/defender/commit/52c99e329b22af2e96106fb1e1f9950e66855c43))
+
 ## [0.5.5](https://github.com/StackOneHQ/defender/compare/defender-v0.5.4...defender-v0.5.5) (2026-03-31)
 
 
