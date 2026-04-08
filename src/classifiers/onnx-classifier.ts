@@ -235,7 +235,14 @@ export class OnnxClassifier {
 	}
 
 	/**
-	 * Classify multiple texts in batch.
+	 * Maximum number of texts per ONNX inference call.
+	 * Caps native memory from attention matrices: O(chunkSize × seqLen²).
+	 * For MiniLM (maxLength=256), chunk=32 keeps memory under ~50MB per call.
+	 */
+	private static readonly MAX_BATCH_CHUNK = 32;
+
+	/**
+	 * Classify multiple texts in batch, processing in chunks to bound memory.
 	 *
 	 * @param texts - Array of texts to classify
 	 * @returns Array of sigmoid scores in [0, 1]
@@ -245,11 +252,24 @@ export class OnnxClassifier {
 
 		await this.ensureLoaded();
 
-		// Tokenize all texts, padding to the same length
+		const allScores: number[] = [];
+
+		for (let offset = 0; offset < texts.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
+			const chunk = texts.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
+			const chunkScores = await this.classifyBatchChunk(chunk);
+			allScores.push(...chunkScores);
+		}
+
+		return allScores;
+	}
+
+	/**
+	 * Classify a single chunk of texts in one ONNX session.run() call.
+	 */
+	private async classifyBatchChunk(texts: string[]): Promise<number[]> {
 		const tokenized = texts.map((t) => this.tokenize(t));
 		const maxLen = Math.max(...tokenized.map((t) => t.inputIds.length));
 
-		// Pad to max length and concatenate into batch tensors
 		const batchSize = texts.length;
 		const batchInputIds = new BigInt64Array(batchSize * maxLen);
 		const batchAttentionMask = new BigInt64Array(batchSize * maxLen);
@@ -261,7 +281,6 @@ export class OnnxClassifier {
 				batchInputIds[i * maxLen + j] = t.inputIds[j] ?? 0n;
 				batchAttentionMask[i * maxLen + j] = t.attentionMask[j] ?? 0n;
 			}
-			// Remaining positions are already 0n (padding)
 		}
 
 		if (!this.OrtTensor) {
