@@ -43,7 +43,6 @@ import { createPromptDefense } from '@stackone/defender';
 // blockHighRisk: true enables the allowed/blocked decision.
 const defense = createPromptDefense({
   blockHighRisk: true,
-  useDefaultToolRules: true, // Enable built-in per-tool base risk and field-handling rules (risky-field overrides always apply)
 });
 
 // Defend a tool result — ONNX model (~22MB) auto-loads on first call
@@ -99,19 +98,7 @@ Use `allowed` for blocking decisions:
 - `allowed: true` — safe to pass to the LLM
 - `allowed: false` — content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-`riskLevel` is diagnostic metadata. It starts at the tool's base risk level and can only be escalated by detections — never reduced. Use it for logging and monitoring, not for allow/block logic.
-
-The following base risk levels apply when `useDefaultToolRules: true` is set. Without it, tools use `defaultRiskLevel` (defaults to `medium`).
-
-| Tool Pattern | Base Risk | Why |
-|--------------|-----------|-----|
-| `gmail_*`, `email_*` | `high` | Emails are the #1 injection vector |
-| `documents_*` | `medium` | User-generated content |
-| `hris_*` | `medium` | Employee data with free-text fields |
-| `github_*` | `medium` | PRs/issues with user-generated content |
-| All other tools | `medium` | Default cautious level |
-
-A safe email with no detections will have `riskLevel: 'high'` (tool base risk) but `allowed: true` (no threats found).
+`riskLevel` is diagnostic metadata. It starts at `medium` (the default) and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced. Use it for logging and monitoring, not for allow/block logic.
 
 Risk escalation from detections:
 
@@ -133,7 +120,6 @@ const defense = createPromptDefense({
   enableTier1: true,           // Pattern detection (default: true)
   enableTier2: true,           // ML classification (default: true) — set false to disable
   blockHighRisk: true,         // Block high/critical content (default: false)
-  useDefaultToolRules: true,   // Enable built-in per-tool base risk and field-handling rules (default: false)
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   defaultRiskLevel: 'medium',
 });
@@ -205,7 +191,6 @@ import { createPromptDefense } from '@stackone/defender';
 
 const defense = createPromptDefense({
   blockHighRisk: true,
-  useDefaultToolRules: true,
 });
 await defense.warmupTier2(); // optional, avoids first-call latency
 
@@ -229,22 +214,22 @@ const result = await generateText({
 });
 ```
 
-## Tool-Specific Rules
+## Risky Field Detection
 
-> **Note:** `useDefaultToolRules: true` enables built-in per-tool **risk rules** (base risk, skip fields, max lengths, thresholds). Risky-field detection (which fields get sanitized) uses tool-specific overrides regardless of this setting.
+Defender only scans string fields that are likely to contain user-generated or external content. Per-tool overrides focus scanning on the relevant fields:
 
-Built-in per-tool rules define the base risk level and field-handling parameters for each tool provider. See the [base risk table](#understanding-allowed-vs-risklevel) for risk levels.
+| Tool Pattern | Scanned Fields |
+|---|---|
+| `gmail_*`, `email_*` | subject, body, snippet, content |
+| `documents_*` | name, description, content, title |
+| `github_*` | name, title, body, description, message |
+| `hris_*` | name, notes, bio, description |
+| `ats_*` | name, notes, description, summary |
+| `crm_*` | name, description, notes, content |
 
-| Tool Pattern | Risky Fields | Notes |
-|---|---|---|
-| `gmail_*`, `email_*` | subject, body, snippet, content | Base risk `high` — primary injection vector |
-| `documents_*` | name, description, content, title | User-generated content |
-| `github_*` | name, title, body, description | PRs, issues, comments |
-| `hris_*` | name, notes, bio, description | Employee free-text fields |
-| `ats_*` | name, notes, description, summary | Candidate data |
-| `crm_*` | name, description, notes, content | Customer data |
+Tools not matching any pattern use the default risky field list: `name`, `description`, `content`, `title`, `notes`, `summary`, `bio`, `body`, `text`, `message`, `comment`, `subject`, plus patterns like `*_description`, `*_body`, etc.
 
-Tools not matching any pattern use `medium` base risk with default risky field detection.
+Fields like `id`, `url`, `created_at` are never scanned — they aren't in the risky fields list.
 
 ## Development
 
