@@ -26,4 +26,4 @@ export {
 } from "./core/prompt-defense";
 
 // Types
-export type { RiskLevel, Tier1Result, ToolSanitizationRule } from "./types";
+export type { RiskLevel, Tier1Result } from "./types";

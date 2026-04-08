@@ -113,11 +113,6 @@ export interface PromptDefenseOptions {
 	/** Default risk level for unclassified content */
 	defaultRiskLevel?: RiskLevel;
 	/**
-	 * Use built-in per-tool sanitization rules (e.g. gmail_* defaults to high risk).
-	 * Defaults to false — tool rules are opt-in to avoid unexpected risk level inflation.
-	 */
-	useDefaultToolRules?: boolean;
-	/**
 	 * Only run Tier 2 on strings extracted from these field names.
 	 * Strings under any other field key are skipped.
 	 * If omitted, Tier 2 runs on all strings in the tool result.
@@ -163,7 +158,6 @@ export class PromptDefense {
 		this.toolResultSanitizer = createToolResultSanitizer({
 			riskyFields: this.config.riskyFields,
 			traversal: this.config.traversal,
-			toolRules: options.config?.toolRules ?? (options.useDefaultToolRules === true ? this.config.toolRules : []),
 			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
 			useTier1Classification: options.enableTier1 ?? true,
 			blockHighRisk: options.blockHighRisk ?? false,

@@ -2,7 +2,7 @@
  * Default configuration for the Prompt Defense Framework
  */
 
-import type { PromptDefenseConfig, RiskyFieldConfig, ToolSanitizationRule, TraversalConfig } from "./types";
+import type { PromptDefenseConfig, RiskyFieldConfig, TraversalConfig } from "./types";
 
 /**
  * Default risky field configuration
@@ -67,96 +67,6 @@ export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
 };
 
 /**
- * Default per-tool sanitization rules
- */
-export const DEFAULT_TOOL_RULES: ToolSanitizationRule[] = [
-	// Document tools - higher risk due to content fields
-	{
-		toolPattern: /^documents_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 500,
-			description: 2000,
-			content: 100000,
-		},
-		skipFields: ["id", "url", "size", "created_at", "updated_at", "mime_type"],
-		cumulativeRiskThresholds: {
-			medium: 2, // Stricter for documents
-			high: 1,
-			patterns: 2,
-		},
-	},
-
-	// HRIS tools - medium risk
-	{
-		toolPattern: /^hris_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			notes: 2000,
-			bio: 5000,
-		},
-		skipFields: ["id", "employee_id", "created_at", "updated_at"],
-	},
-
-	// ATS tools - candidate data with free-text fields
-	{
-		toolPattern: /^ats_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			notes: 5000,
-			description: 2000,
-			summary: 2000,
-		},
-		skipFields: ["id", "candidate_id", "application_id", "created_at", "updated_at"],
-	},
-
-	// CRM tools - customer data with free-text fields
-	{
-		toolPattern: /^crm_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			description: 2000,
-			notes: 5000,
-			content: 10000,
-		},
-		skipFields: ["id", "contact_id", "account_id", "created_at", "updated_at"],
-	},
-
-	// Email tools - higher risk due to external content
-	{
-		toolPattern: /^gmail_|^email_/,
-		sanitizationLevel: "high",
-		maxFieldLengths: {
-			subject: 500,
-			body: 100000,
-			snippet: 1000,
-		},
-		skipFields: ["id", "thread_id", "message_id", "date"],
-		cumulativeRiskThresholds: {
-			medium: 2,
-			high: 1,
-			patterns: 2,
-		},
-	},
-
-	// GitHub tools - medium risk
-	{
-		toolPattern: /^github_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 500,
-			description: 5000,
-			body: 100000,
-			content: 100000,
-		},
-		skipFields: ["id", "sha", "url", "html_url", "created_at", "updated_at"],
-	},
-];
-
-/**
  * Default cumulative risk thresholds
  */
 export const DEFAULT_CUMULATIVE_RISK_THRESHOLDS = {
@@ -180,7 +90,6 @@ export const DEFAULT_TIER2_CONFIG = {
 export const DEFAULT_CONFIG: PromptDefenseConfig = {
 	riskyFields: DEFAULT_RISKY_FIELDS,
 	traversal: DEFAULT_TRAVERSAL_CONFIG,
-	toolRules: DEFAULT_TOOL_RULES,
 	cumulativeRiskThresholds: DEFAULT_CUMULATIVE_RISK_THRESHOLDS,
 	tier2: DEFAULT_TIER2_CONFIG,
 	blockHighRisk: false, // Start permissive, can enable later
@@ -209,6 +118,5 @@ export function createConfig(overrides: Partial<PromptDefenseConfig>): PromptDef
 			...DEFAULT_CONFIG.cumulativeRiskThresholds,
 			...overrides.cumulativeRiskThresholds,
 		},
-		toolRules: overrides.toolRules ?? DEFAULT_CONFIG.toolRules,
 	};
 }

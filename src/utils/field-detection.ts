@@ -2,7 +2,7 @@
  * Field detection utilities for identifying risky fields
  */
 
-import type { RiskyFieldConfig, ToolSanitizationRule } from "../types";
+import type { RiskyFieldConfig } from "../types";
 
 /**
  * Check if a field name should be sanitized based on configuration
@@ -78,56 +78,4 @@ export function matchesWildcard(toolName: string, pattern: string): boolean {
 
 	const regex = new RegExp(`^${regexPattern}$`);
 	return regex.test(toolName);
-}
-
-/**
- * Get the sanitization rule for a specific tool
- *
- * @param toolName - Name of the tool
- * @param rules - Array of tool sanitization rules
- * @returns Matching rule or undefined
- */
-export function getToolRule(toolName: string, rules: ToolSanitizationRule[]): ToolSanitizationRule | undefined {
-	for (const rule of rules) {
-		if (typeof rule.toolPattern === "string") {
-			if (toolName === rule.toolPattern || matchesWildcard(toolName, rule.toolPattern)) {
-				return rule;
-			}
-		} else if (rule.toolPattern.test(toolName)) {
-			return rule;
-		}
-	}
-
-	return undefined;
-}
-
-/**
- * Check if a field should be skipped based on tool rules
- *
- * @param fieldName - Field name to check
- * @param rule - Tool sanitization rule
- * @returns Whether the field should be skipped
- */
-export function shouldSkipField(fieldName: string, rule?: ToolSanitizationRule): boolean {
-	if (!rule?.skipFields) {
-		return false;
-	}
-
-	return rule.skipFields.includes(fieldName);
-}
-
-/**
- * Get the maximum allowed length for a field
- *
- * @param fieldName - Field name to check
- * @param rule - Tool sanitization rule
- * @param defaultMax - Default maximum if not specified
- * @returns Maximum allowed length
- */
-export function getMaxFieldLength(fieldName: string, rule?: ToolSanitizationRule, defaultMax: number = 50000): number {
-	if (rule?.maxFieldLengths?.[fieldName]) {
-		return rule.maxFieldLengths[fieldName];
-	}
-
-	return defaultMax;
 }

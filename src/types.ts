@@ -270,28 +270,6 @@ export interface TraversalConfig {
 }
 
 /**
- * Per-tool sanitization rules
- */
-export interface ToolSanitizationRule {
-	/** Tool name pattern (string with wildcards or RegExp) */
-	toolPattern: string | RegExp;
-	/** Override risky fields for this tool */
-	riskyFields?: string[];
-	/** Override sanitization level */
-	sanitizationLevel?: RiskLevel;
-	/** Maximum field lengths */
-	maxFieldLengths?: Record<string, number>;
-	/** Fields to never sanitize */
-	skipFields?: string[];
-	/** Custom cumulative risk thresholds */
-	cumulativeRiskThresholds?: {
-		medium: number;
-		high: number;
-		patterns: number;
-	};
-}
-
-/**
  * Main configuration for the prompt defense framework
  */
 export interface PromptDefenseConfig {
@@ -299,8 +277,6 @@ export interface PromptDefenseConfig {
 	riskyFields: RiskyFieldConfig;
 	/** Traversal limits */
 	traversal: TraversalConfig;
-	/** Per-tool rules */
-	toolRules: ToolSanitizationRule[];
 	/** Default cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;

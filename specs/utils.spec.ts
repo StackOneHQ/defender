@@ -8,7 +8,6 @@ import {
 import {
   isRiskyField,
   matchesWildcard,
-  getToolRule,
 } from '../src/utils/field-detection';
 import {
   detectStructureType,
@@ -16,7 +15,7 @@ import {
   estimateSize,
   createSizeMetrics,
 } from '../src/utils/structure';
-import { DEFAULT_RISKY_FIELDS, DEFAULT_TOOL_RULES } from '../src/config';
+import { DEFAULT_RISKY_FIELDS } from '../src/config';
 
 describe('#BoundaryUtilities', () => {
   describe('.generateDataBoundary', () => {
@@ -112,20 +111,6 @@ describe('#FieldDetectionUtilities', () => {
     });
   });
 
-  describe('.getToolRule', () => {
-    it('finds matching rule', () => {
-      const rule = getToolRule('gmail_get_message', DEFAULT_TOOL_RULES);
-
-      expect(rule).toBeDefined();
-      expect(rule?.sanitizationLevel).toBe('high');
-    });
-
-    it('returns undefined for unknown tools', () => {
-      const rule = getToolRule('unknown_tool', DEFAULT_TOOL_RULES);
-
-      expect(rule).toBeUndefined();
-    });
-  });
 });
 
 describe('#StructureUtilities', () => {
