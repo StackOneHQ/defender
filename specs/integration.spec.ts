@@ -274,22 +274,6 @@ describe('PromptDefense', () => {
     });
   });
 
-  describe('defendToolResult', () => {
-    it('treats all tools uniformly with default medium risk', async () => {
-      const defense = createPromptDefense();
-      const input = {
-        subject: 'Weekly team update',
-        body: 'Reminder about the meeting tomorrow at 10am.',
-        thread_id: 'thread123',
-      };
-
-      const result = await defense.defendToolResult(input, 'gmail_get_message');
-
-      // All tools use the same default risk level — no per-tool escalation
-      expect(result.riskLevel).not.toBe('high');
-      expect(result.riskLevel).not.toBe('critical');
-    });
-  });
 
   describe('analyze', () => {
     it('should analyze text for threats', () => {

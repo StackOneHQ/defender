@@ -433,7 +433,7 @@ export class ToolResultSanitizer {
 	}
 
 	/**
-	 * Create cumulative risk tracker
+	 * Create a cumulative risk tracker using the configured cumulative risk thresholds.
 	 */
 	private createCumulativeRiskTracker(): CumulativeRiskTracker {
 		const thresholds = this.config.cumulativeRiskThresholds;
