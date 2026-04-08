@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.8](https://github.com/StackOneHQ/defender/compare/defender-v0.5.7...defender-v0.5.8) (2026-04-08)
+
+
+### Bug Fixes
+
+* **ENG-12604:** chunk batch classification to bound ONNX memory usage ([#44](https://github.com/StackOneHQ/defender/issues/44)) ([46e6548](https://github.com/StackOneHQ/defender/commit/46e65483d87d1a26d503c345b3fdcc55dc800cc0))
+
 ## [0.5.7](https://github.com/StackOneHQ/defender/compare/defender-v0.5.6...defender-v0.5.7) (2026-04-08)
 
 
