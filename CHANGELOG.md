@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.7](https://github.com/StackOneHQ/defender/compare/defender-v0.5.6...defender-v0.5.7) (2026-04-08)
+
+
+### Bug Fixes
+
+* **ENG-12594:** remove per-tool sanitization rules ([#42](https://github.com/StackOneHQ/defender/issues/42)) ([eb4664b](https://github.com/StackOneHQ/defender/commit/eb4664bf73df26961ac5a9ab524a688be775ca6b))
+
 ## [0.5.6](https://github.com/StackOneHQ/defender/compare/defender-v0.5.5...defender-v0.5.6) (2026-04-01)
 
 
