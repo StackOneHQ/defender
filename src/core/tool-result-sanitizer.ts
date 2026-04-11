@@ -7,7 +7,7 @@
  */
 
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
-import { DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
+import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
 import { createSanitizer, type Sanitizer } from "../sanitizers/sanitizer";
 import type {
 	CumulativeRiskTracker,
@@ -281,6 +281,11 @@ export class ToolResultSanitizer {
 		const result: Record<string, SanitizableValue> = {};
 
 		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			const fieldContext = {
 				...context,

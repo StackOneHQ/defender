@@ -219,6 +219,8 @@ export interface SanitizationMetadata {
 	sizeMetrics: SizeMetrics;
 	/** Unique field names (leaf keys) that Tier 1 identified as risky */
 	riskyFieldNames: string[];
+	/** Paths of keys removed due to prototype pollution risk */
+	dangerousKeysRemoved?: string[];
 }
 
 /**

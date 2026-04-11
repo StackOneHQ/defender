@@ -5,6 +5,11 @@
 import type { PromptDefenseConfig, RiskyFieldConfig, TraversalConfig } from "./types";
 
 /**
+ * Keys that are blocked during object traversal to prevent prototype pollution
+ */
+export const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
  * Default risky field configuration
  */
 export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {
