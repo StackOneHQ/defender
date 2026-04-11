@@ -101,6 +101,15 @@ describe('ToolResultSanitizer', () => {
       expect(result.metadata.dangerousKeysRemoved).toContain('__proto__');
     });
 
+    it('should strip nested __proto__ inside non-data fields of paginated responses', () => {
+      const input = JSON.parse('{"data":[{"id":"1"}],"meta":{"__proto__":{"isAdmin":true}},"next":"cur"}');
+      const result = sanitizer.sanitize(input, { toolName: 'test_tool' });
+
+      const meta = (result.sanitized as Record<string, unknown>).meta as Record<string, unknown>;
+      expect(Object.hasOwn(meta, '__proto__')).toBe(false);
+      expect(result.metadata.dangerousKeysRemoved).toContain('meta.__proto__');
+    });
+
     it('should strip __proto__ from wrapped responses and record path in metadata', () => {
       const input = JSON.parse('{"results":[{"name":"Normal"}],"__proto__":{"isAdmin":true}}');
       const result = sanitizer.sanitize(input, { toolName: 'test_tool' });

@@ -315,27 +315,27 @@ export class ToolResultSanitizer {
 		metadata: SanitizationMetadata,
 		depth: number,
 	): Record<string, SanitizableValue> {
-		// Copy only safe keys to avoid spreading __proto__ into result
 		const result: Record<string, SanitizableValue> = {};
+		const dataKeys = new Set(["data", "results", "items", "records"]);
+
 		for (const [key, val] of Object.entries(obj)) {
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
 				continue;
 			}
-			result[key] = val;
-		}
 
-		// Find and sanitize the data array
-		const dataKeys = ["data", "results", "items", "records"];
-		for (const key of dataKeys) {
-			if (Array.isArray(obj[key])) {
-				const dataContext = {
-					...context,
-					path: `${context.path}.${key}`,
-				};
-				result[key] = this.sanitizeArray(obj[key] as SanitizableValue[], dataContext, metadata, depth + 1);
-				break;
+			const fieldContext = {
+				...context,
+				path: context.path ? `${context.path}.${key}` : key,
+				fieldName: key,
+			};
+
+			if (dataKeys.has(key) && Array.isArray(val)) {
+				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1);
+			} else {
+				// Recurse into non-data fields so nested dangerous keys are filtered too
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
 			}
 		}
 
