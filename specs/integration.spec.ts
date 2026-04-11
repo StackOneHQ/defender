@@ -83,6 +83,45 @@ describe('ToolResultSanitizer', () => {
     });
   });
 
+  describe('Prototype pollution prevention', () => {
+    it('should strip __proto__ own key from regular objects and record path in metadata', () => {
+      const input = JSON.parse('{"id":"1","__proto__":{"isAdmin":true,"role":"superadmin"}}');
+      const result = sanitizer.sanitize(input, { toolName: 'test_tool' });
+
+      expect(Object.hasOwn(result.sanitized as object, '__proto__')).toBe(false);
+      expect((result.sanitized as Record<string, unknown>).isAdmin).toBeUndefined();
+      expect(result.metadata.dangerousKeysRemoved).toContain('__proto__');
+    });
+
+    it('should strip __proto__ from paginated responses and record path in metadata', () => {
+      const input = JSON.parse('{"data":[{"id":"1"}],"next":"cur","__proto__":{"isAdmin":true}}');
+      const result = sanitizer.sanitize(input, { toolName: 'test_tool' });
+
+      expect(Object.hasOwn(result.sanitized as object, '__proto__')).toBe(false);
+      expect(result.metadata.dangerousKeysRemoved).toContain('__proto__');
+    });
+
+    it('should strip __proto__ from wrapped responses and record path in metadata', () => {
+      const input = JSON.parse('{"results":[{"name":"Normal"}],"__proto__":{"isAdmin":true}}');
+      const result = sanitizer.sanitize(input, { toolName: 'test_tool' });
+
+      expect(Object.hasOwn(result.sanitized as object, '__proto__')).toBe(false);
+      expect(result.metadata.dangerousKeysRemoved).toContain('__proto__');
+    });
+
+    it('should strip constructor and prototype keys', () => {
+      const input = JSON.parse('{"id":"1","constructor":{"exploit":true},"prototype":{"exploit":true}}');
+      const result = sanitizer.sanitize(input, { toolName: 'test_tool' });
+
+      const sanitized = result.sanitized as Record<string, unknown>;
+      expect(Object.hasOwn(sanitized, 'constructor')).toBe(false);
+      expect(Object.hasOwn(sanitized, 'prototype')).toBe(false);
+      expect(result.metadata.dangerousKeysRemoved).toEqual(
+        expect.arrayContaining(['constructor', 'prototype']),
+      );
+    });
+  });
+
   describe('Paginated response handling', () => {
     it('should handle paginated responses', () => {
       const input = {

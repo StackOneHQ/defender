@@ -315,7 +315,16 @@ export class ToolResultSanitizer {
 		metadata: SanitizationMetadata,
 		depth: number,
 	): Record<string, SanitizableValue> {
-		const result: Record<string, SanitizableValue> = { ...obj };
+		// Copy only safe keys to avoid spreading __proto__ into result
+		const result: Record<string, SanitizableValue> = {};
+		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
+			result[key] = val;
+		}
 
 		// Find and sanitize the data array
 		const dataKeys = ["data", "results", "items", "records"];
@@ -345,6 +354,11 @@ export class ToolResultSanitizer {
 		const result: Record<string, SanitizableValue> = {};
 
 		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			const fieldContext = {
 				...context,
