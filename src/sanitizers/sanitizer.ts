@@ -118,6 +118,10 @@ export class Sanitizer {
 		const methodsApplied: SanitizationMethod[] = [];
 		const patternsRemoved: string[] = [];
 
+		// Step 0: Strip spoofed boundary tags so they cannot split patterns
+		// and evade detection in later steps.
+		result = stripBoundaryPatterns(result);
+
 		// Step 1: Unicode normalization (always for medium+ or if configured)
 		if (this.config.alwaysNormalize || riskLevel !== "low") {
 			result = normalizeUnicode(result);
@@ -156,7 +160,6 @@ export class Sanitizer {
 		// Step 5: Boundary annotation (always if configured, or medium+ risk)
 		if (this.config.alwaysAnnotate || riskLevel !== "low") {
 			const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
-			result = stripBoundaryPatterns(result);
 			result = wrapWithBoundary(result, boundaryToUse);
 			methodsApplied.push("boundary_annotation");
 		}
@@ -179,7 +182,7 @@ export class Sanitizer {
 		boundary?: DataBoundary,
 		riskLevel: RiskLevel = "medium",
 	): FieldSanitizationResult {
-		let result = text;
+		let result = stripBoundaryPatterns(text);
 		const methodsApplied: SanitizationMethod[] = [];
 		const patternsRemoved: string[] = [];
 
@@ -212,7 +215,6 @@ export class Sanitizer {
 
 				case "boundary_annotation": {
 					const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
-					result = stripBoundaryPatterns(result);
 					result = wrapWithBoundary(result, boundaryToUse);
 					methodsApplied.push(method);
 					break;
