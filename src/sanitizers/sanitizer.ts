@@ -210,13 +210,13 @@ export class Sanitizer {
 					methodsApplied.push(method);
 					break;
 
-			case "boundary_annotation": {
-				const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
-				result = stripBoundaryPatterns(result);
-				result = wrapWithBoundary(result, boundaryToUse);
-				methodsApplied.push(method);
-				break;
-			}
+				case "boundary_annotation": {
+					const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
+					result = stripBoundaryPatterns(result);
+					result = wrapWithBoundary(result, boundaryToUse);
+					methodsApplied.push(method);
+					break;
+				}
 			}
 		}
 

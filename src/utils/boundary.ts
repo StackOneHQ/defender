@@ -78,9 +78,7 @@ export function containsBoundaryPatterns(content: string): boolean {
  * Defender's authentic boundary.
  */
 export function stripBoundaryPatterns(content: string): string {
-	return content
-		.replace(/\[\/?UD-[A-Za-z0-9_-]+\]/g, "")
-		.replace(/<\/?user-data-[A-Za-z0-9_-]+>/g, "");
+	return content.replace(/\[\/?UD-[A-Za-z0-9_-]+\]/g, "").replace(/<\/?user-data-[A-Za-z0-9_-]+>/g, "");
 }
 
 /**
