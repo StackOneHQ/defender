@@ -64,11 +64,23 @@ export function wrapWithBoundary(content: string, boundary: DataBoundary): strin
  * @returns Whether boundary patterns were detected
  */
 export function containsBoundaryPatterns(content: string): boolean {
-	// Check for our boundary pattern
 	const boundaryPattern = /\[UD-[A-Za-z0-9_-]+\]|\[\/UD-[A-Za-z0-9_-]+\]/;
 	const xmlBoundaryPattern = /<user-data-[A-Za-z0-9_-]+>|<\/user-data-[A-Za-z0-9_-]+>/;
 
 	return boundaryPattern.test(content) || xmlBoundaryPattern.test(content);
+}
+
+/**
+ * Strip any boundary-like patterns from content to prevent spoofing.
+ *
+ * Must be called **before** wrapping with the real boundary so that
+ * attacker-supplied tags like `[UD-TRUSTED]` cannot nest inside
+ * Defender's authentic boundary.
+ */
+export function stripBoundaryPatterns(content: string): string {
+	return content
+		.replace(/\[\/?UD-[A-Za-z0-9_-]+\]/g, "")
+		.replace(/<\/?user-data-[A-Za-z0-9_-]+>/g, "");
 }
 
 /**

@@ -6,7 +6,7 @@
  */
 
 import type { DataBoundary, FieldSanitizationResult, RiskLevel, SanitizationMethod } from "../types";
-import { generateDataBoundary, wrapWithBoundary } from "../utils/boundary";
+import { generateDataBoundary, stripBoundaryPatterns, wrapWithBoundary } from "../utils/boundary";
 import { containsSuspiciousEncoding, redactAllEncoding } from "./encoding-detector";
 import { containsSuspiciousUnicode, normalizeUnicode } from "./normalizer";
 import { removePatterns } from "./pattern-remover";
@@ -156,6 +156,7 @@ export class Sanitizer {
 		// Step 5: Boundary annotation (always if configured, or medium+ risk)
 		if (this.config.alwaysAnnotate || riskLevel !== "low") {
 			const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
+			result = stripBoundaryPatterns(result);
 			result = wrapWithBoundary(result, boundaryToUse);
 			methodsApplied.push("boundary_annotation");
 		}
@@ -209,12 +210,13 @@ export class Sanitizer {
 					methodsApplied.push(method);
 					break;
 
-				case "boundary_annotation": {
-					const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
-					result = wrapWithBoundary(result, boundaryToUse);
-					methodsApplied.push(method);
-					break;
-				}
+			case "boundary_annotation": {
+				const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
+				result = stripBoundaryPatterns(result);
+				result = wrapWithBoundary(result, boundaryToUse);
+				methodsApplied.push(method);
+				break;
+			}
 			}
 		}
 
