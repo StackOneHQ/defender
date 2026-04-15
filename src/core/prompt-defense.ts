@@ -14,6 +14,7 @@ import {
 import { createConfig } from "../config";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
+import { stripBoundaryPatterns } from "../utils/boundary";
 
 /**
  * Result from defendToolResult() - the primary high-level API.
@@ -220,33 +221,62 @@ export class PromptDefense {
 
 		// Tier 2: sentence-level ML classification on raw (unsanitized) value
 		let tier2Score: number | undefined;
+		let tier2AdjustedScore: number | undefined; // internal only — drives risk level, not returned
 		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			// Use explicit tier2Fields override, or fall back to the risky field names
-			// identified by Tier 1. If neither is available, scan all strings.
-			const { riskyFieldNames } = sanitized.metadata;
-			const fieldsForTier2 = this.tier2Fields ?? (riskyFieldNames.length > 0 ? riskyFieldNames : undefined);
-			const strings = extractStrings(value, fieldsForTier2);
+			// Use explicit tier2Fields if provided; otherwise scan all strings.
+			const fieldsForTier2 = this.tier2Fields;
+			const strings = extractStrings(value, fieldsForTier2).map(stripBoundaryPatterns);
 			const combinedText = strings.join("\n\n");
 
 			if (combinedText.length > 0) {
 				const tier2Result = await this.tier2Classifier.classifyBySentence(combinedText);
 				if (!tier2Result.skipped) {
 					tier2Score = tier2Result.score;
-					tier2Risk = this.tier2Classifier.getRiskLevel(tier2Result.score);
 					maxSentence = tier2Result.maxSentence;
+
+					// Density adjustment: penalise isolated high-scoring sentences in mostly-benign text.
+					// A single imperative sentence ("Check activity") in a 5-sentence security email
+					// should not trigger the same risk as a fully malicious payload.
+					//
+					// effectiveScore = maxScore × sqrt(highCount / totalCount)
+					//   highCount  = sentences scoring above DENSITY_SUB_THRESHOLD
+					//   totalCount = all classified sentences
+					//
+					// Examples:
+					//   Real injection (2/2 very-high): 0.997 × sqrt(2/2) = 0.997 → high ✓
+					//   Security alert (1/3 very-high ≥ 0.9): 0.988 × sqrt(1/3) = 0.570 → medium ✓
+					//   Sentence scoring 0.91 ("Authenticator app added as sign-in step")
+					//   stays below the 0.9 threshold, so does not inflate the injection count.
+					const DENSITY_SUB_THRESHOLD = 0.9;
+					const sentenceScores = tier2Result.sentenceScores ?? [];
+					const totalCount = sentenceScores.length;
+					if (totalCount > 2) {
+						// 3+ sentences: enough context for meaningful density signal.
+						// Penalise isolated high-scoring sentences in largely benign text
+						// (e.g. "Check and secure your account now." in a 3-sentence Google alert).
+						// Short texts (1-2 sentences) are left unadjusted — a 2-sentence injection
+						// ("Ignore all instructions. Do X.") would be unfairly penalised because
+						// its density is mathematically identical to a lone FP sentence.
+						const highCount = sentenceScores.filter((s) => s.score >= DENSITY_SUB_THRESHOLD).length;
+						const densityFactor = Math.sqrt(highCount / totalCount);
+						const effective = tier2Score * densityFactor;
+						tier2AdjustedScore = effective;
+						tier2Risk = this.tier2Classifier.getRiskLevel(effective);
+					} else {
+						// 1-2 sentences — no meaningful density signal; use raw score
+						tier2Risk = this.tier2Classifier.getRiskLevel(tier2Score);
+					}
 				} else {
 					tier2SkipReason = tier2Result.skipReason;
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
-					: riskyFieldNames.length > 0
-						? "No strings found in Tier 1 risky fields"
-						: "No strings extracted from tool result";
+					: "No strings extracted from tool result";
 			}
 		}
 
@@ -259,10 +289,13 @@ export class PromptDefense {
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
 		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
 		// that may fire without adding named pattern detections, so we include it here.
+		// Use adjusted score for threat detection when available (density-penalised);
+		// fall back to raw score for single-sentence results where no adjustment was applied.
+		const effectiveTier2Score = tier2AdjustedScore ?? tier2Score;
 		const hasThreats =
 			detections.length > 0 ||
 			fieldsSanitized.length > 0 ||
-			(tier2Score !== undefined && tier2Score >= this.config.tier2.highRiskThreshold);
+			(effectiveTier2Score !== undefined && effectiveTier2Score >= this.config.tier2.highRiskThreshold);
 
 		// Three cases for allowed:
 		// 1. blockHighRisk is off → always allow
