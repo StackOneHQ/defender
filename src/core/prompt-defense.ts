@@ -227,8 +227,10 @@ export class PromptDefense {
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			// Use explicit tier2Fields if provided; otherwise scan all strings.
-			const fieldsForTier2 = this.tier2Fields;
+			// Use explicit tier2Fields override, or fall back to the risky field names
+			// identified by Tier 1. If neither is available, scan all strings.
+			const { riskyFieldNames } = sanitized.metadata;
+			const fieldsForTier2 = this.tier2Fields ?? (riskyFieldNames.length > 0 ? riskyFieldNames : undefined);
 			const strings = extractStrings(value, fieldsForTier2).map(stripBoundaryPatterns);
 			const combinedText = strings.join("\n\n");
 
@@ -243,14 +245,14 @@ export class PromptDefense {
 					// should not trigger the same risk as a fully malicious payload.
 					//
 					// effectiveScore = maxScore × sqrt(highCount / totalCount)
-					//   highCount  = sentences scoring above DENSITY_SUB_THRESHOLD
+					//   highCount  = sentences scoring >= DENSITY_SUB_THRESHOLD
 					//   totalCount = all classified sentences
 					//
 					// Examples:
 					//   Real injection (2/2 very-high): 0.997 × sqrt(2/2) = 0.997 → high ✓
 					//   Security alert (1/3 very-high ≥ 0.9): 0.988 × sqrt(1/3) = 0.570 → medium ✓
-					//   Sentence scoring 0.91 ("Authenticator app added as sign-in step")
-					//   stays below the 0.9 threshold, so does not inflate the injection count.
+					//   "Authenticator app added as sign-in step" scores ~0.51 — below the 0.9 threshold,
+					//   so does not inflate highCount.
 					const DENSITY_SUB_THRESHOLD = 0.9;
 					const sentenceScores = tier2Result.sentenceScores ?? [];
 					const totalCount = sentenceScores.length;
@@ -261,11 +263,19 @@ export class PromptDefense {
 						// Short texts (1-2 sentences) are left unadjusted — a 2-sentence injection
 						// ("Ignore all instructions. Do X.") would be unfairly penalised because
 						// its density is mathematically identical to a lone FP sentence.
+						//
+						// Only apply density when at least one sentence exceeds the threshold.
+						// If highCount === 0, sqrt(0) = 0 would zero out any non-trivial raw score.
 						const highCount = sentenceScores.filter((s) => s.score >= DENSITY_SUB_THRESHOLD).length;
-						const densityFactor = Math.sqrt(highCount / totalCount);
-						const effective = tier2Score * densityFactor;
-						tier2AdjustedScore = effective;
-						tier2Risk = this.tier2Classifier.getRiskLevel(effective);
+						if (highCount > 0) {
+							const densityFactor = Math.sqrt(highCount / totalCount);
+							const effective = tier2Score * densityFactor;
+							tier2AdjustedScore = effective;
+							tier2Risk = this.tier2Classifier.getRiskLevel(effective);
+						} else {
+							// No sentence above threshold — density would zero out the score; use raw
+							tier2Risk = this.tier2Classifier.getRiskLevel(tier2Score);
+						}
 					} else {
 						// 1-2 sentences — no meaningful density signal; use raw score
 						tier2Risk = this.tier2Classifier.getRiskLevel(tier2Score);
@@ -276,7 +286,9 @@ export class PromptDefense {
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
-					: "No strings extracted from tool result";
+					: riskyFieldNames.length > 0
+						? "No strings found in Tier 1 risky fields"
+						: "No strings extracted from tool result";
 			}
 		}
 
