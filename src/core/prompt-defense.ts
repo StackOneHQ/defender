@@ -13,8 +13,8 @@ import {
 } from "../classifiers/tier2-classifier";
 import { createConfig } from "../config";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
-import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 import { stripBoundaryPatterns } from "../utils/boundary";
+import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
 /**
  * Result from defendToolResult() - the primary high-level API.
