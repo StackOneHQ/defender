@@ -57,6 +57,24 @@ export function wrapWithBoundary(content: string, boundary: DataBoundary): strin
 }
 
 /**
+ * Strip boundary tags from a string before ML classification.
+ *
+ * Boundary tags like [UD-xyz]...[/UD-xyz] corrupt per-sentence model scores
+ * because the tokenizer treats the tag text as part of the sentence.
+ *
+ * @param content - Content that may contain boundary tags
+ * @returns Content with all boundary tags removed
+ */
+export function stripBoundaryPatterns(content: string): string {
+	return content
+		.replace(/\[UD-[A-Za-z0-9_-]+\]/g, "")
+		.replace(/\[\/UD-[A-Za-z0-9_-]+\]/g, "")
+		.replace(/<user-data-[A-Za-z0-9_-]+>/g, "")
+		.replace(/<\/user-data-[A-Za-z0-9_-]+>/g, "")
+		.trim();
+}
+
+/**
  * Check if a string contains any boundary-like patterns
  * Used to detect potential boundary spoofing attempts
  *
