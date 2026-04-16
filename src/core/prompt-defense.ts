@@ -227,10 +227,11 @@ export class PromptDefense {
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			// Use explicit tier2Fields override, or fall back to the risky field names
-			// identified by Tier 1. If neither is available, scan all strings.
-			const { riskyFieldNames } = sanitized.metadata;
-			const fieldsForTier2 = this.tier2Fields ?? (riskyFieldNames.length > 0 ? riskyFieldNames : undefined);
+			// Use explicit tier2Fields if provided; otherwise scan all strings.
+			// Restricting to Tier 1 riskyFieldNames would create a coverage gap: injections
+			// in fields not covered by tool rules would bypass Tier 2 entirely while still
+			// being visible to the LLM. Scanning all strings is the safe default.
+			const fieldsForTier2 = this.tier2Fields;
 			const strings = extractStrings(value, fieldsForTier2).map(stripBoundaryPatterns);
 			const combinedText = strings.join("\n\n");
 
@@ -286,9 +287,7 @@ export class PromptDefense {
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
-					: riskyFieldNames.length > 0
-						? "No strings found in Tier 1 risky fields"
-						: "No strings extracted from tool result";
+					: "No strings extracted from tool result";
 			}
 		}
 

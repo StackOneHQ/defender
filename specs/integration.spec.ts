@@ -447,9 +447,10 @@ describe('#PromptDefense extractStrings field filtering', () => {
       }, 60000);
     });
 
-    describe('when riskyFieldNames fallback is used', () => {
-      it('restricts tier2 to fields identified as risky by tier1', async () => {
-        // arrange — "snippet" is a risky field for gmail_*
+    describe('when tier2Fields is not set (scan all strings)', () => {
+      it('detects injection in fields not covered by tool rules', async () => {
+        // Tier 2 scans all strings by default, not just riskyFieldNames.
+        // This ensures injections in unlisted fields are still caught.
         const defense = createPromptDefense({
           enableTier1: true,
           enableTier2: true,
@@ -467,7 +468,8 @@ describe('#PromptDefense extractStrings field filtering', () => {
         // act
         const actual = await defense.defendToolResult(input, 'gmail_get_message');
 
-        // assert — should classify snippet, not DKIM/ARC strings
+        // assert — injection in snippet scores high even with benign strings also scanned;
+        // classifyBySentence takes the max score across all sentences
         expect(actual.tier2Score).toBeDefined();
         expect(actual.tier2Score!).toBeGreaterThan(0.5);
       }, 60000);
