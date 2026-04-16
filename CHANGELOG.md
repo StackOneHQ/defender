@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/StackOneHQ/defender/compare/defender-v0.5.8...defender-v0.6.0) (2026-04-16)
+
+
+### Features
+
+* **ENG-12658:** sentence density adjustment to reduce email notification FPs ([#50](https://github.com/StackOneHQ/defender/issues/50)) ([b4a272d](https://github.com/StackOneHQ/defender/commit/b4a272d69d949ec7c1c0cc4f010703ad81b283c5))
+
+
+### Bug Fixes
+
+* **ENG-12643:** prevent prototype pollution during object traversal ([#47](https://github.com/StackOneHQ/defender/issues/47)) ([97f85b7](https://github.com/StackOneHQ/defender/commit/97f85b7512fe33415123aa1f7761ccca8cb39fa4))
+
 ## [0.5.8](https://github.com/StackOneHQ/defender/compare/defender-v0.5.7...defender-v0.5.8) (2026-04-08)
 
 
