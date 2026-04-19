@@ -26,7 +26,7 @@
         "build": "tsdown --env.NODE_ENV=production --minify && npm run copy-models",
         "prebuild:dev": "npm run clean",
         "build:dev": "tsdown --env.NODE_ENV=development && npm run copy-models",
-        "copy-models": "node -e \"const{cpSync,mkdirSync,existsSync}=require('fs'),s='src/classifiers/models/minilm-full-aug',d='dist/models/minilm-full-aug';existsSync(s)?(mkdirSync(d,{recursive:true}),cpSync(s,d,{recursive:true}),console.log('Copied ONNX models to dist/models/')):console.warn('ONNX models not found at',s)\"",
+        "copy-models": "node -e \"const{cpSync,mkdirSync,existsSync,copyFileSync}=require('fs');const s='src/classifiers/models/minilm-full-aug',d='dist/models/minilm-full-aug';if(existsSync(s)){mkdirSync(d,{recursive:true});cpSync(s,d,{recursive:true});console.log('Copied ONNX models to dist/models/')}else{console.warn('ONNX models not found at',s)};const ms='src/sfe/model.ftz',md='dist/sfe/model.ftz';if(existsSync(ms)){mkdirSync('dist/sfe',{recursive:true});copyFileSync(ms,md);console.log('Copied SFE FastText model to dist/sfe/')}else{console.warn('SFE model not found at',ms)}\"",
         "code:format": "biome format ./src",
         "code:format:fix": "biome format --write ./src",
         "code:lint": "biome lint --error-on-warnings ./src",
@@ -56,6 +56,7 @@
     "devDependencies": {
         "@biomejs/biome": "^2.4.5",
         "@huggingface/transformers": "3.8.1",
+        "fasttext.wasm": "^1.0.1",
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",
         "tsdown": "^0.21.0-beta.2",
@@ -64,10 +65,14 @@
     },
     "peerDependencies": {
         "@huggingface/transformers": "^3.0.0",
+        "fasttext.wasm": "^1.0.0",
         "onnxruntime-node": ">=1.16.0"
     },
     "peerDependenciesMeta": {
         "@huggingface/transformers": {
+            "optional": true
+        },
+        "fasttext.wasm": {
             "optional": true
         },
         "onnxruntime-node": {

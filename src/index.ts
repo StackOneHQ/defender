@@ -24,6 +24,14 @@ export {
 	PromptDefense,
 	type PromptDefenseOptions,
 } from "./core/prompt-defense";
-
+// SFE preprocessor (off by default; opt in via PromptDefenseOptions.useSfe)
+export {
+	getDefaultPredictor,
+	getDefaultSfeModelPath,
+	type SfePredictor,
+	type SfePreprocessOptions,
+	type SfePreprocessResult,
+	sfePreprocess,
+} from "./sfe/preprocess";
 // Types
 export type { RiskLevel, Tier1Result } from "./types";

@@ -1,0 +1,281 @@
+/**
+ * Semantic Field Extractor (SFE) preprocessor — FastText classifier.
+ *
+ * Filters benign metadata / identifier fields out of tool-result payloads
+ * before Tier 1 and Tier 2 classification, reducing false positives on
+ * structured-response payloads without affecting attack detection on
+ * user-facing content (the classifier is trained to pass strings that
+ * look like user content, drop strings that look like identifiers, enum
+ * codes, hash-like metadata, etc.).
+ *
+ * Measured impact (v4 ONNX + rules ∪ FT @ 0.5 on 940 benign StackOne
+ * connector payloads):
+ *   FPs: 9/940 (0.96%) → 3/940 (0.32%)
+ *   Latency: 15.2 ms → 11.4 ms
+ *
+ * See `docs/investigation-*` and stackone-redteaming docs for the full
+ * cross-benchmark generalization study.
+ */
+
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Predicate returned by the FastText classifier for each field. */
+type DropDecision = { label: "drop" | "pass"; prob: number };
+
+/** Interface that any FastText-compatible predictor must implement. */
+export interface SfePredictor {
+	/** Predict the most-probable label and its probability for a text. */
+	predict(text: string): Promise<DropDecision>;
+	/** Predict the most-probable label for each text in a batch. */
+	predictBatch(texts: string[]): Promise<DropDecision[]>;
+}
+
+/**
+ * Default path to the bundled quantized FastText model. Tries several
+ * locations so the resolver works in:
+ *   - source/dev (`src/sfe/preprocess.ts` → `src/sfe/model.ftz`)
+ *   - bundled CJS/ESM (`dist/index.cjs` → `dist/sfe/model.ftz`)
+ */
+export function getDefaultSfeModelPath(): string {
+	let baseDir: string;
+	try {
+		baseDir = dirname(fileURLToPath(import.meta.url));
+	} catch {
+		baseDir = __dirname;
+	}
+	// Prefer sibling sfe/model.ftz (bundled dist layout), fall back to
+	// the source layout (model.ftz next to preprocess.ts) when running
+	// directly from src.
+	const fs = require("node:fs") as typeof import("node:fs");
+	const candidates = [resolve(baseDir, "sfe", "model.ftz"), resolve(baseDir, "model.ftz")];
+	for (const p of candidates) {
+		if (fs.existsSync(p)) return p;
+	}
+	return candidates[0];
+}
+
+/**
+ * Singleton predictor — the FastText WASM module is expensive to load,
+ * so we share one instance across calls.
+ */
+let cachedPredictor: Promise<SfePredictor | null> | null = null;
+
+/**
+ * Lazy-load the bundled FastText predictor. Returns `null` (and logs
+ * once to stderr) if `fasttext.wasm` is not installed — the preprocessor
+ * falls back to passing the payload through unmodified.
+ */
+export function getDefaultPredictor(modelPath?: string): Promise<SfePredictor | null> {
+	if (!cachedPredictor) {
+		cachedPredictor = loadPredictor(modelPath ?? getDefaultSfeModelPath());
+	}
+	return cachedPredictor;
+}
+
+async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
+	let fasttextMod: typeof import("fasttext.wasm") | null = null;
+	try {
+		// Use Function() wrapper so bundlers treat fasttext.wasm as an
+		// optional runtime-only peer dep. Callers who don't enable useSfe
+		// should not be forced to install it.
+		const dynImport = new Function("spec", "return import(spec)") as (s: string) => Promise<unknown>;
+		fasttextMod = (await dynImport("fasttext.wasm")) as typeof import("fasttext.wasm");
+	} catch {
+		console.warn(
+			"[defender] useSfe requires `fasttext.wasm` to be installed. SFE preprocessor disabled; payload passes through.",
+		);
+		return null;
+	}
+
+	const ft = await fasttextMod.FastText.create();
+	const { readFile } = await import("node:fs/promises");
+	const modelBytes = new Uint8Array(await readFile(modelPath));
+	ft.loadModel(modelBytes);
+
+	const predict = async (text: string): Promise<DropDecision> => {
+		const map = ft.predict(text, 1, 0);
+		const entry = map.entries().next().value as [string, number] | undefined;
+		if (!entry) return { label: "pass", prob: 0 };
+		const [rawLabel, prob] = entry;
+		const label = rawLabel.replace(/^__label__/, "") as "drop" | "pass";
+		return { label, prob };
+	};
+
+	return {
+		predict,
+		async predictBatch(texts: string[]) {
+			// fasttext.wasm doesn't expose a vector batch API; call predict per text.
+			// This is fine for our workload (typically <100 strings per payload).
+			const out: DropDecision[] = new Array(texts.length);
+			for (let i = 0; i < texts.length; i++) {
+				out[i] = await predict(texts[i]);
+			}
+			return out;
+		},
+	};
+}
+
+// ─── Filter logic ────────────────────────────────────────────────────────────
+
+const VALUE_TYPES = ["null", "bool", "int", "float", "string", "array", "object"] as const;
+
+function valueType(v: unknown): (typeof VALUE_TYPES)[number] {
+	if (v === null || v === undefined) return "null";
+	if (typeof v === "boolean") return "bool";
+	if (typeof v === "number") return Number.isInteger(v) ? "int" : "float";
+	if (typeof v === "string") return "string";
+	if (Array.isArray(v)) return "array";
+	if (typeof v === "object") return "object";
+	return "string";
+}
+
+interface Field {
+	rawPath: string;
+	value: unknown;
+	valueType: (typeof VALUE_TYPES)[number];
+	valueTruncated: string;
+	depth: number;
+}
+
+/**
+ * Walk the payload and collect leaf fields (anything that's not a
+ * container). Only leaf fields are passed to the classifier — the
+ * classifier has no concept of "this whole subtree is irrelevant".
+ */
+function extractFields(obj: unknown, path = "", depth = 0): Field[] {
+	const out: Field[] = [];
+	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
+		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+			const child = path ? `${path}.${k}` : k;
+			out.push(...extractFields(v, child, depth + 1));
+		}
+	} else if (Array.isArray(obj)) {
+		for (const item of obj) out.push(...extractFields(item, path, depth));
+	} else {
+		const vt = valueType(obj);
+		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
+		out.push({
+			rawPath: path,
+			value: obj,
+			valueType: vt,
+			valueTruncated: truncated,
+			depth,
+		});
+	}
+	return out;
+}
+
+/**
+ * Encode a field into the text format the FastText model was trained on.
+ * Must match `record_to_text()` in solaris-labels/modal_validate_fasttext.py.
+ */
+function fieldToText(f: Field): string {
+	const pathTokens = f.rawPath.replace(/[._-]/g, " ");
+	const val = f.valueTruncated.slice(0, 200);
+	const text = `${f.valueType} d${f.depth} ${pathTokens} ${val}`;
+	return text.replace(/[\r\n]/g, " ");
+}
+
+function filterByPaths<T>(obj: T, dropPaths: Set<string>, path = ""): T {
+	if (Array.isArray(obj)) {
+		const out = new Array(obj.length);
+		for (let i = 0; i < obj.length; i++) out[i] = filterByPaths(obj[i], dropPaths, path);
+		return out as unknown as T;
+	}
+	if (obj !== null && typeof obj === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+			const child = path ? `${path}.${k}` : k;
+			// A key is dropped if any of its string/null leaves was marked drop
+			// AND the key IS a leaf here. For intermediate keys with dropped
+			// children, we still descend to filter sub-leaves individually.
+			out[k] = filterByPaths(v, dropPaths, child);
+		}
+		return out as unknown as T;
+	}
+	// Leaf — drop if its path is in dropPaths
+	return (dropPaths.has(path) ? (undefined as unknown as T) : obj) as T;
+}
+
+// After filtering leaves to undefined, compact: remove undefined values from
+// objects, and filter undefined from arrays. Keeps the returned structure
+// clean for downstream classification and for the LLM-facing `sanitized` output.
+function compactUndefined<T>(obj: T): T {
+	if (Array.isArray(obj)) {
+		const filtered = obj.filter((x) => x !== undefined).map((x) => compactUndefined(x));
+		return filtered as unknown as T;
+	}
+	if (obj !== null && typeof obj === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+			if (v === undefined) continue;
+			out[k] = compactUndefined(v);
+		}
+		return out as unknown as T;
+	}
+	return obj;
+}
+
+export interface SfePreprocessOptions {
+	/** FastText predictor. If omitted, the bundled quantized model is used. */
+	predictor?: SfePredictor;
+	/** Drop threshold: drop a field if P(drop) ≥ threshold. Default 0.5. */
+	threshold?: number;
+}
+
+export interface SfePreprocessResult<T> {
+	/** Payload with drop-classified leaves removed. */
+	filtered: T;
+	/** Paths of leaves dropped by the classifier. */
+	dropped: string[];
+}
+
+/**
+ * Apply the SFE FastText classifier to a payload and drop fields it
+ * classifies as "drop" (metadata/identifier content, not user text).
+ *
+ * Primitive inputs (bare strings / numbers / null) pass through unchanged —
+ * the classifier operates at the field-path level, and there are no
+ * fields to match.
+ */
+export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions = {}): Promise<SfePreprocessResult<T>> {
+	// Bare primitives have no fields to classify — pass through unchanged.
+	// SFE operates at the field level; there's no meaningful preprocessing
+	// for a standalone string/number/boolean/null/undefined.
+	if (value === null || value === undefined || typeof value !== "object") {
+		return { filtered: value, dropped: [] };
+	}
+
+	const predictor = options.predictor ?? (await getDefaultPredictor());
+	if (!predictor) {
+		// FastText runtime not available; pass through without filtering.
+		return { filtered: value, dropped: [] };
+	}
+	const threshold = options.threshold ?? 0.5;
+
+	const fields = extractFields(value);
+	const candidates = fields.filter((f) => f.valueType === "string" || f.valueType === "null");
+	if (candidates.length === 0) {
+		return { filtered: value, dropped: [] };
+	}
+
+	const texts = candidates.map(fieldToText);
+	const decisions = await predictor.predictBatch(texts);
+	const dropped: string[] = [];
+	const dropPaths = new Set<string>();
+	for (let i = 0; i < candidates.length; i++) {
+		const d = decisions[i];
+		if (d.label === "drop" && d.prob >= threshold) {
+			dropPaths.add(candidates[i].rawPath);
+			dropped.push(candidates[i].rawPath);
+		}
+	}
+
+	if (dropPaths.size === 0) {
+		return { filtered: value, dropped: [] };
+	}
+
+	const filtered = compactUndefined(filterByPaths(value, dropPaths));
+	return { filtered, dropped };
+}

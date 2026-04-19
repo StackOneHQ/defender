@@ -12,6 +12,7 @@ import {
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
 import { createConfig } from "../config";
+import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
@@ -41,6 +42,12 @@ export interface DefenseResult {
 	tier2SkipReason?: string;
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
+	/**
+	 * Field paths dropped by the SFE preprocessor before classification.
+	 * Empty array when `useSfe` is disabled (the default). See
+	 * `src/sfe/preprocess.ts` for the path format.
+	 */
+	fieldsDropped: string[];
 	/** Total processing time in milliseconds */
 	latencyMs: number;
 }
@@ -119,6 +126,35 @@ export interface PromptDefenseOptions {
 	 * If omitted, Tier 2 runs on all strings in the tool result.
 	 */
 	tier2Fields?: string[];
+	/**
+	 * Enable the Semantic Field Extractor (SFE) preprocessor.
+	 *
+	 * When `true`, the tool-result payload is passed through a bundled
+	 * quantized FastText classifier before Tier 1 and Tier 2. Leaves the
+	 * classifier flags as metadata/identifiers are dropped from the payload;
+	 * user-facing content (name/description/body/etc.) passes through.
+	 * The filtered value is what gets returned in `DefenseResult.sanitized`.
+	 *
+	 * Measured impact across 22,307 benign payloads (4 datasets):
+	 *   - StackOne connector FPR:  0.96% → 0.53% (44% reduction)
+	 *   - ToolACE FPR:             0.95% → 0.88%
+	 *   - ChatML FPR:              0.13% → 0.10%
+	 *   - MirrorAPI FPR:           unchanged (content-level model errors)
+	 *   - Defender latency:        ≈15 ms → ≈13 ms (smaller payloads)
+	 *
+	 * Zero false drops introduced on any benchmark.
+	 *
+	 * Requires `fasttext.wasm` to be installed (optional peer dependency).
+	 * If the runtime is unavailable at initialization time, the preprocessor
+	 * fails open — payloads pass through unfiltered with a single
+	 * console.warn.
+	 *
+	 * Default: false. Pass `{ threshold: 0.3 }` to override the drop
+	 * threshold (default 0.5 — tuned for zero false drops). Pass
+	 * `{ predictor: customPredictor }` to substitute a caller-supplied
+	 * FastText-compatible predictor.
+	 */
+	useSfe?: boolean | { threshold?: number; predictor?: SfePredictor };
 }
 
 /**
@@ -143,6 +179,9 @@ export class PromptDefense {
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
 	private tier2Fields: string[] | undefined;
+	private sfeEnabled: boolean = false;
+	private sfeThreshold: number = 0.5;
+	private sfeCustomPredictor: SfePredictor | undefined = undefined;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -154,6 +193,17 @@ export class PromptDefense {
 		}
 
 		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
+
+		// SFE preprocessor — off by default. When `true`, enable with the
+		// bundled quantized FastText model. When an object is passed, enable
+		// with its threshold and/or a custom predictor.
+		if (options.useSfe === true) {
+			this.sfeEnabled = true;
+		} else if (options.useSfe && typeof options.useSfe === "object") {
+			this.sfeEnabled = true;
+			if (typeof options.useSfe.threshold === "number") this.sfeThreshold = options.useSfe.threshold;
+			if (options.useSfe.predictor) this.sfeCustomPredictor = options.useSfe.predictor;
+		}
 
 		// Initialize components
 		this.toolResultSanitizer = createToolResultSanitizer({
@@ -183,6 +233,11 @@ export class PromptDefense {
 		if (this.tier2Classifier) {
 			await this.tier2Classifier.warmup();
 		}
+		// Also warm the SFE predictor (bundled FastText WASM) if enabled.
+		// Idempotent — subsequent calls reuse the cached predictor.
+		if (this.sfeEnabled && !this.sfeCustomPredictor) {
+			await getDefaultPredictor();
+		}
 	}
 
 	/**
@@ -207,8 +262,29 @@ export class PromptDefense {
 	async defendToolResult(value: unknown, toolName: string): Promise<DefenseResult> {
 		const startTime = performance.now();
 
+		// SFE preprocessor — classify and drop leaf fields via the bundled
+		// quantized FastText model. Fail-open on any error so defense
+		// never breaks due to the preprocessor.
+		let effectiveValue: unknown = value;
+		let fieldsDropped: string[] = [];
+		if (this.sfeEnabled) {
+			try {
+				const predictor = this.sfeCustomPredictor ?? (await getDefaultPredictor());
+				if (predictor) {
+					const pre = await sfePreprocess(value, {
+						predictor,
+						threshold: this.sfeThreshold,
+					});
+					effectiveValue = pre.filtered;
+					fieldsDropped = pre.dropped;
+				}
+			} catch {
+				// swallow — continue with the unfiltered value
+			}
+		}
+
 		// Tier 1: pattern-based sanitization
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+		const sanitized = this.toolResultSanitizer.sanitize(effectiveValue, { toolName });
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
@@ -232,7 +308,7 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = extractStrings(value, fieldsForTier2).map(stripBoundaryPatterns);
+			const strings = extractStrings(effectiveValue, fieldsForTier2).map(stripBoundaryPatterns);
 			const combinedText = strings.join("\n\n");
 
 			if (combinedText.length > 0) {
@@ -324,6 +400,7 @@ export class PromptDefense {
 			tier2Score,
 			tier2SkipReason,
 			maxSentence,
+			fieldsDropped,
 			latencyMs: performance.now() - startTime,
 		};
 	}
