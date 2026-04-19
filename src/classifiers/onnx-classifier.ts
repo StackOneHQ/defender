@@ -323,6 +323,32 @@ export class OnnxClassifier {
 	}
 
 	/**
+	 * Count tokens in a text WITHOUT truncation, including special tokens
+	 * ([CLS] and [SEP] for BERT-family). Used by Tier 2 packing to decide
+	 * whether a string fits within the model's max_length and to size
+	 * sentence chunks.
+	 */
+	countTokens(text: string): number {
+		if (!this.tokenizer) {
+			throw new Error("Tokenizer not loaded. Call loadModel() first.");
+		}
+		const encoded = this.tokenizer(text, {
+			padding: false,
+			truncation: false,
+			return_tensor: false,
+		});
+		const rawIds: bigint[] = Array.isArray(encoded.input_ids)
+			? (encoded.input_ids as bigint[][]).flat()
+			: (encoded.input_ids as { tolist: () => bigint[][] }).tolist().flat();
+		return rawIds.length;
+	}
+
+	/** Model's maximum input length (in tokens), including special tokens. */
+	getMaxLength(): number {
+		return this.maxLength;
+	}
+
+	/**
 	 * Tokenize a single text into BigInt64Arrays for ONNX Runtime.
 	 */
 	private tokenize(text: string): {

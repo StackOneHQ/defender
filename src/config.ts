@@ -75,9 +75,11 @@ export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
  * Default cumulative risk thresholds
  */
 export const DEFAULT_CUMULATIVE_RISK_THRESHOLDS = {
-	medium: 3, // 3+ medium-risk fields = escalate
-	high: 1, // 1+ high-risk field = escalate
-	patterns: 3, // 3+ suspicious patterns across fields = escalate
+	medium: 3, // Absolute minimum medium-risk fields
+	high: 1, // A single high-risk field still escalates
+	patterns: 3, // Absolute minimum suspicious patterns
+	mediumFraction: 0.25, // AND ≥25% of processed fields must be medium-risk
+	patternsFraction: 0.25, // AND ≥25% of processed fields must be pattern-flagged
 };
 
 /**

@@ -14,7 +14,6 @@ import {
 import { createConfig } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
-import { stripBoundaryPatterns } from "../utils/boundary";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
 /**
@@ -295,9 +294,9 @@ export class PromptDefense {
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
-		// Tier 2: sentence-level ML classification on raw (unsanitized) value
+		// Tier 2: packed-chunk ML classification on the (SFE-filtered) value.
 		let tier2Score: number | undefined;
-		let tier2AdjustedScore: number | undefined; // internal only — drives risk level, not returned
+		let tier2EffectiveScore: number | undefined;
 		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
@@ -308,57 +307,50 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = extractStrings(effectiveValue, fieldsForTier2).map(stripBoundaryPatterns);
-			const combinedText = strings.join("\n\n");
+			const strings = extractStrings(effectiveValue, fieldsForTier2).filter((s) => s.length > 0);
 
-			if (combinedText.length > 0) {
-				const tier2Result = await this.tier2Classifier.classifyBySentence(combinedText);
-				if (!tier2Result.skipped) {
-					tier2Score = tier2Result.score;
-					maxSentence = tier2Result.maxSentence;
+			if (strings.length > 0) {
+				// Classify each extracted string independently.
+				// Per-string (rather than joining all strings) keeps a benign metadata blob
+				// in one field from diluting a real injection in another field. Within a
+				// single string, classifyByChunks greedy-packs sentences so each inference
+				// sees as much cross-sentence context as fits in the model's max_length.
+				const perStringScores: number[] = [];
+				for (const str of strings) {
+					const result = await this.tier2Classifier.classifyByChunks(str);
+					if (result.skipped) continue;
+					perStringScores.push(result.score);
 
-					// Density adjustment: penalise isolated high-scoring sentences in mostly-benign text.
-					// A single imperative sentence ("Check activity") in a 5-sentence security email
-					// should not trigger the same risk as a fully malicious payload.
-					//
-					// effectiveScore = maxScore × sqrt(highCount / totalCount)
-					//   highCount  = sentences scoring >= DENSITY_SUB_THRESHOLD
-					//   totalCount = all classified sentences
-					//
-					// Examples:
-					//   Real injection (2/2 very-high): 0.997 × sqrt(2/2) = 0.997 → high ✓
-					//   Security alert (1/3 very-high ≥ 0.9): 0.988 × sqrt(1/3) = 0.570 → medium ✓
-					//   "Authenticator app added as sign-in step" scores ~0.51 — below the 0.9 threshold,
-					//   so does not inflate highCount.
-					const DENSITY_SUB_THRESHOLD = 0.9;
-					const sentenceScores = tier2Result.sentenceScores ?? [];
-					const totalCount = sentenceScores.length;
-					if (totalCount > 2) {
-						// 3+ sentences: enough context for meaningful density signal.
-						// Penalise isolated high-scoring sentences in largely benign text
-						// (e.g. "Check and secure your account now." in a 3-sentence Google alert).
-						// Short texts (1-2 sentences) are left unadjusted — a 2-sentence injection
-						// ("Ignore all instructions. Do X.") would be unfairly penalised because
-						// its density is mathematically identical to a lone FP sentence.
-						//
-						// Only apply density when at least one sentence exceeds the threshold.
-						// If highCount === 0, sqrt(0) = 0 would zero out any non-trivial raw score.
-						const highCount = sentenceScores.filter((s) => s.score >= DENSITY_SUB_THRESHOLD).length;
-						if (highCount > 0) {
-							const densityFactor = Math.sqrt(highCount / totalCount);
-							const effective = tier2Score * densityFactor;
-							tier2AdjustedScore = effective;
-							tier2Risk = this.tier2Classifier.getRiskLevel(effective);
-						} else {
-							// No sentence above threshold — density would zero out the score; use raw
-							tier2Risk = this.tier2Classifier.getRiskLevel(tier2Score);
-						}
-					} else {
-						// 1-2 sentences — no meaningful density signal; use raw score
-						tier2Risk = this.tier2Classifier.getRiskLevel(tier2Score);
+					// Track the globally highest raw score and the chunk that scored it.
+					if (tier2Score === undefined || result.score > tier2Score) {
+						tier2Score = result.score;
+						maxSentence = result.maxSentence;
 					}
+				}
+
+				// Cross-string density adjustment (mild). Applied only when we have
+				// 3+ strings — otherwise a 1- or 2-string payload is mathematically
+				// indistinguishable from a real attack that happens to be short, and
+				// damping it would create false negatives. For larger payloads, a
+				// lone high-scoring string surrounded by many benign strings is
+				// typical of benign connector responses (e.g. 100 pay schedules with
+				// one imperative descriptor). Damping with pow(highCount/total, 0.1)
+				// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
+				// attacks concentrated across multiple strings are barely affected.
+				tier2EffectiveScore = tier2Score;
+				const DENSITY_SUB_THRESHOLD = 0.75;
+				if (tier2Score !== undefined && perStringScores.length > 2) {
+					const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
+					if (highCount > 0) {
+						const factor = (highCount / perStringScores.length) ** 0.1;
+						tier2EffectiveScore = tier2Score * factor;
+					}
+				}
+
+				if (tier2EffectiveScore !== undefined) {
+					tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 				} else {
-					tier2SkipReason = tier2Result.skipReason;
+					tier2SkipReason = "All strings skipped by classifier";
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
@@ -376,13 +368,10 @@ export class PromptDefense {
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
 		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
 		// that may fire without adding named pattern detections, so we include it here.
-		// Use adjusted score for threat detection when available (density-penalised);
-		// fall back to raw score for single-sentence results where no adjustment was applied.
-		const effectiveTier2Score = tier2AdjustedScore ?? tier2Score;
 		const hasThreats =
 			detections.length > 0 ||
 			fieldsSanitized.length > 0 ||
-			(effectiveTier2Score !== undefined && effectiveTier2Score >= this.config.tier2.highRiskThreshold);
+			(tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold);
 
 		// Three cases for allowed:
 		// 1. blockHighRisk is off → always allow

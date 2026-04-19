@@ -222,6 +222,185 @@ export class Tier2Classifier {
 	}
 
 	/**
+	 * Classify text using sentence-packed chunks.
+	 *
+	 * Fast path: if the full text fits in the model's max_length, classify as
+	 * one inference — preserves full cross-sentence context.
+	 *
+	 * Long-text path: sentences are split and greedy-packed into chunks, each
+	 * fitting within max_length. Max score across chunks is returned. Within
+	 * each chunk, the model retains cross-sentence context — so roleplay /
+	 * payload-splitting / multi-agent attacks that span multiple sentences
+	 * are detected (unlike per-sentence classification which loses context).
+	 */
+	async classifyByChunks(text: string): Promise<
+		Tier2Result & {
+			maxSentence?: string;
+			sentenceScores?: Array<{ sentence: string; score: number }>;
+		}
+	> {
+		const startTime = performance.now();
+
+		if (text.length < this.config.minTextLength) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: "Text below minTextLength",
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		const modelMaxLen = this.onnxClassifier.getMaxLength();
+
+		// countTokens requires the tokenizer loaded; classify auto-loads, so
+		// warm up here to mirror that behaviour for the packing path.
+		try {
+			await this.onnxClassifier.warmup();
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Warmup error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		let totalTokens: number;
+		try {
+			totalTokens = this.onnxClassifier.countTokens(text);
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Token count error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		// Fast path: full text fits — classify as-is, preserving full context.
+		if (totalTokens <= modelMaxLen) {
+			let score: number;
+			try {
+				score = await this.onnxClassifier.classify(text);
+			} catch (err) {
+				return {
+					score: 0,
+					confidence: 0,
+					skipped: true,
+					skipReason: `Classification error: ${err instanceof Error ? err.message : String(err)}`,
+					latencyMs: performance.now() - startTime,
+				};
+			}
+			const safeScore = Number.isFinite(score) ? score : 0;
+			return {
+				score: safeScore,
+				confidence: Math.abs(safeScore - 0.5) * 2,
+				skipped: false,
+				maxSentence: text,
+				sentenceScores: [{ sentence: text, score: safeScore }],
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		// Long-text path: pack sentences into chunks that fit in modelMaxLen.
+		// Reserve 2 tokens per chunk for [CLS] + [SEP].
+		const maxContentTokens = modelMaxLen - 2;
+
+		const sentences = this.splitIntoSentences(text).filter((s) => s.length >= this.config.minTextLength);
+		if (sentences.length === 0) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: "No classifiable sentences",
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		const chunks = this.packSentences(sentences, maxContentTokens);
+		let scores: number[];
+		try {
+			scores = await this.onnxClassifier.classifyBatch(chunks);
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Classification error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		let maxScore = 0;
+		let maxChunk = "";
+		const chunkScores: Array<{ sentence: string; score: number }> = [];
+		for (let i = 0; i < scores.length; i++) {
+			const raw = scores[i];
+			const s = Number.isFinite(raw) ? raw : 0;
+			const chunk = chunks[i] ?? "";
+			chunkScores.push({ sentence: chunk, score: s });
+			if (s > maxScore) {
+				maxScore = s;
+				maxChunk = chunk;
+			}
+		}
+
+		return {
+			score: maxScore,
+			confidence: Math.abs(maxScore - 0.5) * 2,
+			skipped: false,
+			maxSentence: maxChunk,
+			sentenceScores: chunkScores,
+			latencyMs: performance.now() - startTime,
+		};
+	}
+
+	/**
+	 * Greedy sentence packer — returns chunks each fitting within maxContentTokens.
+	 * Sentences exceeding maxContentTokens become their own chunk and are
+	 * truncated by the tokenizer at inference (best effort on pathological input).
+	 */
+	private packSentences(sentences: string[], maxContentTokens: number): string[] {
+		const chunks: string[] = [];
+		let current: string[] = [];
+		let currentTokens = 0;
+
+		for (const s of sentences) {
+			const sTokens = this.onnxClassifier.countTokens(s);
+			// countTokens includes [CLS]+[SEP]; subtract to get content cost when packing.
+			const sContentTokens = Math.max(0, sTokens - 2);
+
+			if (sContentTokens > maxContentTokens) {
+				if (current.length > 0) {
+					chunks.push(current.join(" "));
+					current = [];
+					currentTokens = 0;
+				}
+				chunks.push(s);
+				continue;
+			}
+
+			const joinerCost = current.length > 0 ? 1 : 0;
+			if (currentTokens + sContentTokens + joinerCost > maxContentTokens) {
+				chunks.push(current.join(" "));
+				current = [s];
+				currentTokens = sContentTokens;
+			} else {
+				current.push(s);
+				currentTokens += sContentTokens + joinerCost;
+			}
+		}
+
+		if (current.length > 0) {
+			chunks.push(current.join(" "));
+		}
+		return chunks;
+	}
+
+	/**
 	 * Split text into sentences for granular analysis.
 	 * Uses multiple strategies to handle various text formats.
 	 */

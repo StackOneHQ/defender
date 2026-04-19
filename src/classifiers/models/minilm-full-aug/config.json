@@ -23,7 +23,7 @@
   "pad_token_id": 0,
   "position_embedding_type": "absolute",
   "tie_word_embeddings": true,
-  "transformers_version": "5.3.0",
+  "transformers_version": "5.5.4",
   "type_vocab_size": 2,
   "use_cache": true,
   "vocab_size": 30522

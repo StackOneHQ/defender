@@ -154,12 +154,16 @@ export interface CumulativeRiskTracker {
 	totalFieldsProcessed: number;
 	/** Thresholds for escalation */
 	escalationThreshold: {
-		/** Escalate to high if mediumRiskCount >= this */
+		/** Absolute minimum mediumRiskCount required to escalate */
 		medium: number;
 		/** Escalate to high if highRiskCount >= this */
 		high: number;
-		/** Escalate if suspiciousPatterns.length >= this */
+		/** Absolute minimum suspiciousPatterns.length required to escalate */
 		patterns: number;
+		/** Fraction of totalFieldsProcessed that must be medium-risk (e.g. 0.25 = 25%) */
+		mediumFraction: number;
+		/** Fraction of totalFieldsProcessed that must be pattern-flagged (e.g. 0.25 = 25%) */
+		patternsFraction: number;
 	};
 }
 
@@ -284,6 +288,8 @@ export interface PromptDefenseConfig {
 		medium: number;
 		high: number;
 		patterns: number;
+		mediumFraction: number;
+		patternsFraction: number;
 	};
 	/** Tier 2 configuration */
 	tier2: {
