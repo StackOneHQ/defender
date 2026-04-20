@@ -17,6 +17,7 @@
  * cross-benchmark generalization study.
  */
 
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DANGEROUS_KEYS } from "../config";
@@ -47,11 +48,11 @@ export function getDefaultSfeModelPath(): string {
 	}
 	// Prefer sibling sfe/model.ftz (bundled dist layout), fall back to
 	// the source layout (model.ftz next to preprocess.ts) when running
-	// directly from src.
-	const fs = require("node:fs") as typeof import("node:fs");
+	// directly from src. Uses the ESM-safe static import of `existsSync`
+	// (the previous `require("node:fs")` call threw in the ESM bundle).
 	const candidates = [resolve(baseDir, "sfe", "model.ftz"), resolve(baseDir, "model.ftz")];
 	for (const p of candidates) {
-		if (fs.existsSync(p)) return p;
+		if (existsSync(p)) return p;
 	}
 	return candidates[0];
 }
@@ -96,9 +97,19 @@ export function getDefaultPredictor(modelPath?: string): Promise<SfePredictor | 
 async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
 	let fasttextMod: typeof import("fasttext.wasm") | null = null;
 	try {
-		// Use Function() wrapper so bundlers treat fasttext.wasm as an
-		// optional runtime-only peer dep. Callers who don't enable useSfe
-		// should not be forced to install it.
+		// Wrap the dynamic import in a Function() so bundlers (tsdown /
+		// rollup / esbuild) DON'T statically resolve "fasttext.wasm" at
+		// bundle time. We need that behavior because `fasttext.wasm` is an
+		// optional peer dependency — callers who don't enable useSfe must
+		// not be forced to install it, and a static import would either
+		// hard-fail at bundle time or emit a resolver error at load time.
+		//
+		// Safety: the specifier is a hard-coded string literal
+		// ("fasttext.wasm"), NOT caller-supplied input. This pattern is
+		// semantically identical to `import("fasttext.wasm")` — the
+		// Function() indirection only exists to evade bundler static
+		// analysis. There is no dynamic code execution or user-controlled
+		// string passed to Function() / eval() elsewhere in this module.
 		const dynImport = new Function("spec", "return import(spec)") as (s: string) => Promise<unknown>;
 		fasttextMod = (await dynImport("fasttext.wasm")) as typeof import("fasttext.wasm");
 	} catch {

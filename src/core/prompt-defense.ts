@@ -241,8 +241,13 @@ export class PromptDefense {
 		if (this.sfeEnabled && !this.sfeCustomPredictor) {
 			try {
 				await getDefaultPredictor();
-			} catch {
-				// swallow — per-call path logs its own warning
+			} catch (err) {
+				// Fail open so the whole warmup doesn't reject. The per-call
+				// path logs its own warning, but emit here too for operators
+				// monitoring startup paths.
+				console.warn(
+					`[defender] SFE predictor warmup failed; preprocessor will be disabled. Reason: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}
 	}
@@ -285,8 +290,14 @@ export class PromptDefense {
 					effectiveValue = pre.filtered;
 					fieldsDropped = pre.dropped;
 				}
-			} catch {
-				// swallow — continue with the unfiltered value
+			} catch (err) {
+				// Fail open — continue with the unfiltered value so defense
+				// never breaks on a preprocessor failure. Log so operators
+				// can detect predictor regressions (e.g. WASM runtime
+				// transient failures, malformed payload) via telemetry.
+				console.warn(
+					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}
 
