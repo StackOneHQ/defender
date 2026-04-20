@@ -233,9 +233,17 @@ export class PromptDefense {
 			await this.tier2Classifier.warmup();
 		}
 		// Also warm the SFE predictor (bundled FastText WASM) if enabled.
-		// Idempotent — subsequent calls reuse the cached predictor.
+		// Idempotent — subsequent calls reuse the cached predictor. Fail
+		// open on any error (model missing, WASM init failure) — the
+		// preprocessor path already handles a null predictor by passing
+		// payloads through unfiltered, so a warmup failure must not
+		// propagate to callers and break their startup.
 		if (this.sfeEnabled && !this.sfeCustomPredictor) {
-			await getDefaultPredictor();
+			try {
+				await getDefaultPredictor();
+			} catch {
+				// swallow — per-call path logs its own warning
+			}
 		}
 	}
 

@@ -19,6 +19,7 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DANGEROUS_KEYS } from "../config";
 
 /** Predicate returned by the FastText classifier for each field. */
 type DropDecision = { label: "drop" | "pass"; prob: number };
@@ -56,21 +57,40 @@ export function getDefaultSfeModelPath(): string {
 }
 
 /**
- * Singleton predictor — the FastText WASM module is expensive to load,
- * so we share one instance across calls.
+ * Process-wide predictor cache keyed by resolved model path. The FastText
+ * WASM module is expensive to load (~50 ms + 0.7 MB model read), so we
+ * share one instance per path across calls.
  */
-let cachedPredictor: Promise<SfePredictor | null> | null = null;
+const _predictorCache = new Map<string, Promise<SfePredictor | null>>();
 
 /**
- * Lazy-load the bundled FastText predictor. Returns `null` (and logs
- * once to stderr) if `fasttext.wasm` is not installed — the preprocessor
- * falls back to passing the payload through unmodified.
+ * Lazy-load a FastText predictor. Returns `null` (and logs once to
+ * stderr) if `fasttext.wasm` is not installed OR the model fails to
+ * load — the preprocessor falls back to passing payloads through
+ * unfiltered. Failures are not permanently cached: each failed load
+ * clears its cache entry so a later call can retry after the
+ * environment is fixed.
+ *
+ * @param modelPath - Optional path to a FastText .ftz model. Defaults
+ *   to the bundled quantized StackOne SFE model. Different paths get
+ *   distinct predictor instances.
  */
 export function getDefaultPredictor(modelPath?: string): Promise<SfePredictor | null> {
-	if (!cachedPredictor) {
-		cachedPredictor = loadPredictor(modelPath ?? getDefaultSfeModelPath());
-	}
-	return cachedPredictor;
+	const resolved = modelPath ?? getDefaultSfeModelPath();
+	const existing = _predictorCache.get(resolved);
+	if (existing) return existing;
+
+	const loading = loadPredictor(resolved).catch((err) => {
+		// Do not permanently cache a rejected promise — drop it so a later
+		// call can retry (e.g. after the missing file is supplied).
+		_predictorCache.delete(resolved);
+		console.warn(
+			`[defender] SFE predictor failed to load (${err instanceof Error ? err.message : String(err)}); payload will pass through.`,
+		);
+		return null;
+	});
+	_predictorCache.set(resolved, loading);
+	return loading;
 }
 
 async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
@@ -88,6 +108,9 @@ async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
 		return null;
 	}
 
+	// Model read + WASM init errors propagate — getDefaultPredictor's
+	// catch cleans the cache entry and returns null, so the preprocessor
+	// still fails open.
 	const ft = await fasttextMod.FastText.create();
 	const { readFile } = await import("node:fs/promises");
 	const modelBytes = new Uint8Array(await readFile(modelPath));
@@ -186,10 +209,10 @@ function filterByPaths<T>(obj: T, dropPaths: Set<string>, path = ""): T {
 	if (obj !== null && typeof obj === "object") {
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+			// Skip prototype-pollution-adjacent keys before copying to `{}`.
+			// Mirrors the main sanitizer's DANGEROUS_KEYS treatment.
+			if (DANGEROUS_KEYS.has(k)) continue;
 			const child = path ? `${path}.${k}` : k;
-			// A key is dropped if any of its string/null leaves was marked drop
-			// AND the key IS a leaf here. For intermediate keys with dropped
-			// children, we still descend to filter sub-leaves individually.
 			out[k] = filterByPaths(v, dropPaths, child);
 		}
 		return out as unknown as T;
@@ -210,6 +233,7 @@ function compactUndefined<T>(obj: T): T {
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			if (v === undefined) continue;
+			if (DANGEROUS_KEYS.has(k)) continue;
 			out[k] = compactUndefined(v);
 		}
 		return out as unknown as T;
@@ -262,19 +286,24 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 
 	const texts = candidates.map(fieldToText);
 	const decisions = await predictor.predictBatch(texts);
-	const dropped: string[] = [];
 	const dropPaths = new Set<string>();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
 		if (d.label === "drop" && d.prob >= threshold) {
 			dropPaths.add(candidates[i].rawPath);
-			dropped.push(candidates[i].rawPath);
 		}
 	}
 
 	if (dropPaths.size === 0) {
 		return { filtered: value, dropped: [] };
 	}
+
+	// `dropped` is the sorted de-duplicated set of paths (paths from array
+	// elements share the element-free path form, so duplicates arise on
+	// list-response payloads — we report each distinct path once). Note the
+	// all-or-nothing behavior on arrays: when any element's leaf path is
+	// classified as drop, the field is removed from every sibling element.
+	const dropped = Array.from(dropPaths).sort();
 
 	const filtered = compactUndefined(filterByPaths(value, dropPaths));
 	return { filtered, dropped };

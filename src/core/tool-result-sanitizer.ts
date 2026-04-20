@@ -391,6 +391,15 @@ export class ToolResultSanitizer {
 		// Determine risk level for this field
 		let riskLevel = context.riskLevel;
 
+		// Every risky string field counts toward the cumulative-risk
+		// denominator, not just ones that matched a pattern. Otherwise the
+		// fraction check becomes degenerate — matched/matched = 100% trivially
+		// passes, which defeats the fraction threshold for list responses
+		// where most items are benign.
+		if (context.cumulativeRisk) {
+			context.cumulativeRisk.totalFieldsProcessed++;
+		}
+
 		// Use Tier 1 classification if enabled
 		let tier1Patterns: string[] = [];
 		if (this.config.useTier1Classification) {
@@ -485,11 +494,12 @@ export class ToolResultSanitizer {
 	}
 
 	/**
-	 * Update cumulative risk tracker
+	 * Update cumulative risk tracker. `totalFieldsProcessed` is incremented
+	 * by the caller for every risky string field — NOT here — so the
+	 * fraction checks in `shouldEscalate` have a meaningful denominator
+	 * (every field processed, not only matched ones).
 	 */
 	private updateCumulativeRisk(tracker: CumulativeRiskTracker, riskLevel: RiskLevel, patterns: string[]): void {
-		tracker.totalFieldsProcessed++;
-
 		if (riskLevel === "high" || riskLevel === "critical") {
 			tracker.highRiskCount++;
 		} else if (riskLevel === "medium") {

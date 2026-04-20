@@ -253,6 +253,12 @@ export class Tier2Classifier {
 
 		const modelMaxLen = this.onnxClassifier.getMaxLength();
 
+		// Respect maxTextLength — tokenising a huge payload before the
+		// fast-path check would burn CPU/memory unbounded. Truncate to
+		// `maxTextLength` characters first; anything past that cannot fit
+		// in the model anyway (256 tokens ≪ 10 000 chars).
+		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
+
 		// countTokens requires the tokenizer loaded; classify auto-loads, so
 		// warm up here to mirror that behaviour for the packing path.
 		try {
@@ -269,7 +275,7 @@ export class Tier2Classifier {
 
 		let totalTokens: number;
 		try {
-			totalTokens = this.onnxClassifier.countTokens(text);
+			totalTokens = this.onnxClassifier.countTokens(bounded);
 		} catch (err) {
 			return {
 				score: 0,
@@ -284,7 +290,7 @@ export class Tier2Classifier {
 		if (totalTokens <= modelMaxLen) {
 			let score: number;
 			try {
-				score = await this.onnxClassifier.classify(text);
+				score = await this.onnxClassifier.classify(bounded);
 			} catch (err) {
 				return {
 					score: 0,
@@ -299,8 +305,8 @@ export class Tier2Classifier {
 				score: safeScore,
 				confidence: Math.abs(safeScore - 0.5) * 2,
 				skipped: false,
-				maxSentence: text,
-				sentenceScores: [{ sentence: text, score: safeScore }],
+				maxSentence: bounded,
+				sentenceScores: [{ sentence: bounded, score: safeScore }],
 				latencyMs: performance.now() - startTime,
 			};
 		}
@@ -309,7 +315,7 @@ export class Tier2Classifier {
 		// Reserve 2 tokens per chunk for [CLS] + [SEP].
 		const maxContentTokens = modelMaxLen - 2;
 
-		const sentences = this.splitIntoSentences(text).filter((s) => s.length >= this.config.minTextLength);
+		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
 		if (sentences.length === 0) {
 			return {
 				score: 0,
