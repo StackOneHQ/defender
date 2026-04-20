@@ -58,11 +58,25 @@ export interface SanitizeOptions {
 /**
  * Composite Sanitizer class
  *
- * Applies sanitization methods based on risk level:
- * - Low: Unicode normalization + boundary annotation
- * - Medium: + Role stripping + pattern removal
- * - High: + Encoding detection and redaction
- * - Critical: Block (returns empty or error indicator)
+ * Applies methods additively by risk level. Unicode normalization and
+ * boundary annotation are independently gated by the `alwaysNormalize`
+ * and `alwaysAnnotate` config flags (both default to `true`); the
+ * per-level methods gate purely on `riskLevel`:
+ *
+ *  - Low:      normalize (if `alwaysNormalize`) + annotate (if `alwaysAnnotate`);
+ *              pass-through otherwise.
+ *  - Medium:   + Unicode normalization (always, regardless of flag) +
+ *              role-marker stripping + high-severity pattern removal +
+ *              boundary annotation.
+ *  - High:     + pattern removal at all severities + encoding detection
+ *              and redaction (replaces base64 / hex blocks with
+ *              `[ENCODED DATA]`).
+ *  - Critical: block entirely — returns `"[CONTENT BLOCKED FOR SECURITY]"`.
+ *
+ * Boundary annotation wraps output with `[UD-<id>] ... [/UD-<id>]`
+ * markers so downstream LLM prompts can distinguish trusted scaffolding
+ * from untrusted tool-result content. The boundary id is generated
+ * per-call by default; pass `options.boundary` to reuse an existing one.
  */
 export class Sanitizer {
 	private config: SanitizerConfig;
