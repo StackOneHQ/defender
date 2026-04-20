@@ -368,52 +368,62 @@ export class PromptDefense {
 							: `All strings skipped by classifier: ${reasons.join("; ")}`;
 				} else {
 					// Phase 2: ONE batched ONNX call for every chunk across every string.
-					const allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+					// Fail-safe: inference errors mark Tier 2 as skipped rather than
+					// propagating out of defendToolResult (matches the old
+					// classifyByChunks contract).
+					let allScores: number[] | null = null;
+					try {
+						allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+					} catch (err) {
+						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
+					}
 
-					// Phase 3: compute per-string max; track global max + chunk.
-					const perStringScores: number[] = [];
-					for (let i = 0; i < strings.length; i++) {
-						const { start, end } = stringRanges[i];
-						if (start < 0) continue;
-						let sMax = 0;
-						let sMaxChunk = "";
-						for (let j = start; j < end; j++) {
-							const raw = allScores[j];
-							const s = Number.isFinite(raw) ? raw : 0;
-							if (s > sMax) {
-								sMax = s;
-								sMaxChunk = allChunks[j] ?? "";
+					if (allScores) {
+						// Phase 3: compute per-string max; track global max + chunk.
+						const perStringScores: number[] = [];
+						for (let i = 0; i < strings.length; i++) {
+							const { start, end } = stringRanges[i];
+							if (start < 0) continue;
+							let sMax = 0;
+							let sMaxChunk = "";
+							for (let j = start; j < end; j++) {
+								const raw = allScores[j];
+								const s = Number.isFinite(raw) ? raw : 0;
+								if (s > sMax) {
+									sMax = s;
+									sMaxChunk = allChunks[j] ?? "";
+								}
+							}
+							perStringScores.push(sMax);
+							if (tier2Score === undefined || sMax > tier2Score) {
+								tier2Score = sMax;
+								maxSentence = sMaxChunk;
 							}
 						}
-						perStringScores.push(sMax);
-						if (tier2Score === undefined || sMax > tier2Score) {
-							tier2Score = sMax;
-							maxSentence = sMaxChunk;
-						}
-					}
 
-					// Cross-string density adjustment (mild). Applied only when we
-					// have 3+ strings — otherwise a 1- or 2-string payload is
-					// mathematically indistinguishable from a real attack that
-					// happens to be short, and damping it would create false
-					// negatives. For larger payloads, a lone high-scoring string
-					// surrounded by many benign strings is typical of benign
-					// connector responses (e.g. 100 pay schedules with one
-					// imperative descriptor). Damping with pow(highCount/total, 0.1)
-					// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
-					// attacks concentrated across multiple strings are barely affected.
-					tier2EffectiveScore = tier2Score;
-					const DENSITY_SUB_THRESHOLD = 0.75;
-					if (tier2Score !== undefined && perStringScores.length > 2) {
-						const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
-						if (highCount > 0) {
-							const factor = (highCount / perStringScores.length) ** 0.1;
-							tier2EffectiveScore = tier2Score * factor;
+						// Cross-string density adjustment (mild). Applied only when we
+						// have 3+ strings — otherwise a 1- or 2-string payload is
+						// mathematically indistinguishable from a real attack that
+						// happens to be short, and damping it would create false
+						// negatives. For larger payloads, a lone high-scoring string
+						// surrounded by many benign strings is typical of benign
+						// connector responses (e.g. 100 pay schedules with one
+						// imperative descriptor). Damping with pow(highCount/total, 0.1)
+						// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
+						// attacks concentrated across multiple strings are barely affected.
+						tier2EffectiveScore = tier2Score;
+						const DENSITY_SUB_THRESHOLD = 0.75;
+						if (tier2Score !== undefined && perStringScores.length > 2) {
+							const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
+							if (highCount > 0) {
+								const factor = (highCount / perStringScores.length) ** 0.1;
+								tier2EffectiveScore = tier2Score * factor;
+							}
 						}
-					}
 
-					if (tier2EffectiveScore !== undefined) {
-						tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
+						if (tier2EffectiveScore !== undefined) {
+							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
+						}
 					}
 				}
 			} else {

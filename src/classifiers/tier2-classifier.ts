@@ -385,15 +385,6 @@ export class Tier2Classifier {
 		const modelMaxLen = this.onnxClassifier.getMaxLength();
 		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
 
-		// Fast path: WordPiece cannot emit more tokens than input chars (worst
-		// case each char is a single-char subword or [UNK]), plus 2 specials
-		// ([CLS]/[SEP]). If that upper bound already fits, skip the tokenizer
-		// warmup + countTokens round-trip — a material win on list payloads
-		// full of short-to-medium field values.
-		if (bounded.length + 2 <= modelMaxLen) {
-			return { chunks: [bounded], skipped: false };
-		}
-
 		try {
 			await this.onnxClassifier.warmup();
 		} catch (err) {
@@ -402,6 +393,16 @@ export class Tier2Classifier {
 				skipped: true,
 				skipReason: `Warmup error: ${err instanceof Error ? err.message : String(err)}`,
 			};
+		}
+
+		// Fast path: WordPiece cannot emit more tokens than input chars (worst
+		// case each char is a single-char subword or [UNK]), plus 2 specials
+		// ([CLS]/[SEP]). If that upper bound already fits, skip the countTokens
+		// tokenizer round-trip — a material win on list payloads full of
+		// short-to-medium field values. Warmup still runs so failures surface
+		// here (fail-safe) rather than propagating out of classifyChunksBatch.
+		if (bounded.length + 2 <= modelMaxLen) {
+			return { chunks: [bounded], skipped: false };
 		}
 
 		let totalTokens: number;
