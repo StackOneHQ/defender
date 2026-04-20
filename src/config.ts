@@ -10,6 +10,16 @@ import type { PromptDefenseConfig, RiskyFieldConfig, TraversalConfig } from "./t
 export const DANGEROUS_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 /**
+ * Stack-safety cap for recursive payload walks outside the Tier 1 sanitizer
+ * (which has its own `traversal.maxDepth` business-logic cap of 10).
+ * Tool-result payloads are bounded in practice (rarely > 20 levels); this
+ * guards against pathological or hostile deep nesting. Walks that hit this
+ * cap bubble `truncatedAtDepth: true` up through `DefenseResult` so callers
+ * can detect degraded analysis coverage.
+ */
+export const MAX_TRAVERSAL_DEPTH = 100;
+
+/**
  * Default risky field configuration
  */
 export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {

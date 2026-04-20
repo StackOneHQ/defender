@@ -20,7 +20,7 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DANGEROUS_KEYS } from "../config";
+import { DANGEROUS_KEYS, MAX_TRAVERSAL_DEPTH } from "../config";
 
 /** Predicate returned by the FastText classifier for each field. */
 type DropDecision = { label: "drop" | "pass"; prob: number };
@@ -182,15 +182,19 @@ interface Field {
  * container). Only leaf fields are passed to the classifier — the
  * classifier has no concept of "this whole subtree is irrelevant".
  */
-function extractFields(obj: unknown, path = "", depth = 0): Field[] {
+function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", depth = 0): Field[] {
+	if (depth > MAX_TRAVERSAL_DEPTH) {
+		depthFlag.hit = true;
+		return [];
+	}
 	const out: Field[] = [];
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
-			out.push(...extractFields(v, child, depth + 1));
+			out.push(...extractFields(v, depthFlag, child, depth + 1));
 		}
 	} else if (Array.isArray(obj)) {
-		for (const item of obj) out.push(...extractFields(item, path, depth));
+		for (const item of obj) out.push(...extractFields(item, depthFlag, path, depth));
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
@@ -216,10 +220,14 @@ function fieldToText(f: Field): string {
 	return text.replace(/[\r\n]/g, " ");
 }
 
-function filterByPaths<T>(obj: T, dropPaths: Set<string>, path = ""): T {
+function filterByPaths<T>(obj: T, dropPaths: Set<string>, depthFlag: { hit: boolean }, path = "", depth = 0): T {
+	if (depth > MAX_TRAVERSAL_DEPTH) {
+		depthFlag.hit = true;
+		return obj;
+	}
 	if (Array.isArray(obj)) {
 		const out = new Array(obj.length);
-		for (let i = 0; i < obj.length; i++) out[i] = filterByPaths(obj[i], dropPaths, path);
+		for (let i = 0; i < obj.length; i++) out[i] = filterByPaths(obj[i], dropPaths, depthFlag, path, depth + 1);
 		return out as unknown as T;
 	}
 	if (obj !== null && typeof obj === "object") {
@@ -229,7 +237,7 @@ function filterByPaths<T>(obj: T, dropPaths: Set<string>, path = ""): T {
 			// Mirrors the main sanitizer's DANGEROUS_KEYS treatment.
 			if (DANGEROUS_KEYS.has(k)) continue;
 			const child = path ? `${path}.${k}` : k;
-			out[k] = filterByPaths(v, dropPaths, child);
+			out[k] = filterByPaths(v, dropPaths, depthFlag, child, depth + 1);
 		}
 		return out as unknown as T;
 	}
@@ -240,9 +248,13 @@ function filterByPaths<T>(obj: T, dropPaths: Set<string>, path = ""): T {
 // After filtering leaves to undefined, compact: remove undefined values from
 // objects, and filter undefined from arrays. Keeps the returned structure
 // clean for downstream classification and for the LLM-facing `sanitized` output.
-function compactUndefined<T>(obj: T): T {
+function compactUndefined<T>(obj: T, depthFlag: { hit: boolean }, depth = 0): T {
+	if (depth > MAX_TRAVERSAL_DEPTH) {
+		depthFlag.hit = true;
+		return obj;
+	}
 	if (Array.isArray(obj)) {
-		const filtered = obj.filter((x) => x !== undefined).map((x) => compactUndefined(x));
+		const filtered = obj.filter((x) => x !== undefined).map((x) => compactUndefined(x, depthFlag, depth + 1));
 		return filtered as unknown as T;
 	}
 	if (obj !== null && typeof obj === "object") {
@@ -250,7 +262,7 @@ function compactUndefined<T>(obj: T): T {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			if (v === undefined) continue;
 			if (DANGEROUS_KEYS.has(k)) continue;
-			out[k] = compactUndefined(v);
+			out[k] = compactUndefined(v, depthFlag, depth + 1);
 		}
 		return out as unknown as T;
 	}
@@ -269,6 +281,8 @@ export interface SfePreprocessResult<T> {
 	filtered: T;
 	/** Paths of leaves dropped by the classifier. */
 	dropped: string[];
+	/** True if any internal walk hit MAX_TRAVERSAL_DEPTH. */
+	truncatedAtDepth?: boolean;
 }
 
 /**
@@ -294,10 +308,11 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	}
 	const threshold = options.threshold ?? 0.5;
 
-	const fields = extractFields(value);
+	const depthFlag = { hit: false };
+	const fields = extractFields(value, depthFlag);
 	const candidates = fields.filter((f) => f.valueType === "string" || f.valueType === "null");
 	if (candidates.length === 0) {
-		return { filtered: value, dropped: [] };
+		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
 	}
 
 	const texts = candidates.map(fieldToText);
@@ -311,7 +326,7 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	}
 
 	if (dropPaths.size === 0) {
-		return { filtered: value, dropped: [] };
+		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
 	}
 
 	// `dropped` is the sorted de-duplicated set of paths (paths from array
@@ -321,6 +336,6 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	// classified as drop, the field is removed from every sibling element.
 	const dropped = Array.from(dropPaths).sort();
 
-	const filtered = compactUndefined(filterByPaths(value, dropPaths));
-	return { filtered, dropped };
+	const filtered = compactUndefined(filterByPaths(value, dropPaths, depthFlag), depthFlag);
+	return { filtered, dropped, truncatedAtDepth: depthFlag.hit || undefined };
 }

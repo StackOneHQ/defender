@@ -11,7 +11,7 @@ import {
 	type Tier2Classifier,
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
-import { createConfig } from "../config";
+import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
@@ -47,6 +47,12 @@ export interface DefenseResult {
 	 * `src/sfe/preprocess.ts` for the path format.
 	 */
 	fieldsDropped: string[];
+	/**
+	 * True if any recursive payload walk hit `MAX_TRAVERSAL_DEPTH` —
+	 * analysis is complete only to that depth, deeper fields passed through
+	 * unchanged. Stack-safety guard; typically never set on real payloads.
+	 */
+	truncatedAtDepth?: boolean;
 	/** Total processing time in milliseconds */
 	latencyMs: number;
 }
@@ -56,21 +62,25 @@ export interface DefenseResult {
  * When `fields` is provided, only strings under matching field keys are collected;
  * the traversal still descends into non-matching keys to find matching ones deeper.
  */
-function extractStrings(obj: unknown, fields?: string[]): string[] {
+function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: { hit: boolean }): string[] {
 	const strings: string[] = [];
 
-	function collectAll(value: unknown): void {
+	function collectAll(value: unknown, depth: number): void {
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
 		if (typeof value === "string") {
 			strings.push(value);
 		} else if (Array.isArray(value)) {
-			for (const item of value) collectAll(item);
+			for (const item of value) collectAll(item, depth + 1);
 		} else if (value && typeof value === "object") {
-			for (const v of Object.values(value)) collectAll(v);
+			for (const v of Object.values(value)) collectAll(v, depth + 1);
 		}
 	}
 
 	if (!fields || fields.length === 0) {
-		collectAll(obj);
+		collectAll(obj, 0);
 		return strings;
 	}
 
@@ -83,15 +93,19 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 	// Use a Set for O(1) key lookups during traversal
 	const fieldSet = new Set(fields);
 
-	function traverse(value: unknown): void {
+	function traverse(value: unknown, depth: number): void {
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
 		if (Array.isArray(value)) {
-			for (const item of value) traverse(item);
+			for (const item of value) traverse(item, depth + 1);
 		} else if (value && typeof value === "object") {
 			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
 				if (fieldSet.has(k)) {
-					collectAll(v);
+					collectAll(v, depth + 1);
 				} else {
-					traverse(v);
+					traverse(v, depth + 1);
 				}
 			}
 		}
@@ -99,7 +113,7 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		// only strings under matching field names are collected.
 	}
 
-	traverse(obj);
+	traverse(obj, 0);
 	return strings;
 }
 
@@ -276,6 +290,10 @@ export class PromptDefense {
 	async defendToolResult(value: unknown, toolName: string): Promise<DefenseResult> {
 		const startTime = performance.now();
 
+		// Shared stack-safety flag — flipped by any walk that hits
+		// MAX_TRAVERSAL_DEPTH. Surfaced in DefenseResult.truncatedAtDepth.
+		const depthFlag = { hit: false };
+
 		// SFE preprocessor — classify and drop leaf fields via the bundled
 		// quantized FastText model. Fail-open on any error so defense
 		// never breaks due to the preprocessor.
@@ -291,6 +309,7 @@ export class PromptDefense {
 					});
 					effectiveValue = pre.filtered;
 					fieldsDropped = pre.dropped;
+					if (pre.truncatedAtDepth) depthFlag.hit = true;
 				}
 			} catch (err) {
 				// Fail open — continue with the unfiltered value so defense
@@ -328,7 +347,7 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = extractStrings(effectiveValue, fieldsForTier2).filter((s) => s.length > 0);
+			const strings = extractStrings(effectiveValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
@@ -464,6 +483,7 @@ export class PromptDefense {
 			tier2SkipReason,
 			maxSentence,
 			fieldsDropped,
+			truncatedAtDepth: depthFlag.hit || undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

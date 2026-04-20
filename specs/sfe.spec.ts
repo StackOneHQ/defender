@@ -139,4 +139,40 @@ describe('SFE preprocessor', () => {
       expect(result.fieldsDropped).toEqual([]);
     });
   });
+
+  describe('max traversal depth', () => {
+    // Build a right-skewed object tree of `depth` nesting levels.
+    function buildDeep(depth: number, leaf: unknown = 'hi'): unknown {
+      let node: unknown = leaf;
+      for (let i = 0; i < depth; i++) node = { nested: node };
+      return node;
+    }
+
+    it('processes reasonably deep payloads without flagging truncation', async () => {
+      const defense = createPromptDefense({
+        enableTier1: true,
+        enableTier2: false,
+        useSfe: { predictor: mockPredictor() },
+      });
+      const result = await defense.defendToolResult(buildDeep(50), 'tool');
+      expect(result.truncatedAtDepth).toBeUndefined();
+    });
+
+    it('does not throw on pathologically deep payloads and flags truncation', async () => {
+      const defense = createPromptDefense({
+        enableTier1: true,
+        enableTier2: false,
+        useSfe: { predictor: mockPredictor() },
+      });
+      const result = await defense.defendToolResult(buildDeep(500), 'tool');
+      expect(result.truncatedAtDepth).toBe(true);
+    });
+
+    it('sfePreprocess flags truncation on deep payloads', async () => {
+      let node: unknown = 'leaf';
+      for (let i = 0; i < 500; i++) node = { nested: node };
+      const result = await sfePreprocess(node, { predictor: mockPredictor() });
+      expect(result.truncatedAtDepth).toBe(true);
+    });
+  });
 });
