@@ -182,8 +182,19 @@ interface Field {
  * container). Only leaf fields are passed to the classifier — the
  * classifier has no concept of "this whole subtree is irrelevant".
  */
-function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", depth = 0): Field[] {
-	if (depth > MAX_TRAVERSAL_DEPTH) {
+function extractFields(
+	obj: unknown,
+	depthFlag: { hit: boolean },
+	path = "",
+	depth = 0,
+	stackDepth = 0,
+): Field[] {
+	// `depth` is the semantic field-path depth fed into the FastText model
+	// (must match the training script's counting — arrays don't count as a
+	// level of nesting). `stackDepth` counts actual recursive calls for
+	// stack-safety; it increments on arrays too, so a pathological
+	// [[[[...]]]] payload still trips the cap.
+	if (stackDepth > MAX_TRAVERSAL_DEPTH) {
 		depthFlag.hit = true;
 		return [];
 	}
@@ -191,10 +202,10 @@ function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", dep
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
-			out.push(...extractFields(v, depthFlag, child, depth + 1));
+			out.push(...extractFields(v, depthFlag, child, depth + 1, stackDepth + 1));
 		}
 	} else if (Array.isArray(obj)) {
-		for (const item of obj) out.push(...extractFields(item, depthFlag, path, depth));
+		for (const item of obj) out.push(...extractFields(item, depthFlag, path, depth, stackDepth + 1));
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);

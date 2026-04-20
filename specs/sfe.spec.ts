@@ -174,5 +174,15 @@ describe('SFE preprocessor', () => {
       const result = await sfePreprocess(node, { predictor: mockPredictor() });
       expect(result.truncatedAtDepth).toBe(true);
     });
+
+    it('sfePreprocess flags truncation on deeply nested arrays', async () => {
+      // [[[[...]]]] — arrays don't bump SFE's semantic field-depth, but
+      // each recursion still consumes a stack frame, so the cap must
+      // still trip via stackDepth.
+      let node: unknown = 'leaf';
+      for (let i = 0; i < 500; i++) node = [node];
+      const result = await sfePreprocess(node, { predictor: mockPredictor() });
+      expect(result.truncatedAtDepth).toBe(true);
+    });
   });
 });
