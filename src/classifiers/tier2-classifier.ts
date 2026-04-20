@@ -389,14 +389,22 @@ export class Tier2Classifier {
 				continue;
 			}
 
-			const joinerCost = current.length > 0 ? 1 : 0;
-			if (currentTokens + sContentTokens + joinerCost > maxContentTokens) {
+			// BERT/WordPiece tokenisers (which all our bundled MiniLM
+			// variants use) do NOT emit a separate token for inter-word
+			// whitespace — "hello world" and "hello" "world" joined give
+			// the same ["hello", "world"] sequence. So a sentence's
+			// content token count adds directly to the running chunk
+			// count without any extra "joiner" cost. This avoids
+			// underpacking: the previous `joinerCost = 1` overestimate
+			// forced extra chunk boundaries (and extra ONNX inferences)
+			// on long payloads.
+			if (currentTokens + sContentTokens > maxContentTokens) {
 				chunks.push(current.join(" "));
 				current = [s];
 				currentTokens = sContentTokens;
 			} else {
 				current.push(s);
-				currentTokens += sContentTokens + joinerCost;
+				currentTokens += sContentTokens;
 			}
 		}
 

@@ -239,14 +239,16 @@ export class PromptDefense {
 		// payloads through unfiltered, so a warmup failure must not
 		// propagate to callers and break their startup.
 		if (this.sfeEnabled && !this.sfeCustomPredictor) {
-			try {
-				await getDefaultPredictor();
-			} catch (err) {
-				// Fail open so the whole warmup doesn't reject. The per-call
-				// path logs its own warning, but emit here too for operators
-				// monitoring startup paths.
+			// getDefaultPredictor() already catches load failures internally
+			// and resolves to null — it never rejects. So we check the
+			// resolved value instead of wrapping in try/catch. A null here
+			// means the preprocessor will pass payloads through unfiltered
+			// at call time; `this.sfeEnabled` stays true so a later retry
+			// (e.g. after the missing dep is installed) is still possible.
+			const predictor = await getDefaultPredictor();
+			if (!predictor) {
 				console.warn(
-					`[defender] SFE predictor warmup failed; preprocessor will be disabled. Reason: ${err instanceof Error ? err.message : String(err)}`,
+					"[defender] SFE predictor unavailable at warmup; calls with useSfe enabled will pass payloads through unfiltered until the runtime or model file is available.",
 				);
 			}
 		}
@@ -335,9 +337,13 @@ export class PromptDefense {
 				// single string, classifyByChunks greedy-packs sentences so each inference
 				// sees as much cross-sentence context as fits in the model's max_length.
 				const perStringScores: number[] = [];
+				const skipReasons = new Set<string>();
 				for (const str of strings) {
 					const result = await this.tier2Classifier.classifyByChunks(str);
-					if (result.skipped) continue;
+					if (result.skipped) {
+						if (result.skipReason) skipReasons.add(result.skipReason);
+						continue;
+					}
 					perStringScores.push(result.score);
 
 					// Track the globally highest raw score and the chunk that scored it.
@@ -369,7 +375,15 @@ export class PromptDefense {
 				if (tier2EffectiveScore !== undefined) {
 					tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 				} else {
-					tier2SkipReason = "All strings skipped by classifier";
+					// No string produced a score — every classifyByChunks call
+					// was skipped. Surface the collected reasons so callers can
+					// see why (below-min-length, warmup failure, token-count
+					// failure, etc.) rather than the generic "all skipped".
+					const reasons = Array.from(skipReasons);
+					tier2SkipReason =
+						reasons.length === 0
+							? "All strings skipped by classifier"
+							: `All strings skipped by classifier: ${reasons.join("; ")}`;
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length

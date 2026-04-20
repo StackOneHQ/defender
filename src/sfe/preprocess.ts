@@ -65,12 +65,17 @@ export function getDefaultSfeModelPath(): string {
 const _predictorCache = new Map<string, Promise<SfePredictor | null>>();
 
 /**
- * Lazy-load a FastText predictor. Returns `null` (and logs once to
- * stderr) if `fasttext.wasm` is not installed OR the model fails to
- * load — the preprocessor falls back to passing payloads through
- * unfiltered. Failures are not permanently cached: each failed load
- * clears its cache entry so a later call can retry after the
- * environment is fixed.
+ * Lazy-load a FastText predictor. Returns `null` if `fasttext.wasm`
+ * is not installed OR the model fails to load — the preprocessor
+ * falls back to passing payloads through unfiltered. Failures are not
+ * permanently cached: each failed load clears its cache entry so a
+ * later call can retry after the environment is fixed.
+ *
+ * Because failures are re-attempted, warnings may be emitted repeatedly
+ * — once per call — until the underlying issue is resolved (module
+ * installed, file available). This is intentional so operators get
+ * telemetry on sustained degraded operation rather than a single
+ * startup warning that's easy to miss.
  *
  * @param modelPath - Optional path to a FastText .ftz model. Defaults
  *   to the bundled quantized StackOne SFE model. Different paths get
