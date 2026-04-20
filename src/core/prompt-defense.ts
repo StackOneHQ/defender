@@ -331,59 +331,90 @@ export class PromptDefense {
 			const strings = extractStrings(effectiveValue, fieldsForTier2).filter((s) => s.length > 0);
 
 			if (strings.length > 0) {
-				// Classify each extracted string independently.
-				// Per-string (rather than joining all strings) keeps a benign metadata blob
-				// in one field from diluting a real injection in another field. Within a
-				// single string, classifyByChunks greedy-packs sentences so each inference
-				// sees as much cross-sentence context as fits in the model's max_length.
-				const perStringScores: number[] = [];
+				// Per-string classification with BATCHED inference.
+				//
+				// Why per-string: keeps a benign metadata blob in one field from
+				// diluting a real injection in another. Measured A/B on 940 benign
+				// connector payloads: join-text-style aggregation gives 63/940 FPs
+				// (6.70%) vs per-string 2-3/940 (0.21-0.32%) — 10× worse FPR.
+				//
+				// Why batched: v0.6.0's per-string loop ran one ONNX inference per
+				// string serially, which on list-response payloads (~1000 fields)
+				// was ~80 ms with SFE vs ~7 ms for join-text. We now prepare all
+				// chunks up-front and run a single classifyChunksBatch() — ~10×
+				// throughput recovery while keeping per-string scoring semantics.
+
+				// Phase 1: compute chunks per string (warmup + tokenize + pack),
+				// track where each string's chunks live in the flat chunk array.
+				const preps = await Promise.all(strings.map((s) => this.tier2Classifier!.prepareChunks(s)));
+				const allChunks: string[] = [];
+				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();
-				for (const str of strings) {
-					const result = await this.tier2Classifier.classifyByChunks(str);
-					if (result.skipped) {
-						if (result.skipReason) skipReasons.add(result.skipReason);
+				for (const prep of preps) {
+					if (prep.skipped) {
+						if (prep.skipReason) skipReasons.add(prep.skipReason);
+						stringRanges.push({ start: -1, end: -1 });
 						continue;
 					}
-					perStringScores.push(result.score);
-
-					// Track the globally highest raw score and the chunk that scored it.
-					if (tier2Score === undefined || result.score > tier2Score) {
-						tier2Score = result.score;
-						maxSentence = result.maxSentence;
-					}
+					stringRanges.push({ start: allChunks.length, end: allChunks.length + prep.chunks.length });
+					allChunks.push(...prep.chunks);
 				}
 
-				// Cross-string density adjustment (mild). Applied only when we have
-				// 3+ strings — otherwise a 1- or 2-string payload is mathematically
-				// indistinguishable from a real attack that happens to be short, and
-				// damping it would create false negatives. For larger payloads, a
-				// lone high-scoring string surrounded by many benign strings is
-				// typical of benign connector responses (e.g. 100 pay schedules with
-				// one imperative descriptor). Damping with pow(highCount/total, 0.1)
-				// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
-				// attacks concentrated across multiple strings are barely affected.
-				tier2EffectiveScore = tier2Score;
-				const DENSITY_SUB_THRESHOLD = 0.75;
-				if (tier2Score !== undefined && perStringScores.length > 2) {
-					const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
-					if (highCount > 0) {
-						const factor = (highCount / perStringScores.length) ** 0.1;
-						tier2EffectiveScore = tier2Score * factor;
-					}
-				}
-
-				if (tier2EffectiveScore !== undefined) {
-					tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
-				} else {
-					// No string produced a score — every classifyByChunks call
-					// was skipped. Surface the collected reasons so callers can
-					// see why (below-min-length, warmup failure, token-count
-					// failure, etc.) rather than the generic "all skipped".
+				if (allChunks.length === 0) {
 					const reasons = Array.from(skipReasons);
 					tier2SkipReason =
 						reasons.length === 0
 							? "All strings skipped by classifier"
 							: `All strings skipped by classifier: ${reasons.join("; ")}`;
+				} else {
+					// Phase 2: ONE batched ONNX call for every chunk across every string.
+					const allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+
+					// Phase 3: compute per-string max; track global max + chunk.
+					const perStringScores: number[] = [];
+					for (let i = 0; i < strings.length; i++) {
+						const { start, end } = stringRanges[i];
+						if (start < 0) continue;
+						let sMax = 0;
+						let sMaxChunk = "";
+						for (let j = start; j < end; j++) {
+							const raw = allScores[j];
+							const s = Number.isFinite(raw) ? raw : 0;
+							if (s > sMax) {
+								sMax = s;
+								sMaxChunk = allChunks[j] ?? "";
+							}
+						}
+						perStringScores.push(sMax);
+						if (tier2Score === undefined || sMax > tier2Score) {
+							tier2Score = sMax;
+							maxSentence = sMaxChunk;
+						}
+					}
+
+					// Cross-string density adjustment (mild). Applied only when we
+					// have 3+ strings — otherwise a 1- or 2-string payload is
+					// mathematically indistinguishable from a real attack that
+					// happens to be short, and damping it would create false
+					// negatives. For larger payloads, a lone high-scoring string
+					// surrounded by many benign strings is typical of benign
+					// connector responses (e.g. 100 pay schedules with one
+					// imperative descriptor). Damping with pow(highCount/total, 0.1)
+					// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
+					// attacks concentrated across multiple strings are barely affected.
+					tier2EffectiveScore = tier2Score;
+					const DENSITY_SUB_THRESHOLD = 0.75;
+					if (tier2Score !== undefined && perStringScores.length > 2) {
+						const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
+						if (highCount > 0) {
+							const factor = (highCount / perStringScores.length) ** 0.1;
+							tier2EffectiveScore = tier2Score * factor;
+						}
+					}
+
+					if (tier2EffectiveScore !== undefined) {
+						tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
+					}
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length

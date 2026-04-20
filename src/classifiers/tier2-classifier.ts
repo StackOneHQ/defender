@@ -365,6 +365,71 @@ export class Tier2Classifier {
 	}
 
 	/**
+	 * Compute the chunks that classifyByChunks() would classify for a given
+	 * text, WITHOUT invoking the ONNX model. Lets callers with many strings
+	 * to score batch them together in a single ONNX inference — restoring
+	 * v0.5.8-style throughput while keeping v0.6's per-string integrity.
+	 *
+	 * Returns `{ chunks: [], skipped: true, skipReason }` when the text
+	 * cannot be classified (too short, no sentences long enough to classify,
+	 * token-count or warmup failure).
+	 */
+	async prepareChunks(text: string): Promise<{
+		chunks: string[];
+		skipped: boolean;
+		skipReason?: string;
+	}> {
+		if (text.length < this.config.minTextLength) {
+			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
+		}
+		const modelMaxLen = this.onnxClassifier.getMaxLength();
+		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
+
+		try {
+			await this.onnxClassifier.warmup();
+		} catch (err) {
+			return {
+				chunks: [],
+				skipped: true,
+				skipReason: `Warmup error: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+
+		let totalTokens: number;
+		try {
+			totalTokens = this.onnxClassifier.countTokens(bounded);
+		} catch (err) {
+			return {
+				chunks: [],
+				skipped: true,
+				skipReason: `Token count error: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+
+		if (totalTokens <= modelMaxLen) {
+			return { chunks: [bounded], skipped: false };
+		}
+
+		const maxContentTokens = modelMaxLen - 2;
+		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
+		if (sentences.length === 0) {
+			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
+		}
+		return { chunks: this.packSentences(sentences, maxContentTokens), skipped: false };
+	}
+
+	/**
+	 * Classify an arbitrary batch of already-prepared chunks in a SINGLE
+	 * ONNX call. Used by the per-string batching path in `defendToolResult`
+	 * to amortise per-call thread-spin-up over many chunks.
+	 */
+	async classifyChunksBatch(chunks: string[]): Promise<number[]> {
+		if (chunks.length === 0) return [];
+		await this.onnxClassifier.warmup();
+		return this.onnxClassifier.classifyBatch(chunks);
+	}
+
+	/**
 	 * Greedy sentence packer — returns chunks each fitting within maxContentTokens.
 	 * Sentences exceeding maxContentTokens become their own chunk and are
 	 * truncated by the tokenizer at inference (best effort on pathological input).
