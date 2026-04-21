@@ -407,9 +407,9 @@ export class PromptDefense {
 							let sMaxChunk = "";
 							for (let j = start; j < end; j++) {
 								const raw = allScores[j];
-								const s = Number.isFinite(raw) ? raw : 0;
-								if (s > sMax) {
-									sMax = s;
+								const safeScore = Number.isFinite(raw) ? raw : 0;
+								if (safeScore > sMax) {
+									sMax = safeScore;
 									sMaxChunk = allChunks[j] ?? "";
 								}
 							}

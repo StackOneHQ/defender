@@ -345,11 +345,11 @@ export class Tier2Classifier {
 		const chunkScores: Array<{ sentence: string; score: number }> = [];
 		for (let i = 0; i < scores.length; i++) {
 			const raw = scores[i];
-			const s = Number.isFinite(raw) ? raw : 0;
+			const safeScore = Number.isFinite(raw) ? raw : 0;
 			const chunk = chunks[i] ?? "";
-			chunkScores.push({ sentence: chunk, score: s });
-			if (s > maxScore) {
-				maxScore = s;
+			chunkScores.push({ sentence: chunk, score: safeScore });
+			if (safeScore > maxScore) {
+				maxScore = safeScore;
 				maxChunk = chunk;
 			}
 		}
