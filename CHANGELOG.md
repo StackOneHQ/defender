@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.1](https://github.com/StackOneHQ/defender/compare/defender-v0.6.0...defender-v0.6.1) (2026-04-21)
+
+
+### Features
+
+* ** ENG-12684:** v4 ONNX model + cumulative risk fixes + opt-in SFE preprocessor (includes ENG-12671) ([#52](https://github.com/StackOneHQ/defender/issues/52)) ([6fb1ff9](https://github.com/StackOneHQ/defender/commit/6fb1ff91fdc0fbbce33bf3b8987321e0945db861))
+
+
+### Miscellaneous Chores
+
+* release 0.6.1 ([#54](https://github.com/StackOneHQ/defender/issues/54)) ([3611f4b](https://github.com/StackOneHQ/defender/commit/3611f4b039297ebfe3782cb1320b924b80cdb2b9))
+
 ## [0.6.0](https://github.com/StackOneHQ/defender/compare/defender-v0.5.8...defender-v0.6.0) (2026-04-16)
 
 
