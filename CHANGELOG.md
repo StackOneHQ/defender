@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/StackOneHQ/defender/compare/defender-v0.6.1...defender-v0.6.2) (2026-04-21)
+
+
+### Bug Fixes
+
+* **ENG-12702:** strip boundary markers from input before classification ([#55](https://github.com/StackOneHQ/defender/issues/55)) ([0fdd9d4](https://github.com/StackOneHQ/defender/commit/0fdd9d447d932735e4821890e7b0499ca979af22))
+
 ## [0.6.1](https://github.com/StackOneHQ/defender/compare/defender-v0.6.0...defender-v0.6.1) (2026-04-21)
 
 
