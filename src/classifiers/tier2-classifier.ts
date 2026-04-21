@@ -5,6 +5,7 @@
  */
 
 import type { Tier2Result } from "../types";
+import { stripBoundaryPatterns } from "../utils/boundary";
 import { OnnxClassifier } from "./onnx-classifier";
 
 /**
@@ -78,6 +79,14 @@ export class Tier2Classifier {
 	 */
 	async classify(text: string): Promise<Tier2Result> {
 		const startTime = performance.now();
+
+		// Strip defender's own boundary markers before tokenization. Upstream
+		// callers (or nested tool-call chains) may feed us output that was
+		// previously wrapped with `[UD-<id>]...[/UD-<id>]`; those tokens
+		// corrupt per-sentence scores because the tokenizer counts them as
+		// part of the sentence. Also strips spoofed boundary patterns an
+		// attacker might inject to confuse downstream LLM trust.
+		text = stripBoundaryPatterns(text);
 
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
@@ -241,6 +250,10 @@ export class Tier2Classifier {
 	> {
 		const startTime = performance.now();
 
+		// See comment in `classify()` — strip boundary markers before sizing
+		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
+		text = stripBoundaryPatterns(text);
+
 		if (text.length < this.config.minTextLength) {
 			return {
 				score: 0,
@@ -379,6 +392,10 @@ export class Tier2Classifier {
 		skipped: boolean;
 		skipReason?: string;
 	}> {
+		// See comment in `classify()` — strip boundary markers before sizing
+		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
+		text = stripBoundaryPatterns(text);
+
 		if (text.length < this.config.minTextLength) {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
 		}
