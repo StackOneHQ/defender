@@ -153,6 +153,10 @@ export class Tier2Classifier {
 	> {
 		const startTime = performance.now();
 
+		// See comment in `classify()` — strip boundary markers before sentence
+		// splitting so tag tokens don't corrupt per-sentence scores.
+		text = stripBoundaryPatterns(text);
+
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
 
