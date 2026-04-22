@@ -45,6 +45,12 @@ export interface ToolResultSanitizerConfig {
 	useTier1Classification: boolean;
 	/** Whether to block high/critical risk entirely */
 	blockHighRisk: boolean;
+	/**
+	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
+	 * markers. Default: false. When disabled, boundary generation is skipped
+	 * entirely (no `generateDataBoundary()` call per tool result).
+	 */
+	annotateBoundary: boolean;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
@@ -64,6 +70,7 @@ export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	defaultRiskLevel: "medium",
 	useTier1Classification: true,
 	blockHighRisk: false,
+	annotateBoundary: false,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
@@ -107,7 +114,7 @@ export class ToolResultSanitizer {
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.sanitizer = createSanitizer();
+		this.sanitizer = createSanitizer({ annotateBoundary: this.config.annotateBoundary });
 		this.patternDetector = createPatternDetector();
 	}
 
@@ -121,8 +128,10 @@ export class ToolResultSanitizer {
 	sanitize<T = unknown>(value: T, options: SanitizeToolResultOptions): SanitizationResult<T> {
 		const startTime = performance.now();
 
-		// Generate boundary for this result
-		const boundary = options.boundary ?? generateDataBoundary();
+		// Generate boundary for this result only when wrapping is enabled —
+		// skipped entirely when `annotateBoundary` is off to avoid the
+		// nanoid() call and tag-string allocation on every tool result.
+		const boundary = this.config.annotateBoundary ? (options.boundary ?? generateDataBoundary()) : undefined;
 
 		// Initialize cumulative risk tracker
 		const cumulativeRisk = this.createCumulativeRiskTracker();

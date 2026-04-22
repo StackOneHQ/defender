@@ -18,8 +18,15 @@ import { containsRoleMarkers, stripRoleMarkers } from "./role-stripper";
 export interface SanitizerConfig {
 	/** Whether to always apply Unicode normalization */
 	alwaysNormalize: boolean;
-	/** Whether to always wrap with boundaries */
-	alwaysAnnotate: boolean;
+	/**
+	 * Wrap sanitized content with `[UD-<id>]...[/UD-<id>]` markers so
+	 * downstream LLM prompts can distinguish untrusted tool-result data.
+	 * When `false`, the risk-based pipeline skips wrapping entirely at all
+	 * risk levels. An explicit `methods: ["boundary_annotation"]` in
+	 * `SanitizeOptions` still wraps regardless of this flag (escape hatch).
+	 * Default: false.
+	 */
+	annotateBoundary: boolean;
 	/** Default boundary to use (if not provided per-call) */
 	defaultBoundary?: DataBoundary;
 	/** Replacement text for redacted patterns */
@@ -35,7 +42,7 @@ export interface SanitizerConfig {
  */
 export const DEFAULT_SANITIZER_CONFIG: SanitizerConfig = {
 	alwaysNormalize: true,
-	alwaysAnnotate: true,
+	annotateBoundary: false,
 	redactionText: "[REDACTED]",
 	encodingRedactionText: "[ENCODED DATA]",
 	includeOriginal: false,
@@ -58,25 +65,28 @@ export interface SanitizeOptions {
 /**
  * Composite Sanitizer class
  *
- * Applies methods additively by risk level. Unicode normalization and
- * boundary annotation are independently gated by the `alwaysNormalize`
- * and `alwaysAnnotate` config flags (both default to `true`); the
- * per-level methods gate purely on `riskLevel`:
+ * Applies methods additively by risk level. Unicode normalization is
+ * gated by `alwaysNormalize` (default `true`); boundary annotation is
+ * gated by `annotateBoundary` (default `false`) as a hard on/off switch
+ * across all risk levels. Per-level methods gate purely on `riskLevel`:
  *
- *  - Low:      normalize (if `alwaysNormalize`) + annotate (if `alwaysAnnotate`);
- *              pass-through otherwise.
+ *  - Low:      normalize (if `alwaysNormalize`); pass-through otherwise.
  *  - Medium:   + Unicode normalization (always, regardless of flag) +
- *              role-marker stripping + high-severity pattern removal +
- *              boundary annotation.
+ *              role-marker stripping + high-severity pattern removal.
  *  - High:     + pattern removal at all severities + encoding detection
  *              and redaction (replaces base64 / hex blocks with
  *              `[ENCODED DATA]`).
  *  - Critical: block entirely — returns `"[CONTENT BLOCKED FOR SECURITY]"`.
  *
- * Boundary annotation wraps output with `[UD-<id>] ... [/UD-<id>]`
- * markers so downstream LLM prompts can distinguish trusted scaffolding
- * from untrusted tool-result content. The boundary id is generated
- * per-call by default; pass `options.boundary` to reuse an existing one.
+ * When `annotateBoundary` is `true`, every non-critical result is wrapped
+ * with `[UD-<id>] ... [/UD-<id>]` markers so downstream LLM prompts can
+ * distinguish trusted scaffolding from untrusted tool-result content.
+ * The boundary id is generated per-call by default; pass `options.boundary`
+ * to reuse an existing one.
+ *
+ * Callers that want wrapping for a specific call without flipping the
+ * global flag can pass `methods: ["boundary_annotation"]` in
+ * `SanitizeOptions` — explicit method lists bypass the flag.
  */
 export class Sanitizer {
 	private config: SanitizerConfig;
@@ -167,8 +177,8 @@ export class Sanitizer {
 			}
 		}
 
-		// Step 5: Boundary annotation (always if configured, or medium+ risk)
-		if (this.config.alwaysAnnotate || riskLevel !== "low") {
+		// Step 5: Boundary annotation (opt-in hard gate; off by default)
+		if (this.config.annotateBoundary) {
 			const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
 			result = wrapWithBoundary(result, boundaryToUse);
 			methodsApplied.push("boundary_annotation");
@@ -224,6 +234,9 @@ export class Sanitizer {
 					break;
 
 				case "boundary_annotation": {
+					// Explicit method request — honored regardless of the
+					// `annotateBoundary` config flag (escape hatch for callers
+					// that opt into wrapping per-call without flipping the global default).
 					const boundaryToUse = boundary ?? this.config.defaultBoundary ?? generateDataBoundary();
 					result = wrapWithBoundary(result, boundaryToUse);
 					methodsApplied.push(method);

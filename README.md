@@ -73,7 +73,7 @@ Regex-based detection and sanitization:
 - **Role stripping** — removes `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
 - **Pattern removal** — redacts injection patterns like "ignore previous instructions"
 - **Encoding detection** — detects and handles Base64/URL encoded payloads
-- **Boundary annotation** — wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags
+- **Boundary annotation** — opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
 
 ### Tier 2 — ML Classification (async)
 

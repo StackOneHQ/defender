@@ -134,6 +134,16 @@ export interface PromptDefenseOptions {
 	/** Default risk level for unclassified content */
 	defaultRiskLevel?: RiskLevel;
 	/**
+	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
+	 * markers so downstream LLM prompts can distinguish untrusted data.
+	 * Default: false. Opt-in — when off, boundary generation is skipped
+	 * entirely (no `generateDataBoundary()` call per tool result).
+	 *
+	 * See `generateBoundaryInstructions()` in `utils/boundary` for the
+	 * system-prompt template that consumers should pair with this.
+	 */
+	annotateBoundary?: boolean;
+	/**
 	 * Only run Tier 2 on strings extracted from these field names.
 	 * Strings under any other field key are skipped.
 	 * If omitted, Tier 2 runs on all strings in the tool result.
@@ -225,6 +235,7 @@ export class PromptDefense {
 			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
 			useTier1Classification: options.enableTier1 ?? true,
 			blockHighRisk: options.blockHighRisk ?? false,
+			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
 

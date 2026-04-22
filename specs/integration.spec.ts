@@ -297,6 +297,25 @@ describe('PromptDefense', () => {
       expect(result.patternsByField).toEqual({});
       expect(result.allowed).toBe(true);
     });
+
+    it('should not wrap fields with boundary tags by default', async () => {
+      const defense = createPromptDefense({ enableTier2: false });
+      const input = { name: 'Hello World', content: 'Nothing suspicious here.' };
+      const result = await defense.defendToolResult(input, 'docs_get');
+      const out = result.sanitized as typeof input;
+      expect(out.name).toBe('Hello World');
+      expect(out.content).toBe('Nothing suspicious here.');
+      expect(JSON.stringify(out)).not.toContain('[UD-');
+    });
+
+    it('should wrap fields with boundary tags when annotateBoundary is enabled', async () => {
+      const defense = createPromptDefense({ enableTier2: false, annotateBoundary: true });
+      const input = { name: 'Hello World', content: 'Nothing suspicious here.' };
+      const result = await defense.defendToolResult(input, 'docs_get');
+      const out = result.sanitized as typeof input;
+      expect(out.name).toContain('[UD-');
+      expect(out.content).toContain('[UD-');
+    });
   });
 
   describe('defendToolResults (batch)', () => {
@@ -540,7 +559,8 @@ describe('Tier 2 sentence-packing classification', () => {
 });
 
 describe('Real-world scenarios', () => {
-  const sanitizer = createToolResultSanitizer();
+  // Opt into boundary wrapping to exercise the annotation pipeline.
+  const sanitizer = createToolResultSanitizer({ annotateBoundary: true });
 
   it('should handle Gmail message with injection in subject', () => {
     const gmailMessage = {
