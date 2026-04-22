@@ -35,3 +35,5 @@ export {
 } from "./sfe/preprocess";
 // Types
 export type { RiskLevel, Tier1Result } from "./types";
+// Boundary helpers for consumers that opt into `annotateBoundary`
+export { containsBoundaryPatterns, generateBoundaryInstructions } from "./utils/boundary";
