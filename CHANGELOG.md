@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/StackOneHQ/defender/compare/defender-v0.6.2...defender-v0.6.3) (2026-04-23)
+
+
+### Bug Fixes
+
+* **ENG-12707, ENG-12708:** make boundary annotation opt-in (annotateBoundary flag) ([#57](https://github.com/StackOneHQ/defender/issues/57)) ([bf10849](https://github.com/StackOneHQ/defender/commit/bf10849dcc6226c6d29b1c043a0cc9069a152d24))
+
 ## [0.6.2](https://github.com/StackOneHQ/defender/compare/defender-v0.6.1...defender-v0.6.2) (2026-04-21)
 
 
