@@ -140,6 +140,27 @@ describe('SFE preprocessor', () => {
     });
   });
 
+  it('returns full original payload in sanitized even when SFE drops fields', async () => {
+    // SFE is classifier-only — dropped fields must still appear in the output
+    // returned to the LLM; only Tier 2 string extraction is narrowed.
+    const defense = createPromptDefense({
+      enableTier1: false,
+      enableTier2: false,
+      useSfe: { predictor: mockPredictor() },
+    });
+    // mockPredictor drops UUIDs/IDs — 'abc-123' matches the drop pattern.
+    const input = { id: 'abc-123', name: 'Hello World', description: 'A normal description.' };
+    const result = await defense.defendToolResult(input, 'test_tool');
+    const out = result.sanitized as typeof input;
+    // Dropped field must still be in output
+    expect(out.id).toBe('abc-123');
+    // Non-dropped fields also intact
+    expect(out.name).toBe('Hello World');
+    expect(out.description).toBe('A normal description.');
+    // fieldsDropped confirms SFE did exclude it from classification
+    expect(result.fieldsDropped.some((p) => p.includes('id'))).toBe(true);
+  });
+
   describe('max traversal depth', () => {
     // Build a right-skewed object tree of `depth` nesting levels.
     function buildDeep(depth: number, leaf: unknown = 'hi'): unknown {

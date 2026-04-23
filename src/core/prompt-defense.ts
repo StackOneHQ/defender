@@ -140,8 +140,8 @@ export interface PromptDefenseOptions {
 	 * Default: false. Opt-in — when off, boundary generation is skipped
 	 * entirely (no `generateDataBoundary()` call per tool result).
 	 *
-	 * See `generateBoundaryInstructions()` in `utils/boundary` for the
-	 * system-prompt template that consumers should pair with this.
+	 * When enabled, pair with `generateBoundaryInstructions()` (exported from
+	 * `@stackone/defender`) to add the matching system-prompt instructions.
 	 */
 	annotateBoundary?: boolean;
 	/**
