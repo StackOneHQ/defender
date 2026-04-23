@@ -42,9 +42,10 @@ export interface DefenseResult {
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
 	/**
-	 * Field paths dropped by the SFE preprocessor before classification.
-	 * Empty array when `useSfe` is disabled (the default). See
-	 * `src/sfe/preprocess.ts` for the path format.
+	 * Field paths excluded from Tier 2 classification by the SFE preprocessor.
+	 * These fields are still present in `sanitized` (the returned payload is
+	 * the full original value — SFE filtering is classifier-only).
+	 * Empty array when `useSfe` is disabled (the default).
 	 */
 	fieldsDropped: string[];
 	/**
@@ -153,10 +154,11 @@ export interface PromptDefenseOptions {
 	 * Enable the Semantic Field Extractor (SFE) preprocessor.
 	 *
 	 * When `true`, the tool-result payload is passed through a bundled
-	 * quantized FastText classifier before Tier 1 and Tier 2. Leaves the
-	 * classifier flags as metadata/identifiers are dropped from the payload;
+	 * quantized FastText classifier before Tier 2. Fields the model classifies
+	 * as metadata/identifiers are excluded from Tier 2 string extraction;
 	 * user-facing content (name/description/body/etc.) passes through.
-	 * The filtered value is what gets returned in `DefenseResult.sanitized`.
+	 * The returned `DefenseResult.sanitized` always contains the full original
+	 * payload — SFE filtering is classifier-only and does not drop data.
 	 *
 	 * Measured impact across 22,307 benign payloads (4 datasets):
 	 *   - StackOne connector FPR:  0.96% → 0.53% (44% reduction)
@@ -305,10 +307,12 @@ export class PromptDefense {
 		// MAX_TRAVERSAL_DEPTH. Surfaced in DefenseResult.truncatedAtDepth.
 		const depthFlag = { hit: false };
 
-		// SFE preprocessor — classify and drop leaf fields via the bundled
-		// quantized FastText model. Fail-open on any error so defense
-		// never breaks due to the preprocessor.
-		let effectiveValue: unknown = value;
+		// SFE preprocessor — narrows what reaches the Tier 2 classifier by
+		// dropping metadata/identifier leaf fields via the bundled quantized
+		// FastText model. The filtered payload is used ONLY for Tier 2 string
+		// extraction; Tier 1 sanitization and the returned output always
+		// operate on the original value so no data is lost downstream.
+		let sfeFilteredValue: unknown = value;
 		let fieldsDropped: string[] = [];
 		if (this.sfeEnabled) {
 			try {
@@ -318,7 +322,7 @@ export class PromptDefense {
 						predictor,
 						threshold: this.sfeThreshold,
 					});
-					effectiveValue = pre.filtered;
+					sfeFilteredValue = pre.filtered;
 					fieldsDropped = pre.dropped;
 					if (pre.truncatedAtDepth) depthFlag.hit = true;
 				}
@@ -333,8 +337,9 @@ export class PromptDefense {
 			}
 		}
 
-		// Tier 1: pattern-based sanitization
-		const sanitized = this.toolResultSanitizer.sanitize(effectiveValue, { toolName });
+		// Tier 1: pattern-based sanitization on the original value — SFE
+		// filtering is classifier-only and must not affect the returned payload.
+		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
@@ -345,7 +350,8 @@ export class PromptDefense {
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
-		// Tier 2: packed-chunk ML classification on the (SFE-filtered) value.
+		// Tier 2: packed-chunk ML classification on the SFE-filtered value so
+		// metadata/identifier fields don't inflate injection scores.
 		let tier2Score: number | undefined;
 		let tier2EffectiveScore: number | undefined;
 		let tier2SkipReason: string | undefined;
@@ -358,7 +364,7 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = extractStrings(effectiveValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+			const strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
