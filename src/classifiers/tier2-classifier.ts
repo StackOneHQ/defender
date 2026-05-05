@@ -5,6 +5,7 @@
  */
 
 import type { Tier2Result } from "../types";
+import { stripBoundaryPatterns } from "../utils/boundary";
 import { OnnxClassifier } from "./onnx-classifier";
 
 /**
@@ -79,6 +80,14 @@ export class Tier2Classifier {
 	async classify(text: string): Promise<Tier2Result> {
 		const startTime = performance.now();
 
+		// Strip defender's own boundary markers before tokenization. Upstream
+		// callers (or nested tool-call chains) may feed us output that was
+		// previously wrapped with `[UD-<id>]...[/UD-<id>]`; those tokens
+		// corrupt per-sentence scores because the tokenizer counts them as
+		// part of the sentence. Also strips spoofed boundary patterns an
+		// attacker might inject to confuse downstream LLM trust.
+		text = stripBoundaryPatterns(text);
+
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
 			return {
@@ -143,6 +152,10 @@ export class Tier2Classifier {
 		}
 	> {
 		const startTime = performance.now();
+
+		// See comment in `classify()` — strip boundary markers before sentence
+		// splitting so tag tokens don't corrupt per-sentence scores.
+		text = stripBoundaryPatterns(text);
 
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
@@ -219,6 +232,282 @@ export class Tier2Classifier {
 			maxSentence,
 			sentenceScores,
 		};
+	}
+
+	/**
+	 * Classify text using sentence-packed chunks.
+	 *
+	 * Fast path: if the full text fits in the model's max_length, classify as
+	 * one inference — preserves full cross-sentence context.
+	 *
+	 * Long-text path: sentences are split and greedy-packed into chunks, each
+	 * fitting within max_length. Max score across chunks is returned. Within
+	 * each chunk, the model retains cross-sentence context — so roleplay /
+	 * payload-splitting / multi-agent attacks that span multiple sentences
+	 * are detected (unlike per-sentence classification which loses context).
+	 */
+	async classifyByChunks(text: string): Promise<
+		Tier2Result & {
+			maxSentence?: string;
+			sentenceScores?: Array<{ sentence: string; score: number }>;
+		}
+	> {
+		const startTime = performance.now();
+
+		// See comment in `classify()` — strip boundary markers before sizing
+		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
+		text = stripBoundaryPatterns(text);
+
+		if (text.length < this.config.minTextLength) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: "Text below minTextLength",
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		const modelMaxLen = this.onnxClassifier.getMaxLength();
+
+		// Respect maxTextLength — tokenising a huge payload before the
+		// fast-path check would burn CPU/memory unbounded. Truncate to
+		// `maxTextLength` characters first; anything past that cannot fit
+		// in the model anyway (256 tokens ≪ 10 000 chars).
+		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
+
+		// countTokens requires the tokenizer loaded; classify auto-loads, so
+		// warm up here to mirror that behaviour for the packing path.
+		try {
+			await this.onnxClassifier.warmup();
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Warmup error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		let totalTokens: number;
+		try {
+			totalTokens = this.onnxClassifier.countTokens(bounded);
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Token count error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		// Fast path: full text fits — classify as-is, preserving full context.
+		if (totalTokens <= modelMaxLen) {
+			let score: number;
+			try {
+				score = await this.onnxClassifier.classify(bounded);
+			} catch (err) {
+				return {
+					score: 0,
+					confidence: 0,
+					skipped: true,
+					skipReason: `Classification error: ${err instanceof Error ? err.message : String(err)}`,
+					latencyMs: performance.now() - startTime,
+				};
+			}
+			const safeScore = Number.isFinite(score) ? score : 0;
+			return {
+				score: safeScore,
+				confidence: Math.abs(safeScore - 0.5) * 2,
+				skipped: false,
+				maxSentence: bounded,
+				sentenceScores: [{ sentence: bounded, score: safeScore }],
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		// Long-text path: pack sentences into chunks that fit in modelMaxLen.
+		// Reserve 2 tokens per chunk for [CLS] + [SEP].
+		const maxContentTokens = modelMaxLen - 2;
+
+		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
+		if (sentences.length === 0) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: "No classifiable sentences",
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		const chunks = this.packSentences(sentences, maxContentTokens);
+		let scores: number[];
+		try {
+			scores = await this.onnxClassifier.classifyBatch(chunks);
+		} catch (err) {
+			return {
+				score: 0,
+				confidence: 0,
+				skipped: true,
+				skipReason: `Classification error: ${err instanceof Error ? err.message : String(err)}`,
+				latencyMs: performance.now() - startTime,
+			};
+		}
+
+		let maxScore = 0;
+		let maxChunk = "";
+		const chunkScores: Array<{ sentence: string; score: number }> = [];
+		for (let i = 0; i < scores.length; i++) {
+			const raw = scores[i];
+			const safeScore = Number.isFinite(raw) ? raw : 0;
+			const chunk = chunks[i] ?? "";
+			chunkScores.push({ sentence: chunk, score: safeScore });
+			if (safeScore > maxScore) {
+				maxScore = safeScore;
+				maxChunk = chunk;
+			}
+		}
+
+		return {
+			score: maxScore,
+			confidence: Math.abs(maxScore - 0.5) * 2,
+			skipped: false,
+			maxSentence: maxChunk,
+			sentenceScores: chunkScores,
+			latencyMs: performance.now() - startTime,
+		};
+	}
+
+	/**
+	 * Compute the chunks that classifyByChunks() would classify for a given
+	 * text, WITHOUT invoking the ONNX model. Lets callers with many strings
+	 * to score batch them together in a single ONNX inference — restoring
+	 * v0.5.8-style throughput while keeping v0.6's per-string integrity.
+	 *
+	 * Returns `{ chunks: [], skipped: true, skipReason }` when the text
+	 * cannot be classified (too short, no sentences long enough to classify,
+	 * token-count or warmup failure).
+	 */
+	async prepareChunks(text: string): Promise<{
+		chunks: string[];
+		skipped: boolean;
+		skipReason?: string;
+	}> {
+		// See comment in `classify()` — strip boundary markers before sizing
+		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
+		text = stripBoundaryPatterns(text);
+
+		if (text.length < this.config.minTextLength) {
+			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
+		}
+		const modelMaxLen = this.onnxClassifier.getMaxLength();
+		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
+
+		try {
+			await this.onnxClassifier.warmup();
+		} catch (err) {
+			return {
+				chunks: [],
+				skipped: true,
+				skipReason: `Warmup error: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+
+		// Fast path: WordPiece cannot emit more tokens than input chars (worst
+		// case each char is a single-char subword or [UNK]), plus 2 specials
+		// ([CLS]/[SEP]). If that upper bound already fits, skip the countTokens
+		// tokenizer round-trip — a material win on list payloads full of
+		// short-to-medium field values. Warmup still runs so failures surface
+		// here (fail-safe) rather than propagating out of classifyChunksBatch.
+		if (bounded.length + 2 <= modelMaxLen) {
+			return { chunks: [bounded], skipped: false };
+		}
+
+		let totalTokens: number;
+		try {
+			totalTokens = this.onnxClassifier.countTokens(bounded);
+		} catch (err) {
+			return {
+				chunks: [],
+				skipped: true,
+				skipReason: `Token count error: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
+
+		if (totalTokens <= modelMaxLen) {
+			return { chunks: [bounded], skipped: false };
+		}
+
+		const maxContentTokens = modelMaxLen - 2;
+		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
+		if (sentences.length === 0) {
+			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
+		}
+		return { chunks: this.packSentences(sentences, maxContentTokens), skipped: false };
+	}
+
+	/**
+	 * Classify an arbitrary batch of already-prepared chunks in a SINGLE
+	 * ONNX call. Used by the per-string batching path in `defendToolResult`
+	 * to amortise per-call thread-spin-up over many chunks.
+	 */
+	async classifyChunksBatch(chunks: string[]): Promise<number[]> {
+		if (chunks.length === 0) return [];
+		await this.onnxClassifier.warmup();
+		return this.onnxClassifier.classifyBatch(chunks);
+	}
+
+	/**
+	 * Greedy sentence packer — returns chunks each fitting within maxContentTokens.
+	 * Sentences exceeding maxContentTokens become their own chunk and are
+	 * truncated by the tokenizer at inference (best effort on pathological input).
+	 */
+	private packSentences(sentences: string[], maxContentTokens: number): string[] {
+		const chunks: string[] = [];
+		let current: string[] = [];
+		let currentTokens = 0;
+
+		for (const s of sentences) {
+			const sTokens = this.onnxClassifier.countTokens(s);
+			// countTokens includes [CLS]+[SEP]; subtract to get content cost when packing.
+			const sContentTokens = Math.max(0, sTokens - 2);
+
+			if (sContentTokens > maxContentTokens) {
+				if (current.length > 0) {
+					chunks.push(current.join(" "));
+					current = [];
+					currentTokens = 0;
+				}
+				chunks.push(s);
+				continue;
+			}
+
+			// BERT/WordPiece tokenisers (which all our bundled MiniLM
+			// variants use) do NOT emit a separate token for inter-word
+			// whitespace — "hello world" and "hello" "world" joined give
+			// the same ["hello", "world"] sequence. So a sentence's
+			// content token count adds directly to the running chunk
+			// count without any extra "joiner" cost. This avoids
+			// underpacking: the previous `joinerCost = 1` overestimate
+			// forced extra chunk boundaries (and extra ONNX inferences)
+			// on long payloads.
+			if (currentTokens + sContentTokens > maxContentTokens) {
+				chunks.push(current.join(" "));
+				current = [s];
+				currentTokens = sContentTokens;
+			} else {
+				current.push(s);
+				currentTokens += sContentTokens;
+			}
+		}
+
+		if (current.length > 0) {
+			chunks.push(current.join(" "));
+		}
+		return chunks;
 	}
 
 	/**

@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.6.3](https://github.com/StackOneHQ/defender/compare/defender-v0.6.2...defender-v0.6.3) (2026-04-23)
+
+
+### Bug Fixes
+
+* **ENG-12707, ENG-12708:** make boundary annotation opt-in (annotateBoundary flag) ([#57](https://github.com/StackOneHQ/defender/issues/57)) ([bf10849](https://github.com/StackOneHQ/defender/commit/bf10849dcc6226c6d29b1c043a0cc9069a152d24))
+
+## [0.6.2](https://github.com/StackOneHQ/defender/compare/defender-v0.6.1...defender-v0.6.2) (2026-04-21)
+
+
+### Bug Fixes
+
+* **ENG-12702:** strip boundary markers from input before classification ([#55](https://github.com/StackOneHQ/defender/issues/55)) ([0fdd9d4](https://github.com/StackOneHQ/defender/commit/0fdd9d447d932735e4821890e7b0499ca979af22))
+
+## [0.6.1](https://github.com/StackOneHQ/defender/compare/defender-v0.6.0...defender-v0.6.1) (2026-04-21)
+
+
+### Features
+
+* ** ENG-12684:** v4 ONNX model + cumulative risk fixes + opt-in SFE preprocessor (includes ENG-12671) ([#52](https://github.com/StackOneHQ/defender/issues/52)) ([6fb1ff9](https://github.com/StackOneHQ/defender/commit/6fb1ff91fdc0fbbce33bf3b8987321e0945db861))
+
+
+### Miscellaneous Chores
+
+* release 0.6.1 ([#54](https://github.com/StackOneHQ/defender/issues/54)) ([3611f4b](https://github.com/StackOneHQ/defender/commit/3611f4b039297ebfe3782cb1320b924b80cdb2b9))
+
+## [0.6.0](https://github.com/StackOneHQ/defender/compare/defender-v0.5.8...defender-v0.6.0) (2026-04-16)
+
+
+### Features
+
+* **ENG-12658:** sentence density adjustment to reduce email notification FPs ([#50](https://github.com/StackOneHQ/defender/issues/50)) ([b4a272d](https://github.com/StackOneHQ/defender/commit/b4a272d69d949ec7c1c0cc4f010703ad81b283c5))
+
+
+### Bug Fixes
+
+* **ENG-12643:** prevent prototype pollution during object traversal ([#47](https://github.com/StackOneHQ/defender/issues/47)) ([97f85b7](https://github.com/StackOneHQ/defender/commit/97f85b7512fe33415123aa1f7761ccca8cb39fa4))
+
+## [0.5.8](https://github.com/StackOneHQ/defender/compare/defender-v0.5.7...defender-v0.5.8) (2026-04-08)
+
+
+### Bug Fixes
+
+* **ENG-12604:** chunk batch classification to bound ONNX memory usage ([#44](https://github.com/StackOneHQ/defender/issues/44)) ([46e6548](https://github.com/StackOneHQ/defender/commit/46e65483d87d1a26d503c345b3fdcc55dc800cc0))
+
+## [0.5.7](https://github.com/StackOneHQ/defender/compare/defender-v0.5.6...defender-v0.5.7) (2026-04-08)
+
+
+### Bug Fixes
+
+* **ENG-12594:** remove per-tool sanitization rules ([#42](https://github.com/StackOneHQ/defender/issues/42)) ([eb4664b](https://github.com/StackOneHQ/defender/commit/eb4664bf73df26961ac5a9ab524a688be775ca6b))
+
 ## [0.5.6](https://github.com/StackOneHQ/defender/compare/defender-v0.5.5...defender-v0.5.6) (2026-04-01)
 
 

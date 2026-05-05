@@ -7,7 +7,7 @@
  */
 
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
-import { DEFAULT_RISKY_FIELDS, DEFAULT_TOOL_RULES, DEFAULT_TRAVERSAL_CONFIG } from "../config";
+import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
 import { containsSuspiciousEncoding } from "../sanitizers/encoding-detector";
 import { createSanitizer, type Sanitizer } from "../sanitizers/sanitizer";
 import type {
@@ -19,11 +19,10 @@ import type {
 	SanitizationContext,
 	SanitizationMetadata,
 	SanitizationResult,
-	ToolSanitizationRule,
 	TraversalConfig,
 } from "../types";
 import { generateDataBoundary } from "../utils/boundary";
-import { getToolRule, isRiskyField, shouldSkipField } from "../utils/field-detection";
+import { isRiskyField } from "../utils/field-detection";
 import {
 	createSizeMetrics,
 	detectStructureType,
@@ -41,19 +40,25 @@ export interface ToolResultSanitizerConfig {
 	riskyFields: RiskyFieldConfig;
 	/** Traversal limits */
 	traversal: TraversalConfig;
-	/** Per-tool rules */
-	toolRules: ToolSanitizationRule[];
 	/** Default risk level when not determined by classification */
 	defaultRiskLevel: RiskLevel;
 	/** Whether to use Tier 1 classification */
 	useTier1Classification: boolean;
 	/** Whether to block high/critical risk entirely */
 	blockHighRisk: boolean;
+	/**
+	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
+	 * markers. Default: false. When disabled, boundary generation is skipped
+	 * entirely (no `generateDataBoundary()` call per tool result).
+	 */
+	annotateBoundary: boolean;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
 		high: number;
 		patterns: number;
+		mediumFraction: number;
+		patternsFraction: number;
 	};
 }
 
@@ -63,14 +68,16 @@ export interface ToolResultSanitizerConfig {
 export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	riskyFields: DEFAULT_RISKY_FIELDS,
 	traversal: DEFAULT_TRAVERSAL_CONFIG,
-	toolRules: DEFAULT_TOOL_RULES,
 	defaultRiskLevel: "medium",
 	useTier1Classification: true,
 	blockHighRisk: false,
+	annotateBoundary: false,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
 		patterns: 3,
+		mediumFraction: 0.25,
+		patternsFraction: 0.25,
 	},
 };
 
@@ -108,7 +115,7 @@ export class ToolResultSanitizer {
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.sanitizer = createSanitizer();
+		this.sanitizer = createSanitizer({ annotateBoundary: this.config.annotateBoundary });
 		this.patternDetector = createPatternDetector();
 	}
 
@@ -122,14 +129,13 @@ export class ToolResultSanitizer {
 	sanitize<T = unknown>(value: T, options: SanitizeToolResultOptions): SanitizationResult<T> {
 		const startTime = performance.now();
 
-		// Generate boundary for this result
-		const boundary = options.boundary ?? generateDataBoundary();
-
-		// Get tool-specific rule
-		const toolRule = getToolRule(options.toolName, this.config.toolRules);
+		// Generate boundary for this result only when wrapping is enabled —
+		// skipped entirely when `annotateBoundary` is off to avoid the
+		// nanoid() call and tag-string allocation on every tool result.
+		const boundary = this.config.annotateBoundary ? (options.boundary ?? generateDataBoundary()) : undefined;
 
 		// Initialize cumulative risk tracker
-		const cumulativeRisk = this.createCumulativeRiskTracker(toolRule);
+		const cumulativeRisk = this.createCumulativeRiskTracker();
 
 		// Initialize size metrics
 		const sizeMetrics = createSizeMetrics();
@@ -141,7 +147,7 @@ export class ToolResultSanitizer {
 			toolName: options.toolName,
 			vertical: options.vertical ?? this.extractVertical(options.toolName),
 			resource: options.resource ?? this.extractResource(options.toolName),
-			riskLevel: options.riskLevel ?? toolRule?.sanitizationLevel ?? this.config.defaultRiskLevel,
+			riskLevel: options.riskLevel ?? this.config.defaultRiskLevel,
 			boundary,
 			cumulativeRisk,
 		};
@@ -159,7 +165,7 @@ export class ToolResultSanitizer {
 		};
 
 		// Sanitize the value
-		const sanitized = this.sanitizeValue(value as SanitizableValue, context, toolRule, metadata, 0);
+		const sanitized = this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
 
 		// Check if cumulative risk requires escalation
 		if (this.shouldEscalate(cumulativeRisk)) {
@@ -183,7 +189,6 @@ export class ToolResultSanitizer {
 	private sanitizeValue(
 		value: SanitizableValue,
 		context: SanitizationContext,
-		toolRule: ToolSanitizationRule | undefined,
 		metadata: SanitizationMetadata,
 		depth: number,
 	): SanitizableValue {
@@ -209,12 +214,12 @@ export class ToolResultSanitizer {
 
 		// Handle arrays
 		if (Array.isArray(value)) {
-			return this.sanitizeArray(value, context, toolRule, metadata, depth);
+			return this.sanitizeArray(value, context, metadata, depth);
 		}
 
 		// Handle objects
 		if (typeof value === "object") {
-			return this.sanitizeObject(value as Record<string, SanitizableValue>, context, toolRule, metadata, depth);
+			return this.sanitizeObject(value as Record<string, SanitizableValue>, context, metadata, depth);
 		}
 
 		// Primitives (non-string) pass through
@@ -227,7 +232,6 @@ export class ToolResultSanitizer {
 	private sanitizeArray(
 		arr: SanitizableValue[],
 		context: SanitizationContext,
-		toolRule: ToolSanitizationRule | undefined,
 		metadata: SanitizationMetadata,
 		depth: number,
 	): SanitizableValue[] {
@@ -244,7 +248,7 @@ export class ToolResultSanitizer {
 					...context,
 					path: `${context.path}[${i}]`,
 				};
-				sanitized.push(this.sanitizeValue(arr[i], itemContext, toolRule, metadata, depth + 1));
+				sanitized.push(this.sanitizeValue(arr[i], itemContext, metadata, depth + 1));
 			}
 
 			// Add notice about skipped items
@@ -261,7 +265,7 @@ export class ToolResultSanitizer {
 				...context,
 				path: `${context.path}[${index}]`,
 			};
-			return this.sanitizeValue(item, itemContext, toolRule, metadata, depth + 1);
+			return this.sanitizeValue(item, itemContext, metadata, depth + 1);
 		});
 	}
 
@@ -271,7 +275,6 @@ export class ToolResultSanitizer {
 	private sanitizeObject(
 		obj: Record<string, SanitizableValue>,
 		context: SanitizationContext,
-		toolRule: ToolSanitizationRule | undefined,
 		metadata: SanitizationMetadata,
 		depth: number,
 	): Record<string, SanitizableValue> {
@@ -279,19 +282,24 @@ export class ToolResultSanitizer {
 
 		// Check for paginated response
 		if (isPaginatedResponse(obj)) {
-			return this.sanitizePaginatedResponse(obj, context, toolRule, metadata, depth);
+			return this.sanitizePaginatedResponse(obj, context, metadata, depth);
 		}
 
 		// Check for wrapped response
 		const structureType = detectStructureType(obj);
 		if (structureType === "wrapped") {
-			return this.sanitizeWrappedResponse(obj, context, toolRule, metadata, depth);
+			return this.sanitizeWrappedResponse(obj, context, metadata, depth);
 		}
 
 		// Regular object - process each field
 		const result: Record<string, SanitizableValue> = {};
 
 		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			const fieldContext = {
 				...context,
@@ -299,19 +307,13 @@ export class ToolResultSanitizer {
 				fieldName: key,
 			};
 
-			// Check if field should be skipped
-			if (shouldSkipField(key, toolRule)) {
-				result[key] = val;
-				continue;
-			}
-
 			// Check if this is a risky field that needs sanitization
 			if (this.isFieldRisky(key, context.toolName) && typeof val === "string") {
 				metadata.riskyFieldNames.push(key);
-				result[key] = this.sanitizeStringField(val, fieldContext, toolRule, metadata);
+				result[key] = this.sanitizeStringField(val, fieldContext, metadata);
 			} else {
 				// Recurse into non-risky fields
-				result[key] = this.sanitizeValue(val, fieldContext, toolRule, metadata, depth + 1);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
 			}
 		}
 
@@ -324,28 +326,30 @@ export class ToolResultSanitizer {
 	private sanitizePaginatedResponse(
 		obj: Record<string, SanitizableValue>,
 		context: SanitizationContext,
-		toolRule: ToolSanitizationRule | undefined,
 		metadata: SanitizationMetadata,
 		depth: number,
 	): Record<string, SanitizableValue> {
-		const result: Record<string, SanitizableValue> = { ...obj };
+		const result: Record<string, SanitizableValue> = {};
+		const dataKeys = new Set(["data", "results", "items", "records"]);
 
-		// Find and sanitize the data array
-		const dataKeys = ["data", "results", "items", "records"];
-		for (const key of dataKeys) {
-			if (Array.isArray(obj[key])) {
-				const dataContext = {
-					...context,
-					path: `${context.path}.${key}`,
-				};
-				result[key] = this.sanitizeArray(
-					obj[key] as SanitizableValue[],
-					dataContext,
-					toolRule,
-					metadata,
-					depth + 1,
-				);
-				break;
+		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
+
+			const fieldContext = {
+				...context,
+				path: context.path ? `${context.path}.${key}` : key,
+				fieldName: key,
+			};
+
+			if (dataKeys.has(key) && Array.isArray(val)) {
+				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1);
+			} else {
+				// Recurse into non-data fields so nested dangerous keys are filtered too
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
 			}
 		}
 
@@ -358,13 +362,17 @@ export class ToolResultSanitizer {
 	private sanitizeWrappedResponse(
 		obj: Record<string, SanitizableValue>,
 		context: SanitizationContext,
-		toolRule: ToolSanitizationRule | undefined,
 		metadata: SanitizationMetadata,
 		depth: number,
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
 
 		for (const [key, val] of Object.entries(obj)) {
+			if (DANGEROUS_KEYS.has(key)) {
+				const keyPath = context.path ? `${context.path}.${key}` : key;
+				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
+				continue;
+			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			const fieldContext = {
 				...context,
@@ -375,15 +383,9 @@ export class ToolResultSanitizer {
 			// Check if this is the data wrapper
 			const wrappedData = getWrappedData({ [key]: val });
 			if (wrappedData) {
-				result[key] = this.sanitizeArray(
-					val as SanitizableValue[],
-					fieldContext,
-					toolRule,
-					metadata,
-					depth + 1,
-				);
+				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1);
 			} else {
-				result[key] = this.sanitizeValue(val, fieldContext, toolRule, metadata, depth + 1);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
 			}
 		}
 
@@ -393,16 +395,20 @@ export class ToolResultSanitizer {
 	/**
 	 * Sanitize a string field
 	 */
-	private sanitizeStringField(
-		value: string,
-		context: SanitizationContext,
-		_toolRule: ToolSanitizationRule | undefined,
-		metadata: SanitizationMetadata,
-	): string {
+	private sanitizeStringField(value: string, context: SanitizationContext, metadata: SanitizationMetadata): string {
 		metadata.sizeMetrics.stringCount++;
 
 		// Determine risk level for this field
 		let riskLevel = context.riskLevel;
+
+		// Every risky string field counts toward the cumulative-risk
+		// denominator, not just ones that matched a pattern. Otherwise the
+		// fraction check becomes degenerate — matched/matched = 100% trivially
+		// passes, which defeats the fraction threshold for list responses
+		// where most items are benign.
+		if (context.cumulativeRisk) {
+			context.cumulativeRisk.totalFieldsProcessed++;
+		}
 
 		// Use Tier 1 classification if enabled
 		let tier1Patterns: string[] = [];
@@ -421,9 +427,18 @@ export class ToolResultSanitizer {
 					riskLevel = "medium";
 				}
 
-				// Update cumulative risk tracker
-				if (context.cumulativeRisk) {
-					this.updateCumulativeRisk(context.cumulativeRisk, riskLevel, tier1Patterns);
+				// Update cumulative risk tracker — only for real regex pattern matches,
+				// not structural-only detections (high_entropy, excessive_length, etc.).
+				// Structural anomalies fire on legitimate content like UUID-appended field
+				// values in list responses and would cause false cumulative escalations.
+				// Pass suggestedRisk rather than the field's post-escalation riskLevel so that
+				// a low-severity match doesn't inflate mediumRiskCount via the context default.
+				if (context.cumulativeRisk && classificationResult.matches.length > 0) {
+					this.updateCumulativeRisk(
+						context.cumulativeRisk,
+						classificationResult.suggestedRisk,
+						tier1Patterns,
+					);
 				}
 			}
 		}
@@ -484,10 +499,10 @@ export class ToolResultSanitizer {
 	}
 
 	/**
-	 * Create cumulative risk tracker with tool-specific thresholds
+	 * Create a cumulative risk tracker using the configured cumulative risk thresholds.
 	 */
-	private createCumulativeRiskTracker(toolRule?: ToolSanitizationRule): CumulativeRiskTracker {
-		const thresholds = toolRule?.cumulativeRiskThresholds ?? this.config.cumulativeRiskThresholds;
+	private createCumulativeRiskTracker(): CumulativeRiskTracker {
+		const thresholds = this.config.cumulativeRiskThresholds;
 		return {
 			mediumRiskCount: 0,
 			highRiskCount: 0,
@@ -497,16 +512,19 @@ export class ToolResultSanitizer {
 				medium: thresholds.medium,
 				high: thresholds.high,
 				patterns: thresholds.patterns,
+				mediumFraction: thresholds.mediumFraction,
+				patternsFraction: thresholds.patternsFraction,
 			},
 		};
 	}
 
 	/**
-	 * Update cumulative risk tracker
+	 * Update cumulative risk tracker. `totalFieldsProcessed` is incremented
+	 * by the caller for every risky string field — NOT here — so the
+	 * fraction checks in `shouldEscalate` have a meaningful denominator
+	 * (every field processed, not only matched ones).
 	 */
 	private updateCumulativeRisk(tracker: CumulativeRiskTracker, riskLevel: RiskLevel, patterns: string[]): void {
-		tracker.totalFieldsProcessed++;
-
 		if (riskLevel === "high" || riskLevel === "critical") {
 			tracker.highRiskCount++;
 		} else if (riskLevel === "medium") {
@@ -522,15 +540,31 @@ export class ToolResultSanitizer {
 	 * Check if cumulative risk should trigger escalation
 	 */
 	private shouldEscalate(tracker: CumulativeRiskTracker): boolean {
-		if (tracker.highRiskCount >= tracker.escalationThreshold.high) {
+		const t = tracker.escalationThreshold;
+
+		// A single high-risk field still escalates — these come from genuine high-severity
+		// regex matches (role markers, instruction overrides) that indicate real threats.
+		if (tracker.highRiskCount >= t.high) {
 			return true;
 		}
-		if (tracker.mediumRiskCount >= tracker.escalationThreshold.medium) {
+
+		// Medium-risk and pattern escalations require both an absolute minimum count
+		// AND a fraction of total processed fields. This prevents list responses with
+		// many items from escalating just because a small number of items happen to
+		// contain flagged content, while still catching concentrated fragmented attacks.
+		const total = Math.max(tracker.totalFieldsProcessed, 1);
+
+		if (tracker.mediumRiskCount >= t.medium && tracker.mediumRiskCount / total >= t.mediumFraction) {
 			return true;
 		}
-		if (tracker.suspiciousPatterns.length >= tracker.escalationThreshold.patterns) {
+
+		if (
+			tracker.suspiciousPatterns.length >= t.patterns &&
+			tracker.suspiciousPatterns.length / total >= t.patternsFraction
+		) {
 			return true;
 		}
+
 		return false;
 	}
 

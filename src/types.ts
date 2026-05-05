@@ -160,12 +160,16 @@ export interface CumulativeRiskTracker {
 	totalFieldsProcessed: number;
 	/** Thresholds for escalation */
 	escalationThreshold: {
-		/** Escalate to high if mediumRiskCount >= this */
+		/** Absolute minimum mediumRiskCount required to escalate */
 		medium: number;
 		/** Escalate to high if highRiskCount >= this */
 		high: number;
-		/** Escalate if suspiciousPatterns.length >= this */
+		/** Absolute minimum suspiciousPatterns.length required to escalate */
 		patterns: number;
+		/** Fraction of totalFieldsProcessed that must be medium-risk (e.g. 0.25 = 25%) */
+		mediumFraction: number;
+		/** Fraction of totalFieldsProcessed that must be pattern-flagged (e.g. 0.25 = 25%) */
+		patternsFraction: number;
 	};
 }
 
@@ -225,6 +229,8 @@ export interface SanitizationMetadata {
 	sizeMetrics: SizeMetrics;
 	/** Unique field names (leaf keys) that Tier 1 identified as risky */
 	riskyFieldNames: string[];
+	/** Paths of keys removed due to prototype pollution risk */
+	dangerousKeysRemoved?: string[];
 }
 
 /**
@@ -276,28 +282,6 @@ export interface TraversalConfig {
 }
 
 /**
- * Per-tool sanitization rules
- */
-export interface ToolSanitizationRule {
-	/** Tool name pattern (string with wildcards or RegExp) */
-	toolPattern: string | RegExp;
-	/** Override risky fields for this tool */
-	riskyFields?: string[];
-	/** Override sanitization level */
-	sanitizationLevel?: RiskLevel;
-	/** Maximum field lengths */
-	maxFieldLengths?: Record<string, number>;
-	/** Fields to never sanitize */
-	skipFields?: string[];
-	/** Custom cumulative risk thresholds */
-	cumulativeRiskThresholds?: {
-		medium: number;
-		high: number;
-		patterns: number;
-	};
-}
-
-/**
  * Main configuration for the prompt defense framework
  */
 export interface PromptDefenseConfig {
@@ -305,13 +289,13 @@ export interface PromptDefenseConfig {
 	riskyFields: RiskyFieldConfig;
 	/** Traversal limits */
 	traversal: TraversalConfig;
-	/** Per-tool rules */
-	toolRules: ToolSanitizationRule[];
 	/** Default cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
 		high: number;
 		patterns: number;
+		mediumFraction: number;
+		patternsFraction: number;
 	};
 	/** Tier 2 configuration */
 	tier2: {

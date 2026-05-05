@@ -11,7 +11,8 @@ import {
 	type Tier2Classifier,
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
-import { createConfig } from "../config";
+import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
+import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
@@ -40,6 +41,19 @@ export interface DefenseResult {
 	tier2SkipReason?: string;
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
+	/**
+	 * Field paths excluded from Tier 2 classification by the SFE preprocessor.
+	 * These fields are still present in `sanitized` (the returned payload is
+	 * the full original value — SFE filtering is classifier-only).
+	 * Empty array when `useSfe` is disabled (the default).
+	 */
+	fieldsDropped: string[];
+	/**
+	 * True if any recursive payload walk hit `MAX_TRAVERSAL_DEPTH` —
+	 * analysis is complete only to that depth, deeper fields passed through
+	 * unchanged. Stack-safety guard; typically never set on real payloads.
+	 */
+	truncatedAtDepth?: boolean;
 	/** Total processing time in milliseconds */
 	latencyMs: number;
 }
@@ -49,21 +63,25 @@ export interface DefenseResult {
  * When `fields` is provided, only strings under matching field keys are collected;
  * the traversal still descends into non-matching keys to find matching ones deeper.
  */
-function extractStrings(obj: unknown, fields?: string[]): string[] {
+function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: { hit: boolean }): string[] {
 	const strings: string[] = [];
 
-	function collectAll(value: unknown): void {
+	function collectAll(value: unknown, depth: number): void {
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
 		if (typeof value === "string") {
 			strings.push(value);
 		} else if (Array.isArray(value)) {
-			for (const item of value) collectAll(item);
+			for (const item of value) collectAll(item, depth + 1);
 		} else if (value && typeof value === "object") {
-			for (const v of Object.values(value)) collectAll(v);
+			for (const v of Object.values(value)) collectAll(v, depth + 1);
 		}
 	}
 
 	if (!fields || fields.length === 0) {
-		collectAll(obj);
+		collectAll(obj, 0);
 		return strings;
 	}
 
@@ -76,15 +94,19 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 	// Use a Set for O(1) key lookups during traversal
 	const fieldSet = new Set(fields);
 
-	function traverse(value: unknown): void {
+	function traverse(value: unknown, depth: number): void {
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
 		if (Array.isArray(value)) {
-			for (const item of value) traverse(item);
+			for (const item of value) traverse(item, depth + 1);
 		} else if (value && typeof value === "object") {
 			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
 				if (fieldSet.has(k)) {
-					collectAll(v);
+					collectAll(v, depth + 1);
 				} else {
-					traverse(v);
+					traverse(v, depth + 1);
 				}
 			}
 		}
@@ -92,7 +114,7 @@ function extractStrings(obj: unknown, fields?: string[]): string[] {
 		// only strings under matching field names are collected.
 	}
 
-	traverse(obj);
+	traverse(obj, 0);
 	return strings;
 }
 
@@ -113,16 +135,51 @@ export interface PromptDefenseOptions {
 	/** Default risk level for unclassified content */
 	defaultRiskLevel?: RiskLevel;
 	/**
-	 * Use built-in per-tool sanitization rules (e.g. gmail_* defaults to high risk).
-	 * Defaults to false — tool rules are opt-in to avoid unexpected risk level inflation.
+	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
+	 * markers so downstream LLM prompts can distinguish untrusted data.
+	 * Default: false. Opt-in — when off, boundary generation is skipped
+	 * entirely (no `generateDataBoundary()` call per tool result).
+	 *
+	 * When enabled, pair with `generateBoundaryInstructions()` (exported from
+	 * `@stackone/defender`) to add the matching system-prompt instructions.
 	 */
-	useDefaultToolRules?: boolean;
+	annotateBoundary?: boolean;
 	/**
 	 * Only run Tier 2 on strings extracted from these field names.
 	 * Strings under any other field key are skipped.
 	 * If omitted, Tier 2 runs on all strings in the tool result.
 	 */
 	tier2Fields?: string[];
+	/**
+	 * Enable the Semantic Field Extractor (SFE) preprocessor.
+	 *
+	 * When `true`, the tool-result payload is passed through a bundled
+	 * quantized FastText classifier before Tier 2. Fields the model classifies
+	 * as metadata/identifiers are excluded from Tier 2 string extraction;
+	 * user-facing content (name/description/body/etc.) passes through.
+	 * The returned `DefenseResult.sanitized` always contains the full original
+	 * payload — SFE filtering is classifier-only and does not drop data.
+	 *
+	 * Measured impact across 22,307 benign payloads (4 datasets):
+	 *   - StackOne connector FPR:  0.96% → 0.53% (44% reduction)
+	 *   - ToolACE FPR:             0.95% → 0.88%
+	 *   - ChatML FPR:              0.13% → 0.10%
+	 *   - MirrorAPI FPR:           unchanged (content-level model errors)
+	 *   - Defender latency:        ≈15 ms → ≈13 ms (smaller payloads)
+	 *
+	 * Zero false drops introduced on any benchmark.
+	 *
+	 * Requires `fasttext.wasm` to be installed (optional peer dependency).
+	 * If the runtime is unavailable at initialization time, the preprocessor
+	 * fails open — payloads pass through unfiltered with a single
+	 * console.warn.
+	 *
+	 * Default: false. Pass `{ threshold: 0.3 }` to override the drop
+	 * threshold (default 0.5 — tuned for zero false drops). Pass
+	 * `{ predictor: customPredictor }` to substitute a caller-supplied
+	 * FastText-compatible predictor.
+	 */
+	useSfe?: boolean | { threshold?: number; predictor?: SfePredictor };
 }
 
 /**
@@ -147,6 +204,9 @@ export class PromptDefense {
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
 	private tier2Fields: string[] | undefined;
+	private sfeEnabled: boolean = false;
+	private sfeThreshold: number = 0.5;
+	private sfeCustomPredictor: SfePredictor | undefined = undefined;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -159,14 +219,25 @@ export class PromptDefense {
 
 		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
 
+		// SFE preprocessor — off by default. When `true`, enable with the
+		// bundled quantized FastText model. When an object is passed, enable
+		// with its threshold and/or a custom predictor.
+		if (options.useSfe === true) {
+			this.sfeEnabled = true;
+		} else if (options.useSfe && typeof options.useSfe === "object") {
+			this.sfeEnabled = true;
+			if (typeof options.useSfe.threshold === "number") this.sfeThreshold = options.useSfe.threshold;
+			if (options.useSfe.predictor) this.sfeCustomPredictor = options.useSfe.predictor;
+		}
+
 		// Initialize components
 		this.toolResultSanitizer = createToolResultSanitizer({
 			riskyFields: this.config.riskyFields,
 			traversal: this.config.traversal,
-			toolRules: options.config?.toolRules ?? (options.useDefaultToolRules === true ? this.config.toolRules : []),
 			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
 			useTier1Classification: options.enableTier1 ?? true,
 			blockHighRisk: options.blockHighRisk ?? false,
+			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
 
@@ -187,6 +258,26 @@ export class PromptDefense {
 	async warmupTier2(): Promise<void> {
 		if (this.tier2Classifier) {
 			await this.tier2Classifier.warmup();
+		}
+		// Also warm the SFE predictor (bundled FastText WASM) if enabled.
+		// Idempotent — subsequent calls reuse the cached predictor. Fail
+		// open on any error (model missing, WASM init failure) — the
+		// preprocessor path already handles a null predictor by passing
+		// payloads through unfiltered, so a warmup failure must not
+		// propagate to callers and break their startup.
+		if (this.sfeEnabled && !this.sfeCustomPredictor) {
+			// getDefaultPredictor() already catches load failures internally
+			// and resolves to null — it never rejects. So we check the
+			// resolved value instead of wrapping in try/catch. A null here
+			// means the preprocessor will pass payloads through unfiltered
+			// at call time; `this.sfeEnabled` stays true so a later retry
+			// (e.g. after the missing dep is installed) is still possible.
+			const predictor = await getDefaultPredictor();
+			if (!predictor) {
+				console.warn(
+					"[defender] SFE predictor unavailable at warmup; calls with useSfe enabled will pass payloads through unfiltered until the runtime or model file is available.",
+				);
+			}
 		}
 	}
 
@@ -212,7 +303,42 @@ export class PromptDefense {
 	async defendToolResult(value: unknown, toolName: string): Promise<DefenseResult> {
 		const startTime = performance.now();
 
-		// Tier 1: pattern-based sanitization
+		// Shared stack-safety flag — flipped by any walk that hits
+		// MAX_TRAVERSAL_DEPTH. Surfaced in DefenseResult.truncatedAtDepth.
+		const depthFlag = { hit: false };
+
+		// SFE preprocessor — narrows what reaches the Tier 2 classifier by
+		// dropping metadata/identifier leaf fields via the bundled quantized
+		// FastText model. The filtered payload is used ONLY for Tier 2 string
+		// extraction; Tier 1 sanitization and the returned output always
+		// operate on the original value so no data is lost downstream.
+		let sfeFilteredValue: unknown = value;
+		let fieldsDropped: string[] = [];
+		if (this.sfeEnabled) {
+			try {
+				const predictor = this.sfeCustomPredictor ?? (await getDefaultPredictor());
+				if (predictor) {
+					const pre = await sfePreprocess(value, {
+						predictor,
+						threshold: this.sfeThreshold,
+					});
+					sfeFilteredValue = pre.filtered;
+					fieldsDropped = pre.dropped;
+					if (pre.truncatedAtDepth) depthFlag.hit = true;
+				}
+			} catch (err) {
+				// Fail open — continue with the unfiltered value so defense
+				// never breaks on a preprocessor failure. Log so operators
+				// can detect predictor regressions (e.g. WASM runtime
+				// transient failures, malformed payload) via telemetry.
+				console.warn(
+					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+
+		// Tier 1: pattern-based sanitization on the original value — SFE
+		// filtering is classifier-only and must not affect the returned payload.
 		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
 
 		// Collect Tier 1 metadata
@@ -224,35 +350,122 @@ export class PromptDefense {
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
-		// Tier 2: sentence-level ML classification on raw (unsanitized) value
+		// Tier 2: packed-chunk ML classification on the SFE-filtered value so
+		// metadata/identifier fields don't inflate injection scores.
 		let tier2Score: number | undefined;
+		let tier2EffectiveScore: number | undefined;
 		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
 
 		if (this.tier2Classifier) {
-			// Use explicit tier2Fields override, or fall back to the risky field names
-			// identified by Tier 1. If neither is available, scan all strings.
-			const { riskyFieldNames } = sanitized.metadata;
-			const fieldsForTier2 = this.tier2Fields ?? (riskyFieldNames.length > 0 ? riskyFieldNames : undefined);
-			const strings = extractStrings(value, fieldsForTier2);
-			const combinedText = strings.join("\n\n");
+			// Use explicit tier2Fields if provided; otherwise scan all strings.
+			// Restricting to Tier 1 riskyFieldNames would create a coverage gap: injections
+			// in fields not covered by tool rules would bypass Tier 2 entirely while still
+			// being visible to the LLM. Scanning all strings is the safe default.
+			const fieldsForTier2 = this.tier2Fields;
+			const strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
 
-			if (combinedText.length > 0) {
-				const tier2Result = await this.tier2Classifier.classifyBySentence(combinedText);
-				if (!tier2Result.skipped) {
-					tier2Score = tier2Result.score;
-					tier2Risk = this.tier2Classifier.getRiskLevel(tier2Result.score);
-					maxSentence = tier2Result.maxSentence;
+			if (strings.length > 0) {
+				// Per-string classification with BATCHED inference.
+				//
+				// Why per-string: keeps a benign metadata blob in one field from
+				// diluting a real injection in another. Measured A/B on 940 benign
+				// connector payloads: join-text-style aggregation gives 63/940 FPs
+				// (6.70%) vs per-string 2-3/940 (0.21-0.32%) — 10× worse FPR.
+				//
+				// Why batched: v0.6.0's per-string loop ran one ONNX inference per
+				// string serially, which on list-response payloads (~1000 fields)
+				// was ~80 ms with SFE vs ~7 ms for join-text. We now prepare all
+				// chunks up-front and run a single classifyChunksBatch() — ~10×
+				// throughput recovery while keeping per-string scoring semantics.
+
+				// Phase 1: compute chunks per string (warmup + tokenize + pack),
+				// track where each string's chunks live in the flat chunk array.
+				const preps = await Promise.all(strings.map((s) => this.tier2Classifier!.prepareChunks(s)));
+				const allChunks: string[] = [];
+				const stringRanges: Array<{ start: number; end: number }> = [];
+				const skipReasons = new Set<string>();
+				for (const prep of preps) {
+					if (prep.skipped) {
+						if (prep.skipReason) skipReasons.add(prep.skipReason);
+						stringRanges.push({ start: -1, end: -1 });
+						continue;
+					}
+					stringRanges.push({ start: allChunks.length, end: allChunks.length + prep.chunks.length });
+					allChunks.push(...prep.chunks);
+				}
+
+				if (allChunks.length === 0) {
+					const reasons = Array.from(skipReasons);
+					tier2SkipReason =
+						reasons.length === 0
+							? "All strings skipped by classifier"
+							: `All strings skipped by classifier: ${reasons.join("; ")}`;
 				} else {
-					tier2SkipReason = tier2Result.skipReason;
+					// Phase 2: ONE batched ONNX call for every chunk across every string.
+					// Fail-safe: inference errors mark Tier 2 as skipped rather than
+					// propagating out of defendToolResult (matches the old
+					// classifyByChunks contract).
+					let allScores: number[] | null = null;
+					try {
+						allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+					} catch (err) {
+						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
+					}
+
+					if (allScores) {
+						// Phase 3: compute per-string max; track global max + chunk.
+						const perStringScores: number[] = [];
+						for (let i = 0; i < strings.length; i++) {
+							const { start, end } = stringRanges[i];
+							if (start < 0) continue;
+							let sMax = 0;
+							let sMaxChunk = "";
+							for (let j = start; j < end; j++) {
+								const raw = allScores[j];
+								const safeScore = Number.isFinite(raw) ? raw : 0;
+								if (safeScore > sMax) {
+									sMax = safeScore;
+									sMaxChunk = allChunks[j] ?? "";
+								}
+							}
+							perStringScores.push(sMax);
+							if (tier2Score === undefined || sMax > tier2Score) {
+								tier2Score = sMax;
+								maxSentence = sMaxChunk;
+							}
+						}
+
+						// Cross-string density adjustment (mild). Applied only when we
+						// have 3+ strings — otherwise a 1- or 2-string payload is
+						// mathematically indistinguishable from a real attack that
+						// happens to be short, and damping it would create false
+						// negatives. For larger payloads, a lone high-scoring string
+						// surrounded by many benign strings is typical of benign
+						// connector responses (e.g. 100 pay schedules with one
+						// imperative descriptor). Damping with pow(highCount/total, 0.1)
+						// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
+						// attacks concentrated across multiple strings are barely affected.
+						tier2EffectiveScore = tier2Score;
+						const DENSITY_SUB_THRESHOLD = 0.75;
+						if (tier2Score !== undefined && perStringScores.length > 2) {
+							const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
+							if (highCount > 0) {
+								const factor = (highCount / perStringScores.length) ** 0.1;
+								tier2EffectiveScore = tier2Score * factor;
+							}
+						}
+
+						if (tier2EffectiveScore !== undefined) {
+							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
+						}
+					}
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
-					: riskyFieldNames.length > 0
-						? "No strings found in Tier 1 risky fields"
-						: "No strings extracted from tool result";
+					: "No strings extracted from tool result";
 			}
 		}
 
@@ -268,7 +481,7 @@ export class PromptDefense {
 		const hasThreats =
 			detections.length > 0 ||
 			fieldsSanitized.length > 0 ||
-			(tier2Score !== undefined && tier2Score >= this.config.tier2.highRiskThreshold);
+			(tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold);
 
 		// Three cases for allowed:
 		// 1. blockHighRisk is off → always allow
@@ -286,6 +499,8 @@ export class PromptDefense {
 			tier2Score,
 			tier2SkipReason,
 			maxSentence,
+			fieldsDropped,
+			truncatedAtDepth: depthFlag.hit || undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

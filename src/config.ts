@@ -2,7 +2,22 @@
  * Default configuration for the Prompt Defense Framework
  */
 
-import type { PromptDefenseConfig, RiskyFieldConfig, ToolSanitizationRule, TraversalConfig } from "./types";
+import type { PromptDefenseConfig, RiskyFieldConfig, TraversalConfig } from "./types";
+
+/**
+ * Keys that are blocked during object traversal to prevent prototype pollution
+ */
+export const DANGEROUS_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Stack-safety cap for recursive payload walks outside the Tier 1 sanitizer
+ * (which has its own `traversal.maxDepth` business-logic cap of 10).
+ * Tool-result payloads are bounded in practice (rarely > 20 levels); this
+ * guards against pathological or hostile deep nesting. Walks that hit this
+ * cap bubble `truncatedAtDepth: true` up through `DefenseResult` so callers
+ * can detect degraded analysis coverage.
+ */
+export const MAX_TRAVERSAL_DEPTH = 100;
 
 /**
  * Default risky field configuration
@@ -67,102 +82,14 @@ export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
 };
 
 /**
- * Default per-tool sanitization rules
- */
-export const DEFAULT_TOOL_RULES: ToolSanitizationRule[] = [
-	// Document tools - higher risk due to content fields
-	{
-		toolPattern: /^documents_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 500,
-			description: 2000,
-			content: 100000,
-		},
-		skipFields: ["id", "url", "size", "created_at", "updated_at", "mime_type"],
-		cumulativeRiskThresholds: {
-			medium: 2, // Stricter for documents
-			high: 1,
-			patterns: 2,
-		},
-	},
-
-	// HRIS tools - medium risk
-	{
-		toolPattern: /^hris_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			notes: 2000,
-			bio: 5000,
-		},
-		skipFields: ["id", "employee_id", "created_at", "updated_at"],
-	},
-
-	// ATS tools - candidate data with free-text fields
-	{
-		toolPattern: /^ats_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			notes: 5000,
-			description: 2000,
-			summary: 2000,
-		},
-		skipFields: ["id", "candidate_id", "application_id", "created_at", "updated_at"],
-	},
-
-	// CRM tools - customer data with free-text fields
-	{
-		toolPattern: /^crm_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 200,
-			description: 2000,
-			notes: 5000,
-			content: 10000,
-		},
-		skipFields: ["id", "contact_id", "account_id", "created_at", "updated_at"],
-	},
-
-	// Email tools - higher risk due to external content
-	{
-		toolPattern: /^gmail_|^email_/,
-		sanitizationLevel: "high",
-		maxFieldLengths: {
-			subject: 500,
-			body: 100000,
-			snippet: 1000,
-		},
-		skipFields: ["id", "thread_id", "message_id", "date"],
-		cumulativeRiskThresholds: {
-			medium: 2,
-			high: 1,
-			patterns: 2,
-		},
-	},
-
-	// GitHub tools - medium risk
-	{
-		toolPattern: /^github_/,
-		sanitizationLevel: "medium",
-		maxFieldLengths: {
-			name: 500,
-			description: 5000,
-			body: 100000,
-			content: 100000,
-		},
-		skipFields: ["id", "sha", "url", "html_url", "created_at", "updated_at"],
-	},
-];
-
-/**
  * Default cumulative risk thresholds
  */
 export const DEFAULT_CUMULATIVE_RISK_THRESHOLDS = {
-	medium: 3, // 3+ medium-risk fields = escalate
-	high: 1, // 1+ high-risk field = escalate
-	patterns: 3, // 3+ suspicious patterns across fields = escalate
+	medium: 3, // Absolute minimum medium-risk fields
+	high: 1, // A single high-risk field still escalates
+	patterns: 3, // Absolute minimum suspicious patterns
+	mediumFraction: 0.25, // AND ≥25% of processed fields must be medium-risk
+	patternsFraction: 0.25, // AND ≥25% of processed fields must be pattern-flagged
 };
 
 /**
@@ -180,7 +107,6 @@ export const DEFAULT_TIER2_CONFIG = {
 export const DEFAULT_CONFIG: PromptDefenseConfig = {
 	riskyFields: DEFAULT_RISKY_FIELDS,
 	traversal: DEFAULT_TRAVERSAL_CONFIG,
-	toolRules: DEFAULT_TOOL_RULES,
 	cumulativeRiskThresholds: DEFAULT_CUMULATIVE_RISK_THRESHOLDS,
 	tier2: DEFAULT_TIER2_CONFIG,
 	blockHighRisk: false, // Start permissive, can enable later
@@ -209,6 +135,5 @@ export function createConfig(overrides: Partial<PromptDefenseConfig>): PromptDef
 			...DEFAULT_CONFIG.cumulativeRiskThresholds,
 			...overrides.cumulativeRiskThresholds,
 		},
-		toolRules: overrides.toolRules ?? DEFAULT_CONFIG.toolRules,
 	};
 }

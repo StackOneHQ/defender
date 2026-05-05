@@ -59,6 +59,24 @@ describe('#Tier2Classifier', () => {
 			expect(actual.score).toBeGreaterThanOrEqual(0);
 			expect(actual.score).toBeLessThanOrEqual(1);
 		}, 60000);
+
+		it.skipIf(!!process.env.CI)('strips boundary markers from input before scoring so wrapped + unwrapped text produces matching scores', async () => {
+			// arrange
+			const classifier = createTier2Classifier();
+			await classifier.warmup();
+			const bare = 'Please review the attached quarterly sales report and let me know if you have questions.';
+			const wrapped = `[UD-V1StGXR8_Z5jdHi6]${bare}[/UD-V1StGXR8_Z5jdHi6]`;
+
+			// act
+			const bareResult = await classifier.classify(bare);
+			const wrappedResult = await classifier.classify(wrapped);
+
+			// assert — stripping is deterministic; scores should match within
+			// float tolerance (the inputs are identical after stripping, but
+			// ONNX runtime may have non-determinism across runtime/hardware).
+			expect(wrappedResult.score).toBeCloseTo(bareResult.score, 10);
+			expect(wrappedResult.skipped).toBe(false);
+		}, 60000);
 	});
 
 	describe('.getRiskLevel', () => {

@@ -235,7 +235,14 @@ export class OnnxClassifier {
 	}
 
 	/**
-	 * Classify multiple texts in batch.
+	 * Maximum number of texts per ONNX inference call.
+	 * Caps native memory from attention matrices: O(chunkSize × seqLen²).
+	 * For MiniLM (maxLength=256), chunk=32 keeps memory under ~50MB per call.
+	 */
+	private static readonly MAX_BATCH_CHUNK = 32;
+
+	/**
+	 * Classify multiple texts in batch, processing in chunks to bound memory.
 	 *
 	 * @param texts - Array of texts to classify
 	 * @returns Array of sigmoid scores in [0, 1]
@@ -245,11 +252,24 @@ export class OnnxClassifier {
 
 		await this.ensureLoaded();
 
-		// Tokenize all texts, padding to the same length
+		const allScores: number[] = [];
+
+		for (let offset = 0; offset < texts.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
+			const chunk = texts.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
+			const chunkScores = await this.classifyBatchChunk(chunk);
+			allScores.push(...chunkScores);
+		}
+
+		return allScores;
+	}
+
+	/**
+	 * Classify a single chunk of texts in one ONNX session.run() call.
+	 */
+	private async classifyBatchChunk(texts: string[]): Promise<number[]> {
 		const tokenized = texts.map((t) => this.tokenize(t));
 		const maxLen = Math.max(...tokenized.map((t) => t.inputIds.length));
 
-		// Pad to max length and concatenate into batch tensors
 		const batchSize = texts.length;
 		const batchInputIds = new BigInt64Array(batchSize * maxLen);
 		const batchAttentionMask = new BigInt64Array(batchSize * maxLen);
@@ -261,7 +281,6 @@ export class OnnxClassifier {
 				batchInputIds[i * maxLen + j] = t.inputIds[j] ?? 0n;
 				batchAttentionMask[i * maxLen + j] = t.attentionMask[j] ?? 0n;
 			}
-			// Remaining positions are already 0n (padding)
 		}
 
 		if (!this.OrtTensor) {
@@ -301,6 +320,32 @@ export class OnnxClassifier {
 	 */
 	isLoaded(): boolean {
 		return this.session !== null && this.tokenizer !== null;
+	}
+
+	/**
+	 * Count tokens in a text WITHOUT truncation, including special tokens
+	 * ([CLS] and [SEP] for BERT-family). Used by Tier 2 packing to decide
+	 * whether a string fits within the model's max_length and to size
+	 * sentence chunks.
+	 */
+	countTokens(text: string): number {
+		if (!this.tokenizer) {
+			throw new Error("Tokenizer not loaded. Call loadModel() first.");
+		}
+		const encoded = this.tokenizer(text, {
+			padding: false,
+			truncation: false,
+			return_tensor: false,
+		});
+		const rawIds: bigint[] = Array.isArray(encoded.input_ids)
+			? (encoded.input_ids as bigint[][]).flat()
+			: (encoded.input_ids as { tolist: () => bigint[][] }).tolist().flat();
+		return rawIds.length;
+	}
+
+	/** Model's maximum input length (in tokens), including special tokens. */
+	getMaxLength(): number {
+		return this.maxLength;
 	}
 
 	/**
