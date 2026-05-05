@@ -8,7 +8,8 @@
 import type { DataBoundary, FieldSanitizationResult, RiskLevel, SanitizationMethod } from "../types";
 import { generateDataBoundary, wrapWithBoundary } from "../utils/boundary";
 import { containsSuspiciousEncoding, containsSuspiciousEncodingDeep, redactAllEncoding } from "./encoding-detector";
-import { containsSuspiciousUnicode, normalizeUnicode } from "./normalizer";
+import { normalizeLeetSpeak } from "./leet-normalizer";
+import { containsSuspiciousUnicode, normalizeUnicode, normalizeWhitespace, stripCombiningMarks } from "./normalizer";
 import { removePatterns } from "./pattern-remover";
 import { containsRoleMarkers, stripRoleMarkers } from "./role-stripper";
 
@@ -143,9 +144,23 @@ export class Sanitizer {
 		const patternsRemoved: string[] = [];
 
 		// Step 1: Unicode normalization (always for medium+ or if configured)
+		// NFKC + homoglyphs only — combining marks are NOT stripped here so that
+		// benign accented text like "café" survives Sanitizer's returned output.
 		if (this.config.alwaysNormalize || riskLevel !== "low") {
 			result = normalizeUnicode(result);
 			methodsApplied.push("unicode_normalization");
+		}
+
+		// Step 1.5: Heavy normalization at HIGH risk only.
+		// At high risk Tier 1 has high confidence of an attack. Apply analysis-grade
+		// normalisation (combining-mark strip, whitespace collapse, leet-speak decode)
+		// BEFORE role stripping and pattern removal, so the obfuscated forms that
+		// PatternDetector detected are also redacted by the sanitizer. Without this,
+		// detection succeeds but the dangerous content survives in the output.
+		// At medium risk we skip this because it would strip accents from benign
+		// borderline content (default risk level is "medium" for all fields).
+		if (riskLevel === "high") {
+			result = normalizeLeetSpeak(normalizeWhitespace(stripCombiningMarks(result.normalize("NFD"))));
 		}
 
 		// Step 2: Role stripping (medium and above)

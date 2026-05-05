@@ -612,8 +612,15 @@ function detectMorse(text: string): EncodingDetection[] {
 function processEncodedContent(text: string, detections: EncodingDetection[], config: EncodingDetectorConfig): string {
 	const isFullText = (d: EncodingDetection) => d.position === 0 && d.length === text.length;
 
-	const positional = detections.filter((d) => !isFullText(d));
-	const fullText = detections.filter(isFullText);
+	// HTML entities are commonly used for legitimate escaping (e.g. `&#49;&#48;&#37;` = "10%").
+	// In REDACT mode, skip benign HTML entity runs so they survive sanitization. The "decode"
+	// path still processes them (via the suspicious flag set during detection) so that
+	// decodeAllLevels can chain through HTML→base64→plaintext correctly.
+	const filtered =
+		config.action === "redact" ? detections.filter((d) => d.type !== "html_entity" || d.suspicious) : detections;
+
+	const positional = filtered.filter((d) => !isFullText(d));
+	const fullText = filtered.filter(isFullText);
 
 	// When positional detections exist, apply them and skip full-text transforms.
 	// decodeAllLevels will pick up the full-text encoding in the next iteration
