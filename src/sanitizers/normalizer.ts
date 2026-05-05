@@ -23,17 +23,12 @@
 export function normalizeUnicode(text: string): string {
 	if (!text) return text;
 
-	// NFD decomposition separates combining marks from their base characters so
-	// stripCombiningMarks can remove them before NFKC re-composes everything.
-	// Without this step NFKC would compose "i\u0300" into "ì" and the mark
-	// would be invisible to the combining-range regex.
-	let normalized = text.normalize("NFD");
-
-	// Strip Zalgo / stacked combining diacritics from the decomposed form
-	normalized = stripCombiningMarks(normalized);
-
 	// NFKC normalization (fullwidth → ASCII, math alphanumerics → ASCII, etc.)
-	normalized = normalized.normalize("NFKC");
+	// Does NOT strip combining marks — Sanitizer returns this output to callers,
+	// so we must preserve legitimate accents like "café" and "niño".
+	// Combining-mark stripping (Zalgo defense) lives in stripCombiningMarks() and
+	// is only applied in the analysis-only path (PatternDetector.analyze).
+	let normalized = text.normalize("NFKC");
 
 	// Additional normalization for common bypass characters
 	normalized = normalizeSpecialCharacters(normalized);

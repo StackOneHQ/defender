@@ -6,7 +6,7 @@
  */
 
 import { normalizeLeetSpeak } from "../sanitizers/leet-normalizer";
-import { normalizeUnicode, normalizeWhitespace } from "../sanitizers/normalizer";
+import { normalizeUnicode, normalizeWhitespace, stripCombiningMarks } from "../sanitizers/normalizer";
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
@@ -79,10 +79,14 @@ export class PatternDetector {
 			text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
 
 		// Normalisation chain: collapse obfuscation before injection pattern matching.
-		// Order matters: unicode homoglyphs first (so Cyrillic/fullwidth variants are
-		// resolved to ASCII before whitespace collapse), then whitespace, then leet-speak.
-		// The result is used for analysis only — never returned to callers.
-		const analysisText = normalizeLeetSpeak(normalizeWhitespace(normalizeUnicode(rawText)));
+		// Order matters: NFD-decompose + strip combining marks first (Zalgo defense),
+		// then unicode normalisation (homoglyphs/fullwidth → ASCII), then whitespace,
+		// then leet-speak. NFD-decomposition lives here (not in normalizeUnicode) because
+		// it strips legitimate accents like "café" → "cafe" — fine for analysis but would
+		// be data loss if returned to callers. The result is analysis-only and never returned.
+		const analysisText = normalizeLeetSpeak(
+			normalizeWhitespace(normalizeUnicode(stripCombiningMarks(rawText.normalize("NFD")))),
+		);
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible

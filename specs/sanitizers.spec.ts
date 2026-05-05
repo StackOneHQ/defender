@@ -748,15 +748,34 @@ describe('containsSuspiciousUnicode (Zalgo)', () => {
   });
 });
 
-describe('normalizeUnicode (Zalgo stripping)', () => {
-  it('strips combining marks as part of normalizeUnicode', () => {
-    const zalgo = 'i\u0300g\u0301n\u0302o\u0308r\u030Ae';
-    expect(normalizeUnicode(zalgo)).toBe('ignore');
+describe('normalizeUnicode (returned-output safe)', () => {
+  it('preserves precomposed accents — Sanitizer returns this output to callers', () => {
+    // "café" must NOT be rewritten to "cafe" — that would be data loss for benign text
+    expect(normalizeUnicode('caf\u00e9')).toBe('caf\u00e9');
+    expect(normalizeUnicode('ni\u00f1o')).toBe('ni\u00f1o');
   });
 
-  it('strips precomposed accents via NFD decomposition (analysis-only)', () => {
-    // U+00E9 (é) decomposes to e + U+0301 under NFD; the combining mark is stripped
-    expect(normalizeUnicode('caf\u00e9')).toBe('cafe');
+  it('preserves Zalgo combining marks (stripping happens only in analysis path)', () => {
+    // Zalgo stripping is intentionally NOT in normalizeUnicode anymore — it lives
+    // in stripCombiningMarks() and only runs inside PatternDetector.analyze.
+    const zalgo = 'i\u0300g\u0301n\u0302o\u0308r\u030Ae';
+    expect(normalizeUnicode(zalgo)).not.toBe('ignore');
+  });
+
+  it('still resolves homoglyphs and fullwidth chars', () => {
+    expect(normalizeUnicode('ＳＹＳＴＥＭ')).toBe('SYSTEM');
+    expect(normalizeUnicode('𝓲𝓰𝓷𝓸𝓻𝓮')).toBe('ignore');
+  });
+});
+
+describe('stripCombiningMarks (analysis-only)', () => {
+  it('strips Zalgo marks when applied to NFD-decomposed text', () => {
+    const zalgo = 'i\u0300g\u0301n\u0302o\u0308r\u030Ae';
+    expect(stripCombiningMarks(zalgo.normalize('NFD'))).toBe('ignore');
+  });
+
+  it('strips legitimate accents — only safe in analysis path', () => {
+    expect(stripCombiningMarks('caf\u00e9'.normalize('NFD'))).toBe('cafe');
   });
 });
 
