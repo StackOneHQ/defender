@@ -480,25 +480,24 @@ function detectBinaryStrings(text: string): EncodingDetection[] {
 		const candidate = match[0];
 		const groups = candidate.trim().split(/\s+/);
 
-		try {
-			const chars = groups.map((g) => String.fromCharCode(parseInt(g, 2)));
-			const isPrintable = chars.every((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e);
-			if (!isPrintable) continue;
+		// No try/catch needed: the regex guarantees groups are exactly 8 chars of [01],
+		// so parseInt(g, 2) always returns a valid 0-255 integer and String.fromCharCode
+		// always succeeds. Avoiding silent error swallowing per code review.
+		const chars = groups.map((g) => String.fromCharCode(parseInt(g, 2)));
+		const isPrintable = chars.every((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e);
+		if (!isPrintable) continue;
 
-			const decoded = chars.join("");
-			const isSuspicious = INJECTION_KEYWORDS.test(decoded);
+		const decoded = chars.join("");
+		const isSuspicious = INJECTION_KEYWORDS.test(decoded);
 
-			detections.push({
-				type: "binary",
-				original: candidate,
-				decoded,
-				position: match.index,
-				length: candidate.length,
-				suspicious: isSuspicious,
-			});
-		} catch {
-			// Skip invalid groups
-		}
+		detections.push({
+			type: "binary",
+			original: candidate,
+			decoded,
+			position: match.index,
+			length: candidate.length,
+			suspicious: isSuspicious,
+		});
 	}
 
 	return detections;
