@@ -6,10 +6,12 @@ import {
   createTier2Classifier,
 } from '../src/classifiers/tier2-classifier';
 
-// Path to the bundled ONNX model files
+// Path to the bundled ONNX model files. Defender's default model since 0.7
+// is the multi-head v5 binary; OnnxClassifier reads only the main head in
+// single-head mode (back-compat for callers not opting into multi-head).
 const modelPath = resolve(
   __dirname,
-  '../src/classifiers/models/minilm-full-aug'
+  '../src/classifiers/models/minilm-multihead-v5'
 );
 
 // ONNX model loading requires native binaries + 22MB model file,

@@ -27,7 +27,7 @@ export function getDefaultModelPath(): string {
 		// CJS fallback
 		baseDir = __dirname;
 	}
-	return resolve(baseDir, "models", "minilm-full-aug");
+	return resolve(baseDir, "models", "minilm-multihead-v5");
 }
 
 /**
