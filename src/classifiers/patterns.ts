@@ -351,8 +351,22 @@ export const ENCODING_SUSPICIOUS_PATTERNS: PatternDefinition[] = [
 		id: "rot13_mention",
 		pattern: /rot13|caesar\s+cipher|decode\s+this/gi,
 		category: "encoding_suspicious",
+		severity: "medium",
+		description: "Mention of ROT13 or similar encoding schemes",
+	},
+	{
+		id: "binary_string_encoding",
+		pattern: /\b[01]{8}(?:\s+[01]{8}){2,}\b/g,
+		category: "encoding_suspicious",
+		severity: "medium",
+		description: "Binary-encoded string (potential obfuscation)",
+	},
+	{
+		id: "morse_code_encoding",
+		pattern: /(?:[.-]+\s){4,}[.-]+/g,
+		category: "encoding_suspicious",
 		severity: "low",
-		description: "Mention of simple encoding schemes",
+		description: "Morse code pattern (potential obfuscation)",
 	},
 	{
 		id: "leetspeak_injection",
@@ -551,6 +565,12 @@ export const FAST_FILTER_KEYWORDS = [
 	"\\u",
 	"&#",
 	"rot13",
+	// Raw leet-speak keywords — kept here because the leet normaliser skips
+	// 20+ character alphanumeric tokens (treated as base64-like blobs), so
+	// long leet payloads like "1gn0r3pr3v10us1nstruct10ns" are NOT normalised
+	// to plain English and won't trip the "ignore" / "forget" / "bypass"
+	// keywords above. These literal entries ensure such payloads still trigger
+	// the fast filter and reach the leetspeak_injection regex.
 	"1gn0r3",
 	"f0rg3t",
 	"byp4ss",

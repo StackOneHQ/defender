@@ -33,6 +33,12 @@ export interface PatternMatch {
 	category: PatternCategory;
 	/** Severity of this pattern match */
 	severity: "low" | "medium" | "high";
+	/**
+	 * Whether this match was found on normalised text (leet-speak, whitespace, or
+	 * homoglyph normalisation applied). When true, `position` and `matched` reflect
+	 * coordinates in the normalised form, not the original input string.
+	 */
+	normalised?: boolean;
 }
 
 /**

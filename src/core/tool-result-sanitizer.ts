@@ -8,6 +8,7 @@
 
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
 import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
+import { containsSuspiciousEncodingDeep } from "../sanitizers/encoding-detector";
 import { createSanitizer, type Sanitizer } from "../sanitizers/sanitizer";
 import type {
 	CumulativeRiskTracker,
@@ -17,6 +18,7 @@ import type {
 	SanitizableValue,
 	SanitizationContext,
 	SanitizationMetadata,
+	SanitizationMethod,
 	SanitizationResult,
 	TraversalConfig,
 } from "../types";
@@ -442,10 +444,36 @@ export class ToolResultSanitizer {
 			}
 		}
 
+		// Escalate risk when suspicious encoding is detected (ROT13, binary, Morse,
+		// HTML entities, ROT47, plus chained encodings like btoa(btoa(payload))).
+		// These encodings don't trigger Tier 1 patterns (no fast-filter keywords), so
+		// without this check, risk stays at the default "medium" and encoding detection
+		// in the sanitizer (Step 4, high-risk only) never runs.
+		// Uses the deep multi-level check so doubly-encoded payloads — where the outer
+		// layer decodes to another encoded blob with no visible keywords — are still
+		// caught. The deep check loops up to maxIterations (default 5) with an
+		// amplification guard, so cost stays bounded.
+		let escalatedFromEncoding = false;
+		if (riskLevel !== "high" && riskLevel !== "critical") {
+			if (containsSuspiciousEncodingDeep(value)) {
+				riskLevel = "high";
+				escalatedFromEncoding = true;
+				if (context.cumulativeRisk) {
+					this.updateCumulativeRisk(context.cumulativeRisk, riskLevel, []);
+				}
+			}
+		}
+
 		// Block if high or critical and blocking is enabled
 		if (this.config.blockHighRisk && (riskLevel === "high" || riskLevel === "critical")) {
 			metadata.fieldsSanitized.push(context.path);
-			metadata.methodsByField[context.path] = tier1Patterns.length > 0 ? ["pattern_removal"] : [];
+			// Record what triggered the block so DefenseResult.fieldsSanitized (which only
+			// counts active methods) and hasThreats see this as a real threat — otherwise
+			// an encoding-only escalation would keep `allowed: true` despite the redaction.
+			const methods: SanitizationMethod[] = [];
+			if (tier1Patterns.length > 0) methods.push("pattern_removal");
+			if (escalatedFromEncoding) methods.push("encoding_detection");
+			metadata.methodsByField[context.path] = methods;
 			if (tier1Patterns.length > 0) {
 				metadata.patternsRemovedByField[context.path] = tier1Patterns;
 			}
