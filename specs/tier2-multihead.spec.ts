@@ -207,6 +207,19 @@ describe.skipIf(!!process.env.CI)('PromptDefense — Bug 1: threshold override p
     expect(result.tier2Score).toBeLessThan(0.99);
     expect(result.allowed).toBe(true);
   }, 60000);
+
+  it('model-level calibration auto-load propagates to the block gate', async () => {
+    // No tier2Config passed — the bundled v5 model auto-loads
+    // { temperatureT: 2.41, highRiskThreshold: 0.64 } from classifier_config.json.
+    // Pre-fix: gate stays at library default 0.8 → SANITY_ATTACK at calibrated
+    // ~0.75 lands `riskLevel: "high"` but `allowed: true` (incoherent triple).
+    // Post-fix: gate reads back the effective 0.64 from Tier2Classifier.
+    const defense = new PromptDefense({ blockHighRisk: true });
+    await defense.warmupTier2();
+    const result = await defense.defendToolResult({ output: SANITY_ATTACK }, 'shell');
+    expect(result.allowed).toBe(false);
+    expect(result.riskLevel).toBe('high');
+  }, 60000);
 });
 
 describe.skipIf(!!process.env.CI)('PromptDefense — Bug 2: density threshold rescales under T', () => {

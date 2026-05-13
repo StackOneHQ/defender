@@ -250,25 +250,6 @@ export class PromptDefense {
 			this.config.blockHighRisk = options.blockHighRisk;
 		}
 
-		// Sync Tier 2 thresholds from `tier2Config` into `this.config.tier2`.
-		// Two separate copies of the same thresholds live in the config: the
-		// Tier2Classifier-internal copy (drives `getRiskLevel`) and the gate-
-		// internal copy at `this.config.tier2.*` (drives the final `allowed`
-		// decision in `defendToolResult`). Without this sync, a caller passing
-		// `tier2Config: { highRiskThreshold: 0.64 }` gets `riskLevel: "high"`
-		// at score 0.65 (Tier2Classifier sees the override) but `allowed: true`
-		// (gate compares against the default 0.8). Most visibly broken under
-		// temperature scaling, but affects any non-default threshold.
-		const t2c = options.tier2Config;
-		if (t2c && this.config.tier2) {
-			if (typeof t2c.highRiskThreshold === "number") {
-				this.config.tier2.highRiskThreshold = t2c.highRiskThreshold;
-			}
-			if (typeof t2c.mediumRiskThreshold === "number") {
-				this.config.tier2.mediumRiskThreshold = t2c.mediumRiskThreshold;
-			}
-		}
-
 		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
 
 		// SFE preprocessor — off by default. When `true`, enable with the
@@ -298,6 +279,19 @@ export class PromptDefense {
 		// Initialize Tier 2 classifier if enabled
 		if (options.enableTier2 ?? true) {
 			this.tier2Classifier = createTier2Classifier(options.tier2Config);
+			// Sync the gate's threshold copy with whatever Tier2Classifier resolved.
+			// Tier2Classifier merges hardcoded defaults < model classifier_config.json
+			// < caller-provided `tier2Config`; reading back here ensures the gate at
+			// `this.config.tier2.highRiskThreshold` (line ~615) matches the
+			// `getRiskLevel` thresholds used inside Tier 2. Without this readback,
+			// a model that ships calibrated defaults (e.g. v5 with highRiskThreshold
+			// = 0.64) lands `riskLevel: "high"` at score 0.7 but `allowed: true`
+			// because the gate is still on the library default of 0.8.
+			if (this.config.tier2) {
+				const effective = this.tier2Classifier.getConfig();
+				this.config.tier2.highRiskThreshold = effective.highRiskThreshold;
+				this.config.tier2.mediumRiskThreshold = effective.mediumRiskThreshold;
+			}
 		}
 	}
 
