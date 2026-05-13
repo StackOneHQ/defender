@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { resolve } from 'node:path';
 import { OnnxClassifier } from '../src/classifiers/onnx-classifier';
-import { createTier2Classifier } from '../src/classifiers/tier2-classifier';
+import { createTier2Classifier, Tier2Classifier } from '../src/classifiers/tier2-classifier';
 import { PromptDefense } from '../src/core/prompt-defense';
 
 const multiheadPath = resolve(
@@ -190,6 +190,33 @@ describe.skipIf(!!process.env.CI)('PromptDefense — multi-head decision rule', 
     expect(result.tier2AuxScore).toBeUndefined();
     expect(result.tier2Score).toBeGreaterThan(0.8);
     expect(result.riskLevel).toBe('high');
+  }, 60000);
+
+  it('skips Tier 2 with a clear reason when multihead is set but model emits single-head logits', async () => {
+    // Simulate a single-head model returning aux=null on every chunk. Without
+    // the guard, the multi-head rule sees no auxed block, fires aux-veto, and
+    // tier2EffectiveScore collapses to 0 — Tier 2 silently disabled.
+    const spy = vi
+      .spyOn(Tier2Classifier.prototype, 'classifyChunksBatchPair')
+      .mockResolvedValue([
+        { main: 0.99, aux: null },
+        { main: 0.92, aux: null },
+      ]);
+    try {
+      const defense = new PromptDefense({
+        blockHighRisk: true,
+        tier2Config: {
+          onnxModelPath: multiheadPath,
+          multihead: { mainThreshold: 0.5, auxThreshold: 0.3 },
+        },
+      });
+      await defense.warmupTier2();
+      const result = await defense.defendToolResult({ output: SANITY_ATTACK }, 'shell');
+      expect(result.tier2SkipReason).toMatch(/multihead configured but model emits single-head/);
+      expect(result.tier2MultiheadBlocked).not.toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   }, 60000);
 });
 

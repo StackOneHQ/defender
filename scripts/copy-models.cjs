@@ -3,9 +3,8 @@
  * Mirror bundled model assets from src/ to dist/ after a build.
  *
  * Add new model directories to MODEL_DIRS — each is copied recursively from
- * src/classifiers/models/<name> → dist/classifiers/models/<name>.
- * Tier 2 callers resolve models via paths relative to the compiled file, so
- * the dist tree needs an identical layout.
+ * src/classifiers/models/<name> → dist/models/<name>. Tier 2 callers resolve
+ * models via paths relative to the compiled file (which lives at dist/).
  */
 const { cpSync, mkdirSync, existsSync, copyFileSync } = require("node:fs");
 const { resolve } = require("node:path");

@@ -40,9 +40,12 @@ export interface DefenseResult {
 	 * (`tier2Score`, `riskLevel`, `allowed`) tells one coherent story:
 	 *
 	 *   - Single-head: post-density max-chunk main score. Compared against
-	 *     `tier2.highRiskThreshold` to set `riskLevel` and (modulo Tier 1)
-	 *     `allowed`. Invariant: `tier2Score >= highRiskThreshold` ⇔
-	 *     `result.allowed === false`.
+	 *     `tier2.highRiskThreshold` to set `riskLevel`. When `blockHighRisk`
+	 *     is enabled and no Tier 1 detection independently forces a block,
+	 *     `tier2Score >= highRiskThreshold` ⇔ `result.allowed === false`.
+	 *     (Tier 1 detections can still drive `allowed: false` while Tier 2 is
+	 *     below threshold; `blockHighRisk: false` keeps `allowed: true`
+	 *     regardless.)
 	 *   - Multi-head rule fired: main score of the chunk that triggered the
 	 *     rule. `riskLevel: "high"`, `allowed: false`.
 	 *   - Multi-head aux veto: 0. The rule rescued the content, so Tier 2
@@ -477,7 +480,18 @@ export class PromptDefense {
 					try {
 						if (multiheadCfg) {
 							allPairs = await this.tier2Classifier.classifyChunksBatchPair(allChunks);
-							allScores = allPairs.map((p) => p.main);
+							// Single-head model under a multi-head config: every aux is null.
+							// Without this guard the rule path sees no aux signal, treats no
+							// chunk as a multihead block, fires the aux-veto branch, and
+							// collapses tier2EffectiveScore to 0 — Tier 2 is silently
+							// disabled. Surface the misconfig instead.
+							if (allPairs.length > 0 && allPairs.every((p) => p.aux === null)) {
+								tier2SkipReason =
+									"multihead configured but model emits single-head logits — remove `multihead` config or use a dual-head model";
+								allPairs = null;
+							} else {
+								allScores = allPairs.map((p) => p.main);
+							}
 						} else {
 							allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
 						}
@@ -638,13 +652,15 @@ export class PromptDefense {
 		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
 
 		// `tier2Score` reports `tier2EffectiveScore` — the value that drove the
-		// block decision. Operator-facing invariant:
+		// block decision. When `blockHighRisk` is on and no Tier 1 detection
+		// independently forces a block:
 		//   `tier2Score >= highRiskThreshold` ⇔ `allowed === false`
-		// (modulo Tier 1 detections and the multi-head veto path; the latter
-		// sets tier2Score to undefined so the inequality short-circuits).
-		// `tier2RawScore` is the pre-density / pre-rule max-chunk main score
-		// for forensics — never use it to make decisions; it diverges from
-		// `tier2Score` on multi-string payloads and under multi-head aux veto.
+		// The multi-head aux veto path sets `tier2EffectiveScore = 0` (not
+		// undefined), keeping the triple coherent: tier2Score=0 / riskLevel
+		// low / allowed=true. `tier2RawScore` is the pre-density / pre-rule
+		// max-chunk main score for forensics — never use it to make decisions;
+		// it diverges from `tier2Score` on multi-string payloads and under
+		// multi-head aux veto.
 		return {
 			allowed,
 			riskLevel,
