@@ -46,11 +46,32 @@ function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | n
  * `aux` is interpreted as "directive targets a human reader" — a high aux
  * vetos the block on the assumption that high-main content (imperative,
  * obligation phrasing) is meant for a person, not the assistant.
+ *
+ * **Threshold selection matters.** Both fields are required (no library
+ * default) because the right operating point depends on the model and the
+ * caller's traffic distribution. For the v5 default model, FP-benchmark
+ * validation gives:
+ *
+ *   raw scores (T=1):   { mainThreshold: 0.5, auxThreshold: 0.8 }
+ *   calibrated (T=2.41): { mainThreshold: 0.5, auxThreshold: 0.64 }
+ *
+ * Lower `auxThreshold` (e.g. 0.3) over-rescues attacks on broader
+ * benchmarks — see `evals/RESULTS.md` for the threshold sweep across
+ * AgentShield, NotInject, WildGuard, and plugin-traffic replay before
+ * picking a value other than the validated default.
  */
 export interface MultiheadConfig {
-	/** Main-head threshold (block requires main >= this). Default: 0.5 */
+	/**
+	 * Main-head threshold. Block requires the model's main classification
+	 * score to be at or above this value. Compared after temperature scaling
+	 * if `temperatureT` is configured. Required — no library default.
+	 */
 	mainThreshold: number;
-	/** Aux-head threshold (block requires aux < this). Default: 0.3 */
+	/**
+	 * Aux-head veto threshold. The rule rescues content from a block when
+	 * the aux score is at or above this value. Compared after temperature
+	 * scaling if `temperatureT` is configured. Required — no library default.
+	 */
 	auxThreshold: number;
 }
 

@@ -36,12 +36,18 @@ export interface DefenseResult {
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
 	/**
-	 * Tier 2 effective score that drove the block decision (0.0 = safe, 1.0 =
-	 * injection). Matches `result.allowed` against `tier2.highRiskThreshold`:
-	 * `tier2Score >= highRiskThreshold` ⇔ `result.allowed === false` (modulo
-	 * Tier 1 / multi-head paths). Post-density-adjustment under single-head.
-	 * Main score of the rule-triggering chunk under multi-head when the rule
-	 * fired; else max main across chunks.
+	 * Tier 2 score reported to operators. Designed so the triple
+	 * (`tier2Score`, `riskLevel`, `allowed`) tells one coherent story:
+	 *
+	 *   - Single-head: post-density max-chunk main score. Compared against
+	 *     `tier2.highRiskThreshold` to set `riskLevel` and (modulo Tier 1)
+	 *     `allowed`. Invariant: `tier2Score >= highRiskThreshold` ⇔
+	 *     `result.allowed === false`.
+	 *   - Multi-head rule fired: main score of the chunk that triggered the
+	 *     rule. `riskLevel: "high"`, `allowed: false`.
+	 *   - Multi-head aux veto: 0. The rule rescued the content, so Tier 2
+	 *     contributes nothing to a block. `riskLevel: "low"`, `allowed: true`.
+	 *     The model's actual main signal is preserved on `tier2RawScore`.
 	 *
 	 * Undefined when Tier 2 is disabled or no strings were scored.
 	 */
@@ -585,13 +591,16 @@ export class PromptDefense {
 								tier2EffectiveScore = mhTopBlockMain;
 								tier2AuxScore = mhTopBlockAux;
 							} else {
-								// Aux veto in effect — no chunk blocks. Risk stays low
-								// regardless of max main; the rule says we trust aux.
-								// `tier2EffectiveScore` is set to undefined so the
-								// reported tier2Score doesn't claim a block-worthy
-								// score that wasn't acted on.
+								// Aux veto fired — the rule decided to rescue this content,
+								// so Tier 2 contributed nothing to a block decision. Set
+								// `tier2EffectiveScore = 0` so the operator-facing triple
+								// (`tier2Score`, `riskLevel`, `allowed`) tells one coherent
+								// story: zero / low / true. The model's actual main signal
+								// is still available on `tier2RawScore` for forensics, and
+								// `tier2MultiheadBlocked: false` plus `tier2AuxScore` give
+								// the rule-level context for anyone debugging the decision.
 								tier2Risk = "low";
-								tier2EffectiveScore = undefined;
+								tier2EffectiveScore = 0;
 							}
 						} else if (tier2EffectiveScore !== undefined) {
 							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
