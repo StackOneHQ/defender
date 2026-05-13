@@ -305,4 +305,11 @@ describe.skipIf(!!process.env.CI)('Tier2Classifier — auto-load calibration fro
     expect(tier2.getTemperature()).toBe(1.5);
     expect(tier2.getConfig().highRiskThreshold).toBe(0.7);
   });
+
+  it('throws when temperatureT is not a positive finite number', () => {
+    expect(() => createTier2Classifier({ temperatureT: 0 })).toThrow(/temperatureT/);
+    expect(() => createTier2Classifier({ temperatureT: -1 })).toThrow(/temperatureT/);
+    expect(() => createTier2Classifier({ temperatureT: Number.NaN })).toThrow(/temperatureT/);
+    expect(() => createTier2Classifier({ temperatureT: Number.POSITIVE_INFINITY })).toThrow(/temperatureT/);
+  });
 });

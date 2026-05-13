@@ -446,9 +446,13 @@ export class PromptDefense {
 				// chunks up-front and run a single classifyChunksBatch() — ~10×
 				// throughput recovery while keeping per-string scoring semantics.
 
+				// Capture a non-null local so the map callback below doesn't lose
+				// the narrowing from the surrounding `if (this.tier2Classifier)`.
+				const tier2 = this.tier2Classifier;
+
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
-				const preps = await Promise.all(strings.map((s) => this.tier2Classifier!.prepareChunks(s)));
+				const preps = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();

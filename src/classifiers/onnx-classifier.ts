@@ -134,7 +134,14 @@ export class OnnxClassifier {
 
 	constructor(modelPath?: string, temperatureT?: number) {
 		this.modelPath = modelPath ?? getDefaultModelPath();
-		if (temperatureT !== undefined && temperatureT > 0) {
+		if (temperatureT !== undefined) {
+			// T must be a positive finite number — calibration with T <= 0 is
+			// undefined behaviour (divide-by-zero or sign flip on logits) and
+			// almost certainly a programming error rather than a config the
+			// caller wants gracefully ignored.
+			if (!Number.isFinite(temperatureT) || temperatureT <= 0) {
+				throw new Error(`OnnxClassifier: temperatureT must be a positive finite number, got ${temperatureT}`);
+			}
 			this.temperatureT = temperatureT;
 		}
 	}

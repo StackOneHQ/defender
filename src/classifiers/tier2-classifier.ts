@@ -24,16 +24,32 @@ interface ModelCalibrationDefaults {
 
 /**
  * Read calibration defaults from a model's `classifier_config.json`, if
- * present. Returns `null` for missing file, malformed JSON, or absent
- * `calibration` key — legacy models (e.g. `minilm-full-aug`) lack this file
- * entirely, and that's expected.
+ * present. Returns `null` for missing file (legacy models) or absent
+ * `calibration` key. Other read or parse failures emit a warning so they
+ * don't silently fall back to library defaults — a typo in a shipped
+ * calibration block would otherwise be invisible until someone digs into
+ * decision divergence.
  */
 function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | null {
+	const configPath = resolve(modelDir, "classifier_config.json");
+	let raw: string;
 	try {
-		const raw = readFileSync(resolve(modelDir, "classifier_config.json"), "utf8");
+		raw = readFileSync(configPath, "utf8");
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			console.warn(`[defender] failed to read ${configPath}:`, err instanceof Error ? err.message : String(err));
+		}
+		return null;
+	}
+	try {
 		const data = JSON.parse(raw) as { calibration?: ModelCalibrationDefaults };
 		return data.calibration ?? null;
-	} catch {
+	} catch (err) {
+		console.warn(
+			`[defender] malformed classifier_config.json at ${configPath}:`,
+			err instanceof Error ? err.message : String(err),
+		);
 		return null;
 	}
 }
