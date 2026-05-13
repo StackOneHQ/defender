@@ -35,8 +35,35 @@ export interface DefenseResult {
 	fieldsSanitized: string[];
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
-	/** Tier 2 ML score (0.0 = safe, 1.0 = injection), undefined if Tier 2 not enabled */
+	/**
+	 * Tier 2 effective score that drove the block decision (0.0 = safe, 1.0 =
+	 * injection). Matches `result.allowed` against `tier2.highRiskThreshold`:
+	 * `tier2Score >= highRiskThreshold` ⇔ `result.allowed === false` (modulo
+	 * Tier 1 / multi-head paths). Post-density-adjustment under single-head.
+	 * Main score of the rule-triggering chunk under multi-head when the rule
+	 * fired; else max main across chunks.
+	 *
+	 * Undefined when Tier 2 is disabled or no strings were scored.
+	 */
 	tier2Score?: number;
+	/**
+	 * Raw max-chunk main score before density adjustment. Diverges from
+	 * `tier2Score` only on multi-string payloads where the density damping
+	 * factor < 1. Useful for forensics / threshold tuning; do not use as a
+	 * primary block signal — it does NOT match the decision under density.
+	 */
+	tier2RawScore?: number;
+	/**
+	 * Tier 2 auxiliary head score (multi-head models only), reported for the
+	 * chunk that produced `tier2Score`. High aux + `multihead` config → veto.
+	 */
+	tier2AuxScore?: number;
+	/**
+	 * True when the multi-head decision rule (main >= mainThr AND aux < auxThr)
+	 * fired on at least one chunk. Surfaced so callers can distinguish
+	 * "blocked because main is high" from "blocked under the multi-head rule".
+	 */
+	tier2MultiheadBlocked?: boolean;
 	/** Reason Tier 2 was skipped (e.g. "No strings extracted") when tier2Score is undefined */
 	tier2SkipReason?: string;
 	/** The sentence with the highest Tier 2 score */
@@ -217,6 +244,25 @@ export class PromptDefense {
 			this.config.blockHighRisk = options.blockHighRisk;
 		}
 
+		// Sync Tier 2 thresholds from `tier2Config` into `this.config.tier2`.
+		// Two separate copies of the same thresholds live in the config: the
+		// Tier2Classifier-internal copy (drives `getRiskLevel`) and the gate-
+		// internal copy at `this.config.tier2.*` (drives the final `allowed`
+		// decision in `defendToolResult`). Without this sync, a caller passing
+		// `tier2Config: { highRiskThreshold: 0.64 }` gets `riskLevel: "high"`
+		// at score 0.65 (Tier2Classifier sees the override) but `allowed: true`
+		// (gate compares against the default 0.8). Most visibly broken under
+		// temperature scaling, but affects any non-default threshold.
+		const t2c = options.tier2Config;
+		if (t2c && this.config.tier2) {
+			if (typeof t2c.highRiskThreshold === "number") {
+				this.config.tier2.highRiskThreshold = t2c.highRiskThreshold;
+			}
+			if (typeof t2c.mediumRiskThreshold === "number") {
+				this.config.tier2.mediumRiskThreshold = t2c.mediumRiskThreshold;
+			}
+		}
+
 		this.tier2Fields = options.tier2Fields ?? this.config.tier2?.tier2Fields;
 
 		// SFE preprocessor — off by default. When `true`, enable with the
@@ -352,7 +398,21 @@ export class PromptDefense {
 
 		// Tier 2: packed-chunk ML classification on the SFE-filtered value so
 		// metadata/identifier fields don't inflate injection scores.
+		//
+		// Three score variables track different stages of the same signal:
+		//   - tier2Score: local intermediate. Starts as max-chunk main, gets
+		//     reassigned to the rule-trigger chunk's main under multi-head
+		//     rule fire. NOT surfaced directly on the result.
+		//   - tier2RawScore: max-chunk main pre-density, pre-rule-reassignment.
+		//     Surfaced as `result.tier2RawScore` for forensics.
+		//   - tier2EffectiveScore: the score that drives the block decision.
+		//     Under single-head this is post-density `tier2Score`. Under
+		//     multi-head rule fire this is the rule-trigger chunk's main.
+		//     Surfaced as `result.tier2Score`.
 		let tier2Score: number | undefined;
+		let tier2RawScore: number | undefined;
+		let tier2AuxScore: number | undefined;
+		let tier2MultiheadBlocked: boolean | undefined;
 		let tier2EffectiveScore: number | undefined;
 		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
@@ -407,9 +467,16 @@ export class PromptDefense {
 					// Fail-safe: inference errors mark Tier 2 as skipped rather than
 					// propagating out of defendToolResult (matches the old
 					// classifyByChunks contract).
+					const multiheadCfg = this.tier2Classifier.getMultiheadConfig();
 					let allScores: number[] | null = null;
+					let allPairs: Array<{ main: number; aux: number | null }> | null = null;
 					try {
-						allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+						if (multiheadCfg) {
+							allPairs = await this.tier2Classifier.classifyChunksBatchPair(allChunks);
+							allScores = allPairs.map((p) => p.main);
+						} else {
+							allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+						}
 					} catch (err) {
 						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
 					}
@@ -417,25 +484,60 @@ export class PromptDefense {
 					if (allScores) {
 						// Phase 3: compute per-string max; track global max + chunk.
 						const perStringScores: number[] = [];
+						// Multi-head: track whether any chunk independently triggers
+						// the (main >= mainThr AND aux < auxThr) rule, and remember
+						// the strongest such chunk so the result surfaces it.
+						let mhAnyBlock = false;
+						let mhTopBlockChunk = "";
+						let mhTopBlockMain = -1;
+						let mhTopBlockAux: number | undefined;
 						for (let i = 0; i < strings.length; i++) {
 							const { start, end } = stringRanges[i];
 							if (start < 0) continue;
 							let sMax = 0;
 							let sMaxChunk = "";
+							let sMaxAux: number | undefined;
 							for (let j = start; j < end; j++) {
 								const raw = allScores[j];
 								const safeScore = Number.isFinite(raw) ? raw : 0;
 								if (safeScore > sMax) {
 									sMax = safeScore;
 									sMaxChunk = allChunks[j] ?? "";
+									if (allPairs) {
+										const auxRaw = allPairs[j]?.aux;
+										sMaxAux = auxRaw === null || auxRaw === undefined ? undefined : auxRaw;
+									}
+								}
+								if (multiheadCfg && allPairs) {
+									const auxRaw = allPairs[j]?.aux;
+									if (auxRaw !== null && auxRaw !== undefined) {
+										const chunkBlocks =
+											safeScore >= multiheadCfg.mainThreshold &&
+											auxRaw < multiheadCfg.auxThreshold;
+										if (chunkBlocks) {
+											mhAnyBlock = true;
+											if (safeScore > mhTopBlockMain) {
+												mhTopBlockMain = safeScore;
+												mhTopBlockAux = auxRaw;
+												mhTopBlockChunk = allChunks[j] ?? "";
+											}
+										}
+									}
 								}
 							}
 							perStringScores.push(sMax);
 							if (tier2Score === undefined || sMax > tier2Score) {
 								tier2Score = sMax;
 								maxSentence = sMaxChunk;
+								tier2AuxScore = sMaxAux;
 							}
 						}
+
+						// Capture the raw max-chunk main score before any density adjustment
+						// or multi-head rule reassignment. Surfaced as `tier2RawScore` on the
+						// result for forensics / threshold tuning. Decision-relevant scoring
+						// is in `tier2EffectiveScore`.
+						tier2RawScore = tier2Score;
 
 						// Cross-string density adjustment (mild). Applied only when we
 						// have 3+ strings — otherwise a 1- or 2-string payload is
@@ -447,8 +549,19 @@ export class PromptDefense {
 						// imperative descriptor). Damping with pow(highCount/total, 0.1)
 						// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
 						// attacks concentrated across multiple strings are barely affected.
+						//
+						// The "high" cutoff was originally hardcoded at 0.75 (raw sigmoid
+						// space). When the classifier is configured with temperatureT > 1,
+						// every score is `sigmoid(logit / T)` — strictly compressed toward
+						// 0.5 — so the literal 0.75 cutoff stops counting events that
+						// would have counted as "high" under raw scoring. To preserve the
+						// adjustment's behavior across calibrated and uncalibrated runs,
+						// we rescale the threshold in logit-space: raw 0.75 corresponds to
+						// logit log(3) ≈ 1.0986; the calibrated cutoff is sigmoid(log(3)/T).
+						// At T=1 this is 0.75 (no-op); at T=2.41 it's ≈ 0.612.
 						tier2EffectiveScore = tier2Score;
-						const DENSITY_SUB_THRESHOLD = 0.75;
+						const T = this.tier2Classifier.getTemperature?.() ?? 1;
+						const DENSITY_SUB_THRESHOLD = T === 1 ? 0.75 : 1 / (1 + Math.exp(-Math.log(3) / T));
 						if (tier2Score !== undefined && perStringScores.length > 2) {
 							const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
 							if (highCount > 0) {
@@ -457,7 +570,30 @@ export class PromptDefense {
 							}
 						}
 
-						if (tier2EffectiveScore !== undefined) {
+						if (multiheadCfg && allPairs) {
+							// Multi-head decision rule overrides risk-bucket scoring.
+							// Reassign tier2Score (local), tier2EffectiveScore, and
+							// tier2AuxScore so the rule-triggering chunk becomes the
+							// reported source on the result. `tier2RawScore` keeps
+							// the pre-rule max-main so forensics can still see what
+							// the highest scorer was.
+							tier2MultiheadBlocked = mhAnyBlock;
+							if (mhAnyBlock) {
+								tier2Risk = "high";
+								maxSentence = mhTopBlockChunk;
+								tier2Score = mhTopBlockMain;
+								tier2EffectiveScore = mhTopBlockMain;
+								tier2AuxScore = mhTopBlockAux;
+							} else {
+								// Aux veto in effect — no chunk blocks. Risk stays low
+								// regardless of max main; the rule says we trust aux.
+								// `tier2EffectiveScore` is set to undefined so the
+								// reported tier2Score doesn't claim a block-worthy
+								// score that wasn't acted on.
+								tier2Risk = "low";
+								tier2EffectiveScore = undefined;
+							}
+						} else if (tier2EffectiveScore !== undefined) {
 							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 						}
 					}
@@ -478,10 +614,15 @@ export class PromptDefense {
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
 		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
 		// that may fire without adding named pattern detections, so we include it here.
-		const hasThreats =
-			detections.length > 0 ||
-			fieldsSanitized.length > 0 ||
-			(tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold);
+		// In multi-head mode the rule replaces the threshold check: a flagged
+		// chunk under (main >= mainThr AND aux < auxThr) is a Tier 2 threat;
+		// aux veto suppresses the threshold-based Tier 2 signal entirely.
+		const tier2HasThreat = tier2MultiheadBlocked
+			? true
+			: tier2MultiheadBlocked === false
+				? false
+				: tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold;
+		const hasThreats = detections.length > 0 || fieldsSanitized.length > 0 || tier2HasThreat;
 
 		// Three cases for allowed:
 		// 1. blockHighRisk is off → always allow
@@ -489,6 +630,14 @@ export class PromptDefense {
 		// 3. Risk did not reach high/critical → allow
 		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
 
+		// `tier2Score` reports `tier2EffectiveScore` — the value that drove the
+		// block decision. Operator-facing invariant:
+		//   `tier2Score >= highRiskThreshold` ⇔ `allowed === false`
+		// (modulo Tier 1 detections and the multi-head veto path; the latter
+		// sets tier2Score to undefined so the inequality short-circuits).
+		// `tier2RawScore` is the pre-density / pre-rule max-chunk main score
+		// for forensics — never use it to make decisions; it diverges from
+		// `tier2Score` on multi-string payloads and under multi-head aux veto.
 		return {
 			allowed,
 			riskLevel,
@@ -496,7 +645,10 @@ export class PromptDefense {
 			detections,
 			fieldsSanitized,
 			patternsByField: patternsRemovedByField,
-			tier2Score,
+			tier2Score: tier2EffectiveScore,
+			tier2RawScore,
+			tier2AuxScore,
+			tier2MultiheadBlocked,
 			tier2SkipReason,
 			maxSentence,
 			fieldsDropped,

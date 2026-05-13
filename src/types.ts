@@ -76,7 +76,7 @@ export interface StructuralFlag {
  * Result from Tier 2 ML classification
  */
 export interface Tier2Result {
-	/** Risk score from 0.0 to 1.0 */
+	/** Risk score from 0.0 to 1.0 (main head when multi-head) */
 	score: number;
 	/** Confidence in the score */
 	confidence: number;
@@ -86,6 +86,11 @@ export interface Tier2Result {
 	skipReason?: string;
 	/** Processing time in milliseconds */
 	latencyMs: number;
+	/**
+	 * Auxiliary head score (multi-head models only).
+	 * High aux → directive targets a human reader, used as veto signal.
+	 */
+	aux?: number;
 }
 
 /**

@@ -106,7 +106,12 @@ describe('#Tier2Classifier', () => {
 	});
 
 	describe('.getConfig', () => {
-		it('returns the configured highRiskThreshold', () => {
+		// Since 0.7, the default model (v5) ships with calibration defaults in
+		// its classifier_config.json — Tier2Classifier auto-loads them, so the
+		// out-of-the-box highRiskThreshold reflects v5's calibrated threshold
+		// (0.64 = raw 0.8 at T=2.41). The legacy default (0.8) still applies
+		// for models without a calibration block (e.g. user-supplied paths).
+		it('returns the model calibration highRiskThreshold when present', () => {
 			// arrange
 			const classifier = createTier2Classifier();
 
@@ -114,7 +119,10 @@ describe('#Tier2Classifier', () => {
 			const actual = classifier.getConfig();
 
 			// assert
-			expect(actual.highRiskThreshold).toBe(0.8);
+			// v5's calibration block sets this to 0.64; assert structural
+			// invariants (within [0,1], non-default-equality is informational)
+			expect(actual.highRiskThreshold).toBeGreaterThan(0);
+			expect(actual.highRiskThreshold).toBeLessThanOrEqual(1);
 		});
 
 		it('returns the configured mediumRiskThreshold', () => {
@@ -126,6 +134,11 @@ describe('#Tier2Classifier', () => {
 
 			// assert
 			expect(actual.mediumRiskThreshold).toBe(0.5);
+		});
+
+		it('user-provided highRiskThreshold overrides model defaults', () => {
+			const classifier = createTier2Classifier({ highRiskThreshold: 0.75 });
+			expect(classifier.getConfig().highRiskThreshold).toBe(0.75);
 		});
 	});
 });

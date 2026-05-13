@@ -4,9 +4,55 @@
  * ONNX pipeline: text -> Tokenizer -> ONNX Runtime (fine-tuned MiniLM + head) -> logit -> sigmoid -> score
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import type { Tier2Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
-import { OnnxClassifier } from "./onnx-classifier";
+import { getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
+
+/**
+ * Subset of the bundled model's `classifier_config.json` that defender cares
+ * about for runtime defaults. Other keys (training metadata, dataset list,
+ * architecture flags) are ignored.
+ */
+interface ModelCalibrationDefaults {
+	temperatureT?: number;
+	highRiskThreshold?: number;
+	mediumRiskThreshold?: number;
+}
+
+/**
+ * Read calibration defaults from a model's `classifier_config.json`, if
+ * present. Returns `null` for missing file, malformed JSON, or absent
+ * `calibration` key — legacy models (e.g. `minilm-full-aug`) lack this file
+ * entirely, and that's expected.
+ */
+function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | null {
+	try {
+		const raw = readFileSync(resolve(modelDir, "classifier_config.json"), "utf8");
+		const data = JSON.parse(raw) as { calibration?: ModelCalibrationDefaults };
+		return data.calibration ?? null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Multi-head decision rule. When set, the Tier 2 classifier interprets the
+ * model's output as `[main, aux]` and blocks iff
+ * `main >= mainThreshold AND aux < auxThreshold`.
+ *
+ * `aux` is interpreted as "directive targets a human reader" — a high aux
+ * vetos the block on the assumption that high-main content (imperative,
+ * obligation phrasing) is meant for a person, not the assistant.
+ */
+export interface MultiheadConfig {
+	/** Main-head threshold (block requires main >= this). Default: 0.5 */
+	mainThreshold: number;
+	/** Aux-head threshold (block requires aux < this). Default: 0.3 */
+	auxThreshold: number;
+}
 
 /**
  * Tier 2 classifier configuration
@@ -22,6 +68,22 @@ export interface Tier2ClassifierConfig {
 	maxTextLength: number;
 	/** Path to ONNX model directory (defaults to bundled model) */
 	onnxModelPath?: string;
+	/**
+	 * Multi-head decision rule. Set this when pointing the classifier at a
+	 * dual-head ONNX model (output shape `[batch, 2]`); leave undefined for
+	 * single-head models — the runtime auto-detects shape on first inference.
+	 */
+	multihead?: MultiheadConfig;
+	/**
+	 * Temperature scaling for post-hoc calibration. The raw logit is divided
+	 * by T before sigmoid: `score = sigmoid(logit / T)`. T > 1 softens
+	 * overconfident output. T = 1 (default) is a no-op (raw sigmoid).
+	 *
+	 * Fit T offline on a held-out labeled set by minimizing NLL. When
+	 * calibration is enabled, thresholds must be re-tuned: `score = 0.8`
+	 * raw becomes `~0.64` at T = 2.4. See release notes for migration.
+	 */
+	temperatureT?: number;
 }
 
 /**
@@ -51,8 +113,29 @@ export class Tier2Classifier {
 	private onnxClassifier: OnnxClassifier;
 
 	constructor(config: Partial<Tier2ClassifierConfig> = {}) {
-		this.config = { ...DEFAULT_TIER2_CLASSIFIER_CONFIG, ...config };
-		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath);
+		// Three-tier precedence for thresholds and temperature:
+		//   1. Hardcoded library defaults (DEFAULT_TIER2_CLASSIFIER_CONFIG)
+		//   2. Model-specific defaults from `<modelDir>/classifier_config.json:calibration`
+		//   3. Caller-provided `config` (always wins)
+		//
+		// Model-specific defaults let us ship v5 with `temperatureT: 2.41` and
+		// `highRiskThreshold: 0.64` baked in without the library needing to
+		// know which model the caller is loading. Legacy models without a
+		// classifier_config.json (e.g. `minilm-full-aug`) skip step 2.
+		const modelDir = config.onnxModelPath ?? getDefaultModelPath();
+		const modelDefaults = readCalibrationDefaults(modelDir);
+		const merged: Tier2ClassifierConfig = { ...DEFAULT_TIER2_CLASSIFIER_CONFIG };
+		if (modelDefaults) {
+			if (typeof modelDefaults.temperatureT === "number") merged.temperatureT = modelDefaults.temperatureT;
+			if (typeof modelDefaults.highRiskThreshold === "number")
+				merged.highRiskThreshold = modelDefaults.highRiskThreshold;
+			if (typeof modelDefaults.mediumRiskThreshold === "number")
+				merged.mediumRiskThreshold = modelDefaults.mediumRiskThreshold;
+		}
+		// Caller config wins. Spread skips undefined values implicitly only if
+		// the key is absent; explicit `undefined` in the partial would override.
+		this.config = { ...merged, ...config };
+		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath, this.config.temperatureT);
 	}
 
 	/**
@@ -458,6 +541,42 @@ export class Tier2Classifier {
 		if (chunks.length === 0) return [];
 		await this.onnxClassifier.warmup();
 		return this.onnxClassifier.classifyBatch(chunks);
+	}
+
+	/**
+	 * Multi-head variant of `classifyChunksBatch`. Returns paired `(main, aux)`
+	 * scores per chunk. For single-head models, `aux` is `null` per row.
+	 * Callers in the multi-head path use the aux scores to apply the veto rule.
+	 */
+	async classifyChunksBatchPair(chunks: string[]): Promise<Array<{ main: number; aux: number | null }>> {
+		if (chunks.length === 0) return [];
+		await this.onnxClassifier.warmup();
+		return this.onnxClassifier.classifyBatchPair(chunks);
+	}
+
+	/**
+	 * Temperature scaling factor in use (1.0 = no calibration). Exposed so
+	 * the cumulative-density and risk-bucketing code in PromptDefense can
+	 * rescale its thresholds into calibrated-score space when T != 1.
+	 */
+	getTemperature(): number {
+		return this.onnxClassifier.getTemperature();
+	}
+
+	/**
+	 * Whether this classifier is configured for multi-head decision-making.
+	 * Returns false when no `multihead` config was provided, regardless of
+	 * what the underlying ONNX model emits.
+	 */
+	isMultihead(): boolean {
+		return this.config.multihead !== undefined;
+	}
+
+	/**
+	 * The configured multi-head thresholds, or `undefined` when not configured.
+	 */
+	getMultiheadConfig(): MultiheadConfig | undefined {
+		return this.config.multihead;
 	}
 
 	/**

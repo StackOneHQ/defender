@@ -13,9 +13,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Default path to the bundled ONNX model directory (relative to dist/)
+ * Default path to the bundled ONNX model directory (relative to dist/).
+ * Exported so `Tier2Classifier` can read model-specific calibration defaults
+ * from the model's `classifier_config.json` at construction time.
  */
-function getDefaultModelPath(): string {
+export function getDefaultModelPath(): string {
 	// Works for both CJS (__dirname) and ESM (import.meta.url)
 	let baseDir: string;
 	try {
@@ -112,9 +114,42 @@ export class OnnxClassifier {
 	private modelPath: string;
 	private loadingPromise: Promise<void> | null = null;
 	private maxLength = 256;
+	/**
+	 * Detected on first inference from the logits tensor `dims`:
+	 *  - `single` → `[batch]` or `[batch, 1]` — sigmoid path, one score per text
+	 *  - `multi`  → `[batch, 2]` — main+aux dual-head; `data` is row-major
+	 *               `[main_0, aux_0, main_1, aux_1, ...]`
+	 *  - `null`   → not yet known (no inference run)
+	 */
+	private outputMode: "single" | "multi" | null = null;
+	/**
+	 * Temperature for post-hoc calibration via temperature scaling. The raw
+	 * logit is divided by T before sigmoid: `sigmoid(logit / T)`. T > 1
+	 * softens overconfident output. T = 1 is a no-op (raw sigmoid).
+	 *
+	 * Fit T offline on a held-out labeled set by minimizing NLL. See
+	 * https://arxiv.org/abs/1706.04599 for the standard recipe.
+	 */
+	private temperatureT = 1.0;
 
-	constructor(modelPath?: string) {
+	constructor(modelPath?: string, temperatureT?: number) {
 		this.modelPath = modelPath ?? getDefaultModelPath();
+		if (temperatureT !== undefined && temperatureT > 0) {
+			this.temperatureT = temperatureT;
+		}
+	}
+
+	/** Current temperature scaling factor (1.0 = no calibration). */
+	getTemperature(): number {
+		return this.temperatureT;
+	}
+
+	/**
+	 * Output mode of the loaded model. `null` until the first inference runs.
+	 * `"multi"` indicates the model emits `[batch, 2]` (main + aux) logits.
+	 */
+	getOutputMode(): "single" | "multi" | null {
+		return this.outputMode;
 	}
 
 	/**
@@ -203,13 +238,30 @@ export class OnnxClassifier {
 	}
 
 	/**
-	 * Classify a single text, returning a sigmoid score in [0, 1].
+	 * Classify a single text, returning the main-head sigmoid score in [0, 1].
 	 * Higher values indicate higher probability of prompt injection.
+	 *
+	 * For multi-head models, only the main score is returned. Callers that
+	 * need the aux score should use `classifyPair()`.
 	 *
 	 * @param text - Text to classify
 	 * @returns Sigmoid score in [0, 1]
 	 */
 	async classify(text: string): Promise<number> {
+		const { main } = await this.classifyPair(text);
+		return main;
+	}
+
+	/**
+	 * Classify a single text, returning both main and aux head scores.
+	 *
+	 * For single-head models, `aux` is `null`.
+	 * For multi-head `[batch, 2]` models, both scores are sigmoid-activated.
+	 *
+	 * @param text - Text to classify
+	 * @returns `{ main, aux }` — main in [0,1]; aux in [0,1] or null
+	 */
+	async classifyPair(text: string): Promise<{ main: number; aux: number | null }> {
 		await this.ensureLoaded();
 
 		const { inputIds, attentionMask } = this.tokenize(text);
@@ -226,12 +278,34 @@ export class OnnxClassifier {
 			attention_mask: attentionMaskTensor,
 		});
 
-		const logit = results?.logits?.data[0];
-		if (logit === undefined || logit === null) {
+		const logits = results?.logits;
+		if (!logits || logits.data[0] === undefined || logits.data[0] === null) {
 			throw new Error("ONNX model returned no logits");
 		}
 
-		return sigmoid(Number(logit));
+		this.detectOutputMode(logits.dims);
+
+		const T = this.temperatureT;
+		if (this.outputMode === "multi") {
+			const main = sigmoid(Number(logits.data[0]) / T);
+			const aux = sigmoid(Number(logits.data[1]) / T);
+			return { main, aux };
+		}
+		return { main: sigmoid(Number(logits.data[0]) / T), aux: null };
+	}
+
+	/**
+	 * Update `outputMode` from a logits-tensor shape on the first inference.
+	 * Idempotent — subsequent calls with the same shape are no-ops.
+	 */
+	private detectOutputMode(dims: number[] | undefined): void {
+		if (this.outputMode !== null) return;
+		// `dims` may be undefined on hand-rolled mocks; fall back to single-head.
+		if (!dims || dims.length < 2) {
+			this.outputMode = "single";
+			return;
+		}
+		this.outputMode = dims[1] === 2 ? "multi" : "single";
 	}
 
 	/**
@@ -243,30 +317,46 @@ export class OnnxClassifier {
 
 	/**
 	 * Classify multiple texts in batch, processing in chunks to bound memory.
+	 * Returns main-head scores only (back-compat). Use `classifyBatchPair()`
+	 * when aux scores are needed.
 	 *
 	 * @param texts - Array of texts to classify
-	 * @returns Array of sigmoid scores in [0, 1]
+	 * @returns Array of main-head sigmoid scores in [0, 1]
 	 */
 	async classifyBatch(texts: string[]): Promise<number[]> {
+		const pairs = await this.classifyBatchPair(texts);
+		return pairs.map((p) => p.main);
+	}
+
+	/**
+	 * Classify multiple texts in batch, returning main+aux scores.
+	 * Aux is `null` per-row for single-head models.
+	 *
+	 * @param texts - Array of texts to classify
+	 * @returns Array of `{ main, aux }`
+	 */
+	async classifyBatchPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
 		if (texts.length === 0) return [];
 
 		await this.ensureLoaded();
 
-		const allScores: number[] = [];
+		const allPairs: Array<{ main: number; aux: number | null }> = [];
 
 		for (let offset = 0; offset < texts.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
 			const chunk = texts.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
-			const chunkScores = await this.classifyBatchChunk(chunk);
-			allScores.push(...chunkScores);
+			const chunkPairs = await this.classifyBatchChunkPair(chunk);
+			allPairs.push(...chunkPairs);
 		}
 
-		return allScores;
+		return allPairs;
 	}
 
 	/**
 	 * Classify a single chunk of texts in one ONNX session.run() call.
+	 * Handles both single-head `[batch]`/`[batch, 1]` and multi-head `[batch, 2]`
+	 * outputs; the latter returns paired (main, aux) sigmoid scores.
 	 */
-	private async classifyBatchChunk(texts: string[]): Promise<number[]> {
+	private async classifyBatchChunkPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
 		const tokenized = texts.map((t) => this.tokenize(t));
 		const maxLen = Math.max(...tokenized.map((t) => t.inputIds.length));
 
@@ -295,17 +385,28 @@ export class OnnxClassifier {
 			attention_mask: attentionMaskTensor,
 		});
 
-		const logits = results?.logits?.data;
+		const logits = results?.logits;
 		if (!logits) {
 			throw new Error("ONNX model returned no logits");
 		}
 
-		const scores: number[] = [];
-		for (let i = 0; i < batchSize; i++) {
-			scores.push(sigmoid(Number(logits[i])));
-		}
+		this.detectOutputMode(logits.dims);
 
-		return scores;
+		const T = this.temperatureT;
+		const pairs: Array<{ main: number; aux: number | null }> = [];
+		if (this.outputMode === "multi") {
+			// Row-major [batch, 2]: [main_0, aux_0, main_1, aux_1, ...]
+			for (let i = 0; i < batchSize; i++) {
+				const main = sigmoid(Number(logits.data[i * 2]) / T);
+				const aux = sigmoid(Number(logits.data[i * 2 + 1]) / T);
+				pairs.push({ main, aux });
+			}
+		} else {
+			for (let i = 0; i < batchSize; i++) {
+				pairs.push({ main: sigmoid(Number(logits.data[i]) / T), aux: null });
+			}
+		}
+		return pairs;
 	}
 
 	/**
