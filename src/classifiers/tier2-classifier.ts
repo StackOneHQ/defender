@@ -23,14 +23,28 @@ interface ModelCalibrationDefaults {
 }
 
 /**
+ * Module-level memo of `classifier_config.json` per model directory.
+ * Bundled model assets are immutable at runtime, so the sync FS read +
+ * JSON.parse can be amortized to once per process per modelDir — without
+ * this cache, every `new Tier2Classifier(...)` on a request hot path
+ * blocks the event loop for the read. Mirrors the `_sessionCache` pattern
+ * in onnx-classifier.ts. `null` is a valid cached value ("no calibration
+ * block for this model"), so probe with `.has()` rather than `=== undefined`.
+ */
+const _calibrationCache = new Map<string, ModelCalibrationDefaults | null>();
+
+/**
  * Read calibration defaults from a model's `classifier_config.json`, if
  * present. Returns `null` for missing file (legacy models) or absent
  * `calibration` key. Other read or parse failures emit a warning so they
  * don't silently fall back to library defaults — a typo in a shipped
  * calibration block would otherwise be invisible until someone digs into
- * decision divergence.
+ * decision divergence. Memoized per modelDir; subsequent calls are O(1).
  */
 function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | null {
+	if (_calibrationCache.has(modelDir)) {
+		return _calibrationCache.get(modelDir) ?? null;
+	}
 	const configPath = resolve(modelDir, "classifier_config.json");
 	let raw: string;
 	try {
@@ -40,16 +54,20 @@ function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | n
 		if (code !== "ENOENT") {
 			console.warn(`[defender] failed to read ${configPath}:`, err instanceof Error ? err.message : String(err));
 		}
+		_calibrationCache.set(modelDir, null);
 		return null;
 	}
 	try {
 		const data = JSON.parse(raw) as { calibration?: ModelCalibrationDefaults };
-		return data.calibration ?? null;
+		const result = data.calibration ?? null;
+		_calibrationCache.set(modelDir, result);
+		return result;
 	} catch (err) {
 		console.warn(
 			`[defender] malformed classifier_config.json at ${configPath}:`,
 			err instanceof Error ? err.message : String(err),
 		);
+		_calibrationCache.set(modelDir, null);
 		return null;
 	}
 }
