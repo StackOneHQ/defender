@@ -65,28 +65,20 @@ function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | n
  *
  * **Threshold selection matters.** Both fields are required (no library
  * default) because the right operating point depends on the model and the
- * caller's traffic distribution. For the v5 default model, FP-benchmark
- * validation gives:
- *
- *   raw scores (T=1):   { mainThreshold: 0.5, auxThreshold: 0.8 }
- *   calibrated (T=2.41): { mainThreshold: 0.5, auxThreshold: 0.64 }
- *
- * Lower `auxThreshold` (e.g. 0.3) over-rescues attacks on broader
- * benchmarks — see `evals/RESULTS.md` for the threshold sweep across
- * AgentShield, NotInject, WildGuard, and plugin-traffic replay before
- * picking a value other than the validated default.
+ * caller's traffic distribution. For the bundled default model, FP-benchmark
+ * validation gives `{ mainThreshold: 0.5, auxThreshold: 0.64 }`. Lower
+ * `auxThreshold` (e.g. 0.3) over-rescues attacks on broader benchmarks —
+ * see `evals/RESULTS.md` before picking a different value.
  */
 export interface MultiheadConfig {
 	/**
-	 * Main-head threshold. Block requires the model's main classification
-	 * score to be at or above this value. Compared after temperature scaling
-	 * if `temperatureT` is configured. Required — no library default.
+	 * Main-head threshold. Block requires the main score to be at or above
+	 * this value. Required — no library default.
 	 */
 	mainThreshold: number;
 	/**
 	 * Aux-head veto threshold. The rule rescues content from a block when
-	 * the aux score is at or above this value. Compared after temperature
-	 * scaling if `temperatureT` is configured. Required — no library default.
+	 * the aux score is at or above this value. Required — no library default.
 	 */
 	auxThreshold: number;
 }
@@ -112,13 +104,9 @@ export interface Tier2ClassifierConfig {
 	 */
 	multihead?: MultiheadConfig;
 	/**
-	 * Temperature scaling for post-hoc calibration. The raw logit is divided
-	 * by T before sigmoid: `score = sigmoid(logit / T)`. T > 1 softens
-	 * overconfident output. T = 1 (default) is a no-op (raw sigmoid).
-	 *
-	 * Fit T offline on a held-out labeled set by minimizing NLL. When
-	 * calibration is enabled, thresholds must be re-tuned: `score = 0.8`
-	 * raw becomes `~0.64` at T = 2.4. See release notes for migration.
+	 * Advanced: override only when shipping a custom ONNX model. The bundled
+	 * model auto-loads its fitted T from `classifier_config.json`; most
+	 * callers should not set this.
 	 */
 	temperatureT?: number;
 }
