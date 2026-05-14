@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/StackOneHQ/defender/compare/defender-v0.6.3...defender-v0.7.0) (2026-05-14)
+
+
+### Features
+
+* **ENG-335:** multi-head ONNX + temperature scaling + API contract fixes (v0.7) ([#63](https://github.com/StackOneHQ/defender/issues/63)) ([616cc10](https://github.com/StackOneHQ/defender/commit/616cc102c8c1c633e96bfa85aa1ee5ec7727f77a))
+
+
+### Bug Fixes
+
+* **ENG-129:** add obfuscation normalisation chain to Tier 1 detection ([#39](https://github.com/StackOneHQ/defender/issues/39)) ([2544d3f](https://github.com/StackOneHQ/defender/commit/2544d3f49f07c86f2e8b2dd0b432c124264bf265))
+
 ## [0.6.3](https://github.com/StackOneHQ/defender/compare/defender-v0.6.2...defender-v0.6.3) (2026-04-23)
 
 
