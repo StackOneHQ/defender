@@ -102,7 +102,13 @@ export const ROLE_MARKER_PATTERNS: PatternDefinition[] = [
 	// XML-style variants
 	{
 		id: "role_system_xml",
-		pattern: /<system>/i,
+		// Require directive-shaped content immediately following the tag.
+		// Bare `<system>` mentions are common in XML schemas, ML config
+		// docs, and OS specs; the attack shape is `<system>` followed by
+		// an imperative or role-switch payload. Pairs (with closing tag)
+		// are also matched implicitly since the directive content sits
+		// inside them.
+		pattern: /<system>\s*(?:ignore|disregard|forget|override|you\s+are|new\s+instructions?|stop|disable|bypass)/gi,
 		category: "role_marker",
 		severity: "high",
 		description: "XML-style system tag",
@@ -188,7 +194,13 @@ export const INSTRUCTION_OVERRIDE_PATTERNS: PatternDefinition[] = [
 export const ROLE_ASSUMPTION_PATTERNS: PatternDefinition[] = [
 	{
 		id: "you_are_now",
-		pattern: /you\s+are\s+now\s+(a\s+)?(different|new|the|my)?/gi,
+		// Require an actual role-noun terminator. The previous form had both
+		// alternation groups optional, so it matched "you are now " followed
+		// by anything — every "You are now logged in" / "You are now ready"
+		// UI string FP'd. Role list expanded to cover the actual attack
+		// distribution (DAN/GPT/AI/jailbroken/unrestricted persona-switching).
+		pattern:
+			/you\s+are\s+now\s+(?:a\s+|an\s+)?(?:different|new|unrestricted|jailbroken|free|uncensored|DAN|GPT|AI|chatbot|model|persona|hacker|admin|root|developer|superuser)\b/gi,
 		category: "role_assumption",
 		severity: "high",
 		description: "Attempt to assign new role",
@@ -202,7 +214,12 @@ export const ROLE_ASSUMPTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "pretend_to_be",
-		pattern: /pretend\s+(to\s+be|you\s+are)\s+(a\s+)?/gi,
+		// Require an attack-shaped role-noun. Previously matched any "pretend
+		// to be ..." prefix, FPing on children's literature, drama exercises,
+		// jokes. The role list overlaps with `you_are_now` plus privilege-
+		// escalation nouns (hacker/admin/root/developer).
+		pattern:
+			/pretend\s+(?:to\s+be|you\s+are)\s+(?:a\s+|an\s+)?(?:different|new|unrestricted|jailbroken|free|uncensored|DAN|GPT|AI|chatbot|model|persona|hacker|admin|root|developer)\b/gi,
 		category: "role_assumption",
 		severity: "medium",
 		description: "Attempt to make AI pretend",
@@ -397,7 +414,10 @@ export const PROMPT_LEAKING_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "show_instructions",
-		pattern: /show\s+(?:me\s+)?(?:your\s+)?(?:(?:initial|original|system|hidden)\s+)?instructions?/gi,
+		// Require an attack-shaped qualifier (initial/original/system/hidden).
+		// The inner group used to be optional, so bare "show instructions" —
+		// common in FAQs, help docs, onboarding tours — triggered the rule.
+		pattern: /show\s+(?:me\s+)?(?:your\s+)?(?:initial|original|system|hidden)\s+instructions?/gi,
 		category: "instruction_override",
 		severity: "high",
 		description: "Attempt to show hidden instructions",
@@ -439,7 +459,12 @@ export const PROMPT_LEAKING_PATTERNS: PatternDefinition[] = [
 export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 	{
 		id: "markdown_hidden_instruction",
-		pattern: /\[.*?\]\(.*?(?:ignore|forget|system|instruction).*?\)/gi,
+		// Require an imperative + scope qualifier in the URL. The earlier form
+		// matched "system" or "instruction" anywhere in the URL, so every
+		// doc cross-reference like `[config](https://.../system-setup)`
+		// triggered. Real smuggled-instruction attacks include the full
+		// "ignore (all|the|previous|prior) ..." phrasing in the URL/anchor.
+		pattern: /\[.*?\]\(.*?(?:ignore|disregard|forget|override)\W+(?:all|the|previous|prior)\W+.*?\)/gi,
 		category: "structural",
 		severity: "high",
 		description: "Markdown link with hidden injection",
@@ -467,10 +492,16 @@ export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "confusable_homoglyphs",
+		// Cherokee (U+13A0-U+13F4) and Phonetic Extensions (U+1D00-U+1D2B)
+		// blocks are essentially never in real customer content, so single-
+		// char presence remains a useful signal. Cyrillic (U+0400-U+04FF)
+		// is mainstream Russian text — flag only when *mixed* with Latin
+		// letters (the actual attack: `аdmin` with a Cyrillic 'а'), not when
+		// the whole word/text is Cyrillic.
 		// Cherokee letters that look like Latin (ᎪᏢᏞᎬ = A, P, L, E lookalikes)
 		// Small caps Latin letters (ᴀ-ᴢ range, excluding regular ASCII)
 		// Cyrillic lookalikes (а, е, о, р, с, х = a, e, o, p, c, x lookalikes)
-		pattern: /[\u13A0-\u13F4]|[\u1D00-\u1D2B]|[\u0400-\u04FF]/g,
+		pattern: /[\u13A0-\u13F4\u1D00-\u1D2B]|[a-zA-Z][\u0400-\u04FF]|[\u0400-\u04FF][a-zA-Z]/g,
 		category: "encoding_suspicious",
 		severity: "medium",
 		description: "Unicode homoglyph characters (Cherokee, Small Caps, Cyrillic)",
@@ -484,7 +515,13 @@ export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "json_injection",
-		pattern: /"(?:system|role|instruction|prompt)"\s*:\s*"/gi,
+		// Target the actual attack shape: setting a chat-message role to a
+		// privileged value (system/developer/admin), or stuffing a long
+		// string into a `"system"` key. The previous form matched the bare
+		// key `"system":`/`"role":`/etc., which fires on every OpenAI /
+		// Anthropic SDK example, chat-log dump, and JSON schema that just
+		// *declares* the field without abusing it.
+		pattern: /"role"\s*:\s*"(?:system|developer|admin)"|"system"\s*:\s*"[^"]{20,}/gi,
 		category: "structural",
 		severity: "medium",
 		description: "JSON-style role/instruction injection",
