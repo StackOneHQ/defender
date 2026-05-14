@@ -509,6 +509,12 @@ export class PromptDefense {
 						let mhTopBlockChunk = "";
 						let mhTopBlockMain = -1;
 						let mhTopBlockAux: number | undefined;
+						// Aux score of the chunk with the global-max main score. Only
+						// populated under multi-head config (`allPairs` is null in
+						// single-head mode); used by the aux-veto branch below so the
+						// reported `tier2AuxScore` points at the chunk that came
+						// closest to blocking.
+						let auxOfMaxMain: number | undefined;
 						for (let i = 0; i < strings.length; i++) {
 							const { start, end } = stringRanges[i];
 							if (start < 0) continue;
@@ -547,7 +553,7 @@ export class PromptDefense {
 							if (tier2Score === undefined || sMax > tier2Score) {
 								tier2Score = sMax;
 								maxSentence = sMaxChunk;
-								tier2AuxScore = sMaxAux;
+								auxOfMaxMain = sMaxAux;
 							}
 						}
 
@@ -557,44 +563,12 @@ export class PromptDefense {
 						// is in `tier2EffectiveScore`.
 						tier2RawScore = tier2Score;
 
-						// Cross-string density adjustment (mild). Applied only when we
-						// have 3+ strings — otherwise a 1- or 2-string payload is
-						// mathematically indistinguishable from a real attack that
-						// happens to be short, and damping it would create false
-						// negatives. For larger payloads, a lone high-scoring string
-						// surrounded by many benign strings is typical of benign
-						// connector responses (e.g. 100 pay schedules with one
-						// imperative descriptor). Damping with pow(highCount/total, 0.1)
-						// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×. Strong
-						// attacks concentrated across multiple strings are barely affected.
-						//
-						// The "high" cutoff was originally hardcoded at 0.75 (raw sigmoid
-						// space). When the classifier is configured with temperatureT > 1,
-						// every score is `sigmoid(logit / T)` — strictly compressed toward
-						// 0.5 — so the literal 0.75 cutoff stops counting events that
-						// would have counted as "high" under raw scoring. To preserve the
-						// adjustment's behavior across calibrated and uncalibrated runs,
-						// we rescale the threshold in logit-space: raw 0.75 corresponds to
-						// logit log(3) ≈ 1.0986; the calibrated cutoff is sigmoid(log(3)/T).
-						// At T=1 this is 0.75 (no-op); at T=2.41 it's ≈ 0.612.
-						tier2EffectiveScore = tier2Score;
-						const T = this.tier2Classifier.getTemperature?.() ?? 1;
-						const DENSITY_SUB_THRESHOLD = T === 1 ? 0.75 : 1 / (1 + Math.exp(-Math.log(3) / T));
-						if (tier2Score !== undefined && perStringScores.length > 2) {
-							const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
-							if (highCount > 0) {
-								const factor = (highCount / perStringScores.length) ** 0.1;
-								tier2EffectiveScore = tier2Score * factor;
-							}
-						}
-
 						if (multiheadCfg && allPairs) {
-							// Multi-head decision rule overrides risk-bucket scoring.
-							// Reassign tier2Score (local), tier2EffectiveScore, and
-							// tier2AuxScore so the rule-triggering chunk becomes the
-							// reported source on the result. `tier2RawScore` keeps
-							// the pre-rule max-main so forensics can still see what
-							// the highest scorer was.
+							// Multi-head decision rule: report the rule-triggering chunk
+							// when the rule fires, otherwise report the (rescued) global
+							// max-main chunk for debugging. Density damping is intentionally
+							// not applied here — the rule's chunk-level main scores are
+							// already the decision signal.
 							tier2MultiheadBlocked = mhAnyBlock;
 							if (mhAnyBlock) {
 								tier2Risk = "high";
@@ -603,18 +577,46 @@ export class PromptDefense {
 								tier2EffectiveScore = mhTopBlockMain;
 								tier2AuxScore = mhTopBlockAux;
 							} else {
-								// Aux veto fired — the rule decided to rescue this content,
-								// so Tier 2 contributed nothing to a block decision. Set
-								// `tier2EffectiveScore = 0` so the operator-facing triple
-								// (`tier2Score`, `riskLevel`, `allowed`) tells one coherent
-								// story: zero / low / true. The model's actual main signal
-								// is still available on `tier2RawScore` for forensics, and
-								// `tier2MultiheadBlocked: false` plus `tier2AuxScore` give
-								// the rule-level context for anyone debugging the decision.
+								// Aux veto fired — the rule rescued this content, so Tier 2
+								// contributed nothing to a block. Set `tier2EffectiveScore = 0`
+								// so the operator triple (`tier2Score`, `riskLevel`, `allowed`)
+								// reads coherently as zero / low / true. The model's actual
+								// main signal is on `tier2RawScore`; the aux that did the
+								// rescuing is reported via `tier2AuxScore`.
 								tier2Risk = "low";
 								tier2EffectiveScore = 0;
+								tier2AuxScore = auxOfMaxMain;
 							}
-						} else if (tier2EffectiveScore !== undefined) {
+						} else if (tier2Score !== undefined) {
+							// Single-head path: cross-string density adjustment (mild),
+							// then bucket into risk level via the configured thresholds.
+							//
+							// Density damping fires only on 3+ strings — a 1- or 2-string
+							// payload is mathematically indistinguishable from a real
+							// attack that happens to be short, and damping would create
+							// false negatives. For larger payloads, a lone high-scoring
+							// string surrounded by many benign strings is typical of
+							// benign connector responses (e.g. 100 pay schedules with one
+							// imperative descriptor). The factor `pow(highCount/total, 0.1)`
+							// is gentle: 1/100 → 0.63×, 1/10 → 0.79×, 5/10 → 0.93×.
+							//
+							// The "high" cutoff was originally hardcoded at 0.75 (raw sigmoid
+							// space). Under temperatureT > 1 every score is
+							// `sigmoid(logit / T)` — compressed toward 0.5 — so a literal
+							// 0.75 cutoff stops counting events that were "high" under raw
+							// scoring. Rescale in logit-space: raw 0.75 corresponds to logit
+							// log(3) ≈ 1.0986; calibrated cutoff is sigmoid(log(3)/T). At
+							// T=1 this is 0.75 (no-op); at T=2.41 it's ≈ 0.612.
+							tier2EffectiveScore = tier2Score;
+							const T = this.tier2Classifier.getTemperature() ?? 1;
+							const DENSITY_SUB_THRESHOLD = T === 1 ? 0.75 : 1 / (1 + Math.exp(-Math.log(3) / T));
+							if (perStringScores.length > 2) {
+								const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
+								if (highCount > 0) {
+									const factor = (highCount / perStringScores.length) ** 0.1;
+									tier2EffectiveScore = tier2Score * factor;
+								}
+							}
 							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 						}
 					}
