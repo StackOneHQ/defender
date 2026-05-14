@@ -175,9 +175,16 @@ export class Tier2Classifier {
 			if (typeof modelDefaults.mediumRiskThreshold === "number")
 				merged.mediumRiskThreshold = modelDefaults.mediumRiskThreshold;
 		}
-		// Caller config wins. Spread skips undefined values implicitly only if
-		// the key is absent; explicit `undefined` in the partial would override.
-		this.config = { ...merged, ...config };
+		// Caller config wins, but filter out explicit `undefined` keys first.
+		// A naive `{ ...merged, ...config }` would let `{ temperatureT: undefined }`
+		// (common when building config conditionally from optional settings)
+		// silently clobber a model-loaded calibration value — and an undefined
+		// `temperatureT` then bypasses OnnxClassifier's positive-finite guard,
+		// dropping calibration back to T=1.
+		const definedConfig = Object.fromEntries(
+			Object.entries(config).filter(([, v]) => v !== undefined),
+		);
+		this.config = { ...merged, ...definedConfig };
 		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath, this.config.temperatureT);
 	}
 
