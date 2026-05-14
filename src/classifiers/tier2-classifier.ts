@@ -181,9 +181,7 @@ export class Tier2Classifier {
 		// silently clobber a model-loaded calibration value — and an undefined
 		// `temperatureT` then bypasses OnnxClassifier's positive-finite guard,
 		// dropping calibration back to T=1.
-		const definedConfig = Object.fromEntries(
-			Object.entries(config).filter(([, v]) => v !== undefined),
-		);
+		const definedConfig = Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined));
 		this.config = { ...merged, ...definedConfig };
 		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath, this.config.temperatureT);
 	}
