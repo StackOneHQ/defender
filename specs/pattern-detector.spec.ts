@@ -158,6 +158,24 @@ describe('PatternDetector', () => {
       expect(result.hasDetections).toBe(true);
       expect(result.matches.some((m) => m.pattern === 'shell_command')).toBe(true);
     });
+
+    // Regression for the markdown-inline-code FP class. Before 0.7, the
+    // shell_command regex also matched any `` `...` `` span, so technical
+    // READMEs containing examples like `cat foo.json` or `~/.claude/...`
+    // triggered Tier 1 with no real attack signal. The backtick alternative
+    // was removed; this test pins that behavior.
+    it('should NOT match backtick-inline-code spans in markdown docs', () => {
+      const markdownSample = [
+        'Run `cat foo.json` to inspect the file.',
+        'Install with `npm install @stackone/defender`.',
+        'Config lives at `~/.claude/settings.json`.',
+        'Tip: pass `--label` to label the output.',
+        'See the `filename.txt` example.',
+      ].join('\n');
+
+      const result = detector.analyze(markdownSample);
+      expect(result.matches.some((m) => m.pattern === 'shell_command')).toBe(false);
+    });
   });
 
   describe('Structural detection', () => {

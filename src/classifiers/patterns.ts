@@ -307,7 +307,13 @@ export const COMMAND_EXECUTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "shell_command",
-		pattern: /\$\([^)]+\)|`[^`]+`/g,
+		// POSIX `$(...)` only. The legacy backtick form `` `cmd` `` used to be
+		// included here but it FPs on every markdown inline-code span
+		// (`cat foo.json`, `npm install`, `filename.txt`), and modern shell
+		// idioms have used `$(...)` for decades. Real attackers default to
+		// `$(...)` because it nests; Tier 2 still catches the rare backtick
+		// attack via context. Net: drop the false-positive cliff.
+		pattern: /\$\([^)]+\)/g,
 		category: "command_execution",
 		severity: "medium",
 		description: "Shell command substitution",
