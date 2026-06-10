@@ -107,6 +107,87 @@ describe("PromptDefense tier3_only mode", () => {
 	});
 });
 
+describe("PromptDefense tier3 input length cap", () => {
+	afterEach(() => setDefaultTier3Provider(null));
+
+	it("truncates tier3_only input to the configured maxTextLength", async () => {
+		const provider = makeProvider("allow");
+		setDefaultTier3Provider(provider);
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			tier3: { maxTextLength: 50 },
+		});
+
+		const longBody = "a".repeat(500);
+		await defense.defendToolResult({ body: longBody }, "test_tool");
+
+		const passed = (provider.classify as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(passed.length).toBe(50);
+	});
+
+	it("defaults the cap to 10000 chars when not configured", async () => {
+		const provider = makeProvider("allow");
+		setDefaultTier3Provider(provider);
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+		});
+
+		const longBody = "x".repeat(50000);
+		await defense.defendToolResult({ body: longBody }, "test_tool");
+
+		const passed = (provider.classify as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(passed.length).toBe(10000);
+	});
+
+	it("warns and falls back to default on invalid maxTextLength", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		createPromptDefense({
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			tier3: { maxTextLength: -1 },
+		});
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0][0]).toContain("maxTextLength");
+		warn.mockRestore();
+	});
+});
+
+describe("PromptDefense tier3 escalationBand validation", () => {
+	it.each([
+		["lower > upper", { lower: 0.9, upper: 0.1 }],
+		["lower === upper", { lower: 0.5, upper: 0.5 }],
+		["lower below 0", { lower: -0.1, upper: 0.5 }],
+		["upper above 1", { lower: 0.3, upper: 1.5 }],
+		["NaN", { lower: Number.NaN, upper: 0.5 }],
+		["Infinity", { lower: 0, upper: Number.POSITIVE_INFINITY }],
+	])("warns and falls back to defaults on invalid band: %s", (_label, band) => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		createPromptDefense({
+			enableTier3: true,
+			tier3: { escalationBand: band },
+		});
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0][0]).toContain("escalationBand");
+		warn.mockRestore();
+	});
+
+	it("accepts a valid band silently", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		createPromptDefense({
+			enableTier3: true,
+			tier3: { escalationBand: { lower: 0.2, upper: 0.9 } },
+		});
+		expect(warn).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+});
+
 describe("PromptDefense cascade mode escalation band", () => {
 	afterEach(() => setDefaultTier3Provider(null));
 

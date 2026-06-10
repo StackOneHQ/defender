@@ -279,6 +279,15 @@ export interface PromptDefenseOptions {
 		 * Default: { lower: 0.3, upper: 0.85 }.
 		 */
 		escalationBand?: { lower: number; upper: number };
+		/**
+		 * Maximum character length of the text passed to the Tier 3 provider.
+		 * Inputs longer than this are sliced before invocation — bounds token
+		 * usage / cost / latency on pathological payloads. Mirrors Tier 2's
+		 * `maxTextLength` (default 10000).
+		 *
+		 * Default: 10000.
+		 */
+		maxTextLength?: number;
 	};
 }
 
@@ -311,6 +320,7 @@ export class PromptDefense {
 	private defenderMode: DefenderMode = "cascade";
 	private tier3CustomProvider: Tier3Provider | undefined = undefined;
 	private tier3Band: { lower: number; upper: number } = { lower: 0.3, upper: 0.85 };
+	private tier3MaxTextLength: number = 10000;
 	private tier3MissingProviderWarned: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
@@ -357,8 +367,27 @@ export class PromptDefense {
 		if (options.tier3?.provider) {
 			this.tier3CustomProvider = options.tier3.provider;
 		}
+		if (options.tier3?.maxTextLength !== undefined) {
+			const cap = options.tier3.maxTextLength;
+			if (Number.isFinite(cap) && cap > 0) {
+				this.tier3MaxTextLength = Math.floor(cap);
+			} else {
+				console.warn(
+					`[defender] invalid tier3.maxTextLength ${cap} — must be a positive finite number. Falling back to default 10000.`,
+				);
+			}
+		}
 		if (options.tier3?.escalationBand) {
-			this.tier3Band = options.tier3.escalationBand;
+			const { lower, upper } = options.tier3.escalationBand;
+			const validBand =
+				Number.isFinite(lower) && Number.isFinite(upper) && lower >= 0 && upper <= 1 && lower < upper;
+			if (validBand) {
+				this.tier3Band = { lower, upper };
+			} else {
+				console.warn(
+					`[defender] invalid tier3.escalationBand { lower: ${lower}, upper: ${upper} } — must satisfy 0 <= lower < upper <= 1. Falling back to default { lower: 0.3, upper: 0.85 }.`,
+				);
+			}
 		}
 
 		// Initialize Tier 2 classifier if enabled
@@ -446,14 +475,17 @@ export class PromptDefense {
 	): Promise<DefenseResult> {
 		const strings = extractStrings(value, undefined, depthFlag).filter((s) => s.length > 0);
 		const joined = strings.join("\n");
+		// Cap input size before the provider call — bounds tokens/cost/latency
+		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
+		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
 
 		let verdict: Tier3Verdict | undefined;
 		let skipReason: string | undefined;
-		if (joined.length === 0) {
+		if (bounded.length === 0) {
 			skipReason = "No strings extracted from tool result";
 		} else {
 			try {
-				verdict = await provider.classify(joined, { toolName });
+				verdict = await provider.classify(bounded, { toolName });
 			} catch (err) {
 				skipReason = `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`;
 			}
@@ -816,7 +848,11 @@ export class PromptDefense {
 			const provider = this.resolveTier3Provider();
 			if (provider) {
 				try {
-					const verdict = await provider.classify(maxSentence, { toolName });
+					const boundedChunk =
+						maxSentence.length > this.tier3MaxTextLength
+							? maxSentence.slice(0, this.tier3MaxTextLength)
+							: maxSentence;
+					const verdict = await provider.classify(boundedChunk, { toolName });
 					tier3Result = { ...verdict };
 					tier3OverrideBlock = verdict.decision === "block";
 				} catch (err) {
