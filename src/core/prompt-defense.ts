@@ -11,10 +11,27 @@ import {
 	type Tier2Classifier,
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
+import { getDefaultTier3Provider } from "../classifiers/tier3-orchestrator";
 import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
-import type { PromptDefenseConfig, RiskLevel, Tier1Result } from "../types";
+import type { PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
+
+/**
+ * How defender decides which tiers run on each call.
+ *
+ *  - `"cascade"` (default): Tier 1 → Tier 2 → Tier 3 (only when Tier 2 score
+ *    falls inside `tier3.escalationBand`). Tier 3 is an authoritative override
+ *    on the gray-band Tier 2 verdict.
+ *  - `"tier3_only"`: skip Tier 1 + Tier 2 entirely. Build a single text from
+ *    the extracted strings and call the Tier 3 provider on it. The verdict
+ *    becomes the block/allow decision.
+ *
+ * Both modes require `enableTier3: true` AND a registered provider; without
+ * either, mode is ignored and defender falls back to its standard
+ * Tier 1 + Tier 2 cascade.
+ */
+export type DefenderMode = "cascade" | "tier3_only";
 
 /**
  * Result from defendToolResult() - the primary high-level API.
@@ -84,6 +101,16 @@ export interface DefenseResult {
 	 * Empty array when `useSfe` is disabled (the default).
 	 */
 	fieldsDropped: string[];
+	/**
+	 * Tier 3 verdict, present when Tier 3 ran on this call (cascade gray-band
+	 * escalation OR tier3_only mode). The verdict is authoritative: in
+	 * cascade mode it overrides Tier 2's allow/block on the escalated chunk;
+	 * in tier3_only mode it drives the entire decision.
+	 *
+	 * `skipReason` is set instead of `decision` when defender wanted to run
+	 * Tier 3 but couldn't (no provider registered, provider error, timeout).
+	 */
+	tier3?: (Tier3Verdict & { skipReason?: undefined }) | { skipReason: string; decision?: undefined };
 	/**
 	 * True if any recursive payload walk hit `MAX_TRAVERSAL_DEPTH` —
 	 * analysis is complete only to that depth, deeper fields passed through
@@ -216,6 +243,43 @@ export interface PromptDefenseOptions {
 	 * FastText-compatible predictor.
 	 */
 	useSfe?: boolean | { threshold?: number; predictor?: SfePredictor };
+	/**
+	 * Enable Tier 3 LLM classification.
+	 *
+	 * Requires a Tier 3 provider to be registered via
+	 * `setDefaultTier3Provider(...)` OR passed inline as `tier3.provider`.
+	 * When `true` but no provider is available, defender logs once and falls
+	 * back to the standard Tier 1 + Tier 2 cascade.
+	 *
+	 * Default: false.
+	 */
+	enableTier3?: boolean;
+	/**
+	 * Which tiers run on each call. See `DefenderMode`.
+	 *
+	 * Default: `"cascade"` (Tier 1 → Tier 2 → Tier 3 on gray-band scores).
+	 */
+	defenderMode?: DefenderMode;
+	/**
+	 * Tier 3 configuration (orchestration only — the provider itself owns
+	 * model-specific concerns like prompts, endpoints, and timeouts).
+	 */
+	tier3?: {
+		/**
+		 * Override the registered default provider for this PromptDefense
+		 * instance. When omitted, `getDefaultTier3Provider()` is used.
+		 */
+		provider?: Tier3Provider;
+		/**
+		 * Cascade-mode only: Tier 3 is invoked when the Tier 2 effective score
+		 * falls in [lower, upper]. Scores below `lower` are confident-allow;
+		 * scores at or above `upper` are confident-block — neither needs the
+		 * LLM round trip.
+		 *
+		 * Default: { lower: 0.3, upper: 0.85 }.
+		 */
+		escalationBand?: { lower: number; upper: number };
+	};
 }
 
 /**
@@ -243,6 +307,11 @@ export class PromptDefense {
 	private sfeEnabled: boolean = false;
 	private sfeThreshold: number = 0.5;
 	private sfeCustomPredictor: SfePredictor | undefined = undefined;
+	private tier3Enabled: boolean = false;
+	private defenderMode: DefenderMode = "cascade";
+	private tier3CustomProvider: Tier3Provider | undefined = undefined;
+	private tier3Band: { lower: number; upper: number } = { lower: 0.3, upper: 0.85 };
+	private tier3MissingProviderWarned: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -278,6 +347,19 @@ export class PromptDefense {
 		});
 
 		this.patternDetector = createPatternDetector();
+
+		// Tier 3 orchestration — off by default. The actual provider (SageMaker /
+		// OpenAI / etc.) lives outside this package. We only store the flags +
+		// band; the provider is resolved per-call so a runtime
+		// `setDefaultTier3Provider()` registration after construction still works.
+		this.tier3Enabled = options.enableTier3 ?? false;
+		this.defenderMode = options.defenderMode ?? "cascade";
+		if (options.tier3?.provider) {
+			this.tier3CustomProvider = options.tier3.provider;
+		}
+		if (options.tier3?.escalationBand) {
+			this.tier3Band = options.tier3.escalationBand;
+		}
 
 		// Initialize Tier 2 classifier if enabled
 		if (options.enableTier2 ?? true) {
@@ -338,6 +420,75 @@ export class PromptDefense {
 	}
 
 	/**
+	 * Resolve the Tier 3 provider to use for this PromptDefense instance.
+	 * Returns the inline-configured provider when set, otherwise the
+	 * process-wide default registered via `setDefaultTier3Provider()`.
+	 */
+	private resolveTier3Provider(): Tier3Provider | null {
+		return this.tier3CustomProvider ?? getDefaultTier3Provider();
+	}
+
+	/**
+	 * tier3_only short-circuit. Builds one joined text from all extracted
+	 * strings and asks the provider for a verdict; that verdict drives the
+	 * entire decision. Tier 1 sanitization is still applied to the returned
+	 * `sanitized` payload (so role markers etc. don't reach the LLM) but
+	 * Tier 1 risk does NOT contribute to the block decision — tier3_only
+	 * means tier3-decides. On provider error we fail open (allowed: true)
+	 * and record a skipReason; the caller's telemetry surfaces the outage.
+	 */
+	private async runTier3Only(
+		value: unknown,
+		provider: Tier3Provider,
+		toolName: string,
+		depthFlag: { hit: boolean },
+		startTime: number,
+	): Promise<DefenseResult> {
+		const strings = extractStrings(value, undefined, depthFlag).filter((s) => s.length > 0);
+		const joined = strings.join("\n");
+
+		let verdict: Tier3Verdict | undefined;
+		let skipReason: string | undefined;
+		if (joined.length === 0) {
+			skipReason = "No strings extracted from tool result";
+		} else {
+			try {
+				verdict = await provider.classify(joined, { toolName });
+			} catch (err) {
+				skipReason = `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`;
+			}
+		}
+
+		// Always run Tier 1 sanitization so role markers / encoding still get
+		// stripped from the payload before it reaches the LLM. The risk level
+		// from Tier 1 is intentionally NOT used for the block decision here —
+		// in tier3_only mode the LLM is authoritative.
+		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
+		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+		const activeMethods = new Set(["role_stripping", "pattern_removal", "encoding_detection"]);
+		const fieldsSanitized = Object.entries(methodsByField)
+			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
+			.map(([field]) => field);
+
+		const blocked = verdict?.decision === "block";
+		const riskLevel: RiskLevel = blocked ? "high" : "low";
+
+		return {
+			allowed: !blocked,
+			riskLevel,
+			sanitized: sanitized.sanitized,
+			detections,
+			fieldsSanitized,
+			patternsByField: patternsRemovedByField,
+			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
+			fieldsDropped: [],
+			truncatedAtDepth: depthFlag.hit || undefined,
+			latencyMs: performance.now() - startTime,
+		};
+	}
+
+	/**
 	 * Defend a tool result using both Tier 1 and Tier 2 classification.
 	 *
 	 * This is the primary method. It:
@@ -355,6 +506,24 @@ export class PromptDefense {
 		// Shared stack-safety flag — flipped by any walk that hits
 		// MAX_TRAVERSAL_DEPTH. Surfaced in DefenseResult.truncatedAtDepth.
 		const depthFlag = { hit: false };
+
+		// tier3_only short-circuit: skip T1 + T2 entirely. Requires both the
+		// feature flag (`enableTier3`) and a resolvable provider. If either
+		// is missing, fall through to the standard T1 + T2 cascade — we'd
+		// rather over-defend than fail open silently. The provider-missing
+		// case is warned once per instance via `tier3MissingProviderWarned`.
+		if (this.tier3Enabled && this.defenderMode === "tier3_only") {
+			const provider = this.resolveTier3Provider();
+			if (provider) {
+				return this.runTier3Only(value, provider, toolName, depthFlag, startTime);
+			}
+			if (!this.tier3MissingProviderWarned) {
+				this.tier3MissingProviderWarned = true;
+				console.warn(
+					"[defender] defenderMode=tier3_only but no Tier 3 provider is registered. Falling back to Tier 1 + Tier 2. Call setDefaultTier3Provider() at app startup.",
+				);
+			}
+		}
 
 		// SFE preprocessor — narrows what reaches the Tier 2 classifier by
 		// dropping metadata/identifier leaf fields via the bundled quantized
@@ -628,11 +797,58 @@ export class PromptDefense {
 			}
 		}
 
+		// Tier 3 cascade escalation: when the operator opted in and Tier 2's
+		// effective score lands in the configured gray band, ask the Tier 3
+		// model for an authoritative verdict on the chunk that drove the
+		// score. The verdict overrides T2 on that chunk only — T1 sanitization
+		// and other T2 outputs are untouched. Outside the band (clearly safe
+		// or clearly dangerous) we skip the round trip.
+		let tier3Result: DefenseResult["tier3"];
+		let tier3OverrideBlock: boolean | undefined;
+		if (
+			this.tier3Enabled &&
+			this.defenderMode === "cascade" &&
+			tier2EffectiveScore !== undefined &&
+			tier2EffectiveScore >= this.tier3Band.lower &&
+			tier2EffectiveScore < this.tier3Band.upper &&
+			maxSentence
+		) {
+			const provider = this.resolveTier3Provider();
+			if (provider) {
+				try {
+					const verdict = await provider.classify(maxSentence, { toolName });
+					tier3Result = { ...verdict };
+					tier3OverrideBlock = verdict.decision === "block";
+				} catch (err) {
+					tier3Result = {
+						skipReason: `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`,
+					};
+				}
+			} else {
+				if (!this.tier3MissingProviderWarned) {
+					this.tier3MissingProviderWarned = true;
+					console.warn(
+						"[defender] enableTier3=true but no Tier 3 provider is registered. Cascade will skip Tier 3 escalation. Call setDefaultTier3Provider() at app startup.",
+					);
+				}
+				tier3Result = { skipReason: "No Tier 3 provider registered" };
+			}
+		}
+
 		// Combine risk levels (take the higher of Tier 1 and Tier 2)
 		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
 		const tier1Index = riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
 		const tier2Index = riskLevels.indexOf(tier2Risk);
-		const riskLevel = riskLevels[Math.max(tier1Index, tier2Index)];
+		let riskLevel = riskLevels[Math.max(tier1Index, tier2Index)];
+		// Tier 3 verdict in cascade is authoritative on the escalated chunk:
+		// block → bump to high (if not already higher); allow → drop the
+		// Tier 2 contribution back to low so the chunk isn't blocked by the
+		// stale T2 score that triggered escalation.
+		if (tier3OverrideBlock === true && riskLevels.indexOf(riskLevel) < riskLevels.indexOf("high")) {
+			riskLevel = "high";
+		} else if (tier3OverrideBlock === false && tier2Index > tier1Index) {
+			riskLevel = riskLevels[tier1Index];
+		}
 
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
 		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
@@ -645,7 +861,17 @@ export class PromptDefense {
 			: tier2MultiheadBlocked === false
 				? false
 				: tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold;
-		const hasThreats = detections.length > 0 || fieldsSanitized.length > 0 || tier2HasThreat;
+		// Tier 3 verdict in cascade is authoritative — when it says block it
+		// adds a threat; when it says allow it suppresses the Tier 2 threat
+		// that triggered escalation so the operator's "T3 said allow" path
+		// reads as `allowed: true`.
+		const tier3OverrodeToAllow = tier3OverrideBlock === false;
+		const tier3OverrodeToBlock = tier3OverrideBlock === true;
+		const hasThreats =
+			detections.length > 0 ||
+			fieldsSanitized.length > 0 ||
+			(tier2HasThreat && !tier3OverrodeToAllow) ||
+			tier3OverrodeToBlock;
 
 		// Three cases for allowed:
 		// 1. blockHighRisk is off → always allow
@@ -677,6 +903,7 @@ export class PromptDefense {
 			tier2SkipReason,
 			maxSentence,
 			fieldsDropped,
+			tier3: tier3Result,
 			truncatedAtDepth: depthFlag.hit || undefined,
 			latencyMs: performance.now() - startTime,
 		};

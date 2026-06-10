@@ -100,6 +100,49 @@ export interface Tier2Result {
 }
 
 /**
+ * Verdict returned by a Tier 3 provider.
+ *
+ * Tier 3 is authoritative when invoked — the defender does not re-threshold
+ * the score. `decision: "block"` ⇒ the chunk (cascade) or payload (tier3-only)
+ * is blocked; `decision: "allow"` ⇒ allowed.
+ */
+export interface Tier3Verdict {
+	/** Authoritative block/allow decision from the Tier 3 model. */
+	decision: "block" | "allow";
+	/** Optional confidence in [0, 1]. Reported for forensics; not used in decision. */
+	score?: number;
+	/** Raw provider output for logging / debugging. Opaque to defender. */
+	raw?: unknown;
+	/** Round-trip latency to the provider in milliseconds. */
+	latencyMs?: number;
+}
+
+/**
+ * Tier 3 classifier interface.
+ *
+ * Implementations live OUTSIDE the defender package — defender ships only the
+ * interface and orchestration. Register a default provider at app startup via
+ * `setDefaultTier3Provider(...)`; `createPromptDefense` will pick it up when
+ * `enableTier3: true` is set on options.
+ *
+ * Implementations are responsible for: prompt formatting, model invocation
+ * (e.g. SageMaker, OpenAI, local LLM), result parsing, and their own
+ * timeout/retry policy.
+ */
+export interface Tier3Provider {
+	/**
+	 * Classify a text snippet for prompt-injection risk.
+	 *
+	 * @param text - Content to classify. In cascade mode this is the highest-
+	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode it is the
+	 *   joined extracted strings of the tool result.
+	 * @param ctx - Optional context (e.g. originating tool name) the provider
+	 *   may include in its prompt.
+	 */
+	classify(text: string, ctx?: { toolName?: string }): Promise<Tier3Verdict>;
+}
+
+/**
  * Combined classification result
  */
 export interface ClassificationResult {
