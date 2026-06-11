@@ -532,9 +532,14 @@ export class PromptDefense {
 
 		const blocked = verdict?.decision === "block";
 		const riskLevel: RiskLevel = blocked ? "high" : "low";
+		// Honor the library invariant: `blockHighRisk: false` always yields
+		// `allowed: true` — Tier 3 contributes to `riskLevel` for diagnostics
+		// but does not hard-block in permissive mode. Matches the cascade
+		// path's gating at the main `return` block.
+		const allowed = !this.config.blockHighRisk || !blocked;
 
 		return {
-			allowed: !blocked,
+			allowed,
 			riskLevel,
 			sanitized: sanitized.sanitized,
 			detections,

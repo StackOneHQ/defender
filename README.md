@@ -81,7 +81,7 @@ Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
 - Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
 - Bundled model is **multi-head** (variant `minilm-multihead-v5`). The auxiliary head identifies meta-discussion / documentation phrasing — under multi-head mode a chunk blocks only when `main >= mainThr AND aux < auxThr`, so docs that quote injection text aren't over-flagged. Reported on the result as `tier2AuxScore` and `tier2MultiheadBlocked`.
-- The shipped model ships calibrated thresholds (`highRiskThreshold ≈ 0.64`) in its `classifier_config.json`; these override library defaults when the model is loaded.
+- The bundled model carries calibrated thresholds (`highRiskThreshold ≈ 0.64`) in its `classifier_config.json`; these override library defaults when the model is loaded.
 - Catches attacks that evade pattern-based detection
 - Latency: ~10ms/sample (after model warmup)
 

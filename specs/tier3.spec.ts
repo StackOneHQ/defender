@@ -50,6 +50,27 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(result.riskLevel).toBe("high");
 	});
 
+	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
+		// Library invariant: blockHighRisk:false → allowed:true regardless of
+		// risk signals. Tier 3's verdict influences riskLevel for diagnostics
+		// but must not force a block when blocking is disabled.
+		setDefaultTier3Provider(makeProvider("block"));
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			// blockHighRisk left at its default (false)
+		});
+
+		const result = await defense.defendToolResult({ body: "anything" }, "test_tool");
+
+		expect(result.tier3?.decision).toBe("block");
+		expect(result.riskLevel).toBe("high");
+		// Critical: blockHighRisk is off → allowed stays true even with a T3 block.
+		expect(result.allowed).toBe(true);
+	});
+
 	it("allows when verdict is allow", async () => {
 		setDefaultTier3Provider(makeProvider("allow"));
 		const defense = createPromptDefense({
