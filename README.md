@@ -64,7 +64,7 @@ if (!result.allowed) {
   <img src="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/demo-light.svg" alt="Defender flow: a poisoned email with an injection payload is intercepted by @stackone/defender and blocked before reaching the LLM, with riskLevel: critical and tier2Score: 0.97" width="900" />
 </picture>
 
-`defendToolResult()` runs a two-tier defense pipeline:
+`defendToolResult()` runs a tiered defense pipeline. Tier 1 + Tier 2 are on by default; Tier 3 is opt-in and consumer-supplied.
 
 ### Tier 1 — Pattern Detection (sync, ~1ms)
 
@@ -77,9 +77,11 @@ Regex-based detection and sanitization:
 
 ### Tier 2 — ML Classification (async)
 
-Fine-tuned MiniLM classifier with sentence-level analysis:
+Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
 - Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
+- Bundled model is **multi-head** (variant `minilm-multihead-v5`). The auxiliary head identifies meta-discussion / documentation phrasing — under multi-head mode a chunk blocks only when `main >= mainThr AND aux < auxThr`, so docs that quote injection text aren't over-flagged. Reported on the result as `tier2AuxScore` and `tier2MultiheadBlocked`.
+- The shipped model ships calibrated thresholds (`highRiskThreshold ≈ 0.64`) in its `classifier_config.json`; these override library defaults when the model is loaded.
 - Catches attacks that evade pattern-based detection
 - Latency: ~10ms/sample (after model warmup)
 
@@ -91,6 +93,49 @@ Fine-tuned MiniLM classifier with sentence-level analysis:
 | xxz224 (out-of-distribution) | 0.8834 | ~22.5k |
 | jayavibhav (adversarial) | 0.9717 | ~1k |
 | **Average** | **0.9079** | ~25k |
+
+### Tier 3 — LLM Classification (opt-in, consumer-supplied)
+
+Authoritative LLM-based classification for the cases Tier 2 finds ambiguous. Defender ships ONLY the orchestration and the `Tier3Provider` interface — the actual model endpoint (e.g. a hosted LLM, OpenAI, an internal inference service) lives in your code. This keeps proprietary models and credentials out of the OSS package.
+
+Two modes selectable via `defenderMode`:
+- **`"cascade"`** (default): T1 → T2 → T3, with T3 invoked only when the Tier 2 effective score is in the configured gray band (default `[0.3, 0.85)`). The T3 verdict authoritatively overrides T2 on the escalated chunk: a `"block"` forces a block, an `"allow"` rescues the chunk back to allowed. Outside the band defender skips the round trip.
+- **`"tier3_only"`**: skip T1 + T2 entirely. T1 sanitization (role-marker stripping, etc.) is still applied to the returned payload, but the block/allow decision is the T3 verdict alone.
+
+Register a provider once at app startup:
+
+```typescript
+import { setDefaultTier3Provider, type Tier3Provider } from '@stackone/defender';
+
+const myProvider: Tier3Provider = {
+  async classify(text, ctx) {
+    // Call your LLM endpoint here. Return { decision, score?, raw? }.
+    const verdict = await fetchMyLLMEndpoint({ text, toolName: ctx?.toolName });
+    return { decision: verdict.block ? 'block' : 'allow', score: verdict.confidence };
+  },
+};
+setDefaultTier3Provider(myProvider);
+```
+
+Then opt into Tier 3 per `PromptDefense` instance:
+
+```typescript
+const defense = createPromptDefense({
+  blockHighRisk: true,
+  enableTier3: true,
+  defenderMode: 'cascade',                // or 'tier3_only'
+  tier3: {
+    escalationBand: { lower: 0.3, upper: 0.85 },  // [lower, upper), defaults shown
+    maxTextLength: 10000,                          // caps input passed to the provider
+  },
+});
+```
+
+Fail-open semantics:
+- Provider error or timeout in either mode records a `skipReason` on `result.tier3`; in cascade defender falls back to the Tier 2 decision, in `tier3_only` defender allows the request.
+- `enableTier3: true` with no registered provider falls back to the standard T1 + T2 cascade and logs one warning per instance. T3 misconfiguration never silently disables defense.
+
+When Tier 3 runs, the result carries a `result.tier3` field with the verdict. When it doesn't run, the key is absent — use `"tier3" in result` to probe.
 
 ### Understanding `allowed` vs `riskLevel`
 
@@ -117,11 +162,22 @@ Create a defense instance.
 
 ```typescript
 const defense = createPromptDefense({
-  enableTier1: true,           // Pattern detection (default: true)
-  enableTier2: true,           // ML classification (default: true) — set false to disable
-  blockHighRisk: true,         // Block high/critical content (default: false)
+  enableTier1: true,            // Pattern detection (default: true)
+  enableTier2: true,            // ML classification (default: true) — set false to disable
+  blockHighRisk: true,          // Block high/critical content (default: false)
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
+  useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
+  annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
   defaultRiskLevel: 'medium',
+
+  // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
+  enableTier3: false,           // (default: false)
+  defenderMode: 'cascade',      // 'cascade' | 'tier3_only' (default: 'cascade'; ignored unless enableTier3 is true)
+  tier3: {
+    provider: myProvider,                          // overrides the registry-default provider for this instance
+    escalationBand: { lower: 0.3, upper: 0.85 },   // cascade-mode gray band; [lower, upper)
+    maxTextLength: 10000,                          // caps text passed to the provider
+  },
 });
 ```
 
@@ -137,9 +193,27 @@ interface DefenseResult {
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
   patternsByField: Record<string, string[]>; // Patterns per field
-  tier2Score?: number;                    // ML score (0.0 = safe, 1.0 = injection)
+
+  // Tier 2 signals
+  tier2Score?: number;                    // ML score that drove the decision (post-density / post-rule)
+  tier2RawScore?: number;                 // Raw max-chunk main score, pre-density. Forensics only — do not use for blocking.
+  tier2AuxScore?: number;                 // Multi-head auxiliary score for the reported chunk
+  tier2MultiheadBlocked?: boolean;        // True when the multi-head rule (main >= mainThr AND aux < auxThr) fired
+  tier2SkipReason?: string;               // Reason Tier 2 was skipped (e.g. "No strings extracted")
   maxSentence?: string;                   // The sentence with the highest Tier 2 score
-  latencyMs: number;                      // Processing time in milliseconds
+
+  // Tier 3 verdict — present only when Tier 3 ran (use `"tier3" in result` to probe).
+  // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
+  tier3?: { decision: 'block' | 'allow'; score?: number; raw?: unknown; latencyMs?: number }
+       | { skipReason: string };
+
+  // SFE preprocessor output (present when `useSfe: true`; empty array otherwise)
+  fieldsDropped: string[];
+
+  // Stack-safety guard — set when any recursive walk hit the depth limit
+  truncatedAtDepth?: boolean;
+
+  latencyMs: number;                      // Total processing time in milliseconds
 }
 ```
 
@@ -180,6 +254,20 @@ The bundled model auto-loads on first `defendToolResult()` call. Use `warmupTier
 const defense = createPromptDefense();
 await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
 ```
+
+### Tier 3 Setup
+
+Register one Tier 3 provider per process at app startup. Defender resolves it lazily on every `defendToolResult()` call that opts in via `enableTier3: true`, so a later `setDefaultTier3Provider()` registration is picked up automatically. Pass `null` to clear (useful in tests).
+
+```typescript
+import { setDefaultTier3Provider, getDefaultTier3Provider } from '@stackone/defender';
+
+setDefaultTier3Provider(myProvider);
+// ...later, in tests:
+setDefaultTier3Provider(null);
+```
+
+`PromptDefenseOptions.tier3.provider` overrides the registry default for a specific `PromptDefense` instance — useful when you want different providers for different code paths.
 
 ## Integration Example
 
