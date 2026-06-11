@@ -272,9 +272,9 @@ export interface PromptDefenseOptions {
 		provider?: Tier3Provider;
 		/**
 		 * Cascade-mode only: Tier 3 is invoked when the Tier 2 effective score
-		 * falls in [lower, upper]. Scores below `lower` are confident-allow;
-		 * scores at or above `upper` are confident-block — neither needs the
-		 * LLM round trip.
+		 * falls in [lower, upper) — lower inclusive, upper exclusive. Scores
+		 * below `lower` are confident-allow; scores at or above `upper` are
+		 * confident-block — neither needs the LLM round trip.
 		 *
 		 * Default: { lower: 0.3, upper: 0.85 }.
 		 */
@@ -458,6 +458,27 @@ export class PromptDefense {
 	}
 
 	/**
+	 * Guard against JS consumers / misbehaving providers returning malformed
+	 * verdicts. Returns the verdict unchanged when `decision` is exactly
+	 * `"block"` or `"allow"`; otherwise returns a `skipReason` so callers
+	 * treat the round trip as "Tier 3 didn't return a usable answer" rather
+	 * than silently falling through to `decision === "block"` being false
+	 * (which would read as allow + suppress upstream signals).
+	 */
+	private validateTier3Verdict(verdict: unknown): Tier3Verdict | { skipReason: string } {
+		if (verdict === null || typeof verdict !== "object") {
+			return { skipReason: `Tier 3 provider returned non-object verdict: ${typeof verdict}` };
+		}
+		const decision = (verdict as { decision?: unknown }).decision;
+		if (decision !== "block" && decision !== "allow") {
+			return {
+				skipReason: `Tier 3 provider returned invalid decision: ${JSON.stringify(decision)} (expected "block" | "allow")`,
+			};
+		}
+		return verdict as Tier3Verdict;
+	}
+
+	/**
 	 * tier3_only short-circuit. Builds one joined text from all extracted
 	 * strings and asks the provider for a verdict; that verdict drives the
 	 * entire decision. Tier 1 sanitization is still applied to the returned
@@ -485,7 +506,13 @@ export class PromptDefense {
 			skipReason = "No strings extracted from tool result";
 		} else {
 			try {
-				verdict = await provider.classify(bounded, { toolName });
+				const raw = await provider.classify(bounded, { toolName });
+				const validated = this.validateTier3Verdict(raw);
+				if ("skipReason" in validated) {
+					skipReason = validated.skipReason;
+				} else {
+					verdict = validated;
+				}
 			} catch (err) {
 				skipReason = `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`;
 			}
@@ -852,9 +879,14 @@ export class PromptDefense {
 						maxSentence.length > this.tier3MaxTextLength
 							? maxSentence.slice(0, this.tier3MaxTextLength)
 							: maxSentence;
-					const verdict = await provider.classify(boundedChunk, { toolName });
-					tier3Result = { ...verdict };
-					tier3OverrideBlock = verdict.decision === "block";
+					const raw = await provider.classify(boundedChunk, { toolName });
+					const validated = this.validateTier3Verdict(raw);
+					if ("skipReason" in validated) {
+						tier3Result = { skipReason: validated.skipReason };
+					} else {
+						tier3Result = { ...validated };
+						tier3OverrideBlock = validated.decision === "block";
+					}
 				} catch (err) {
 					tier3Result = {
 						skipReason: `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`,
