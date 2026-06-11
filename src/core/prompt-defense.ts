@@ -949,8 +949,13 @@ export class PromptDefense {
 
 		// `tier2Score` reports `tier2EffectiveScore` — the value that drove the
 		// block decision. When `blockHighRisk` is on and no Tier 1 detection
-		// independently forces a block:
+		// independently forces a block, AND Tier 3 did not override:
 		//   `tier2Score >= highRiskThreshold` ⇔ `allowed === false`
+		// Tier 3 cascade override can break this invariant by design — a T3
+		// "allow" rescues an in-band T2 block (allowed=true even with high
+		// tier2Score), and a T3 "block" on a low-mid score forces a block
+		// (allowed=false even with low tier2Score). When `result.tier3` is
+		// present, treat it as the authoritative signal.
 		// The multi-head aux veto path sets `tier2EffectiveScore = 0` (not
 		// undefined), keeping the triple coherent: tier2Score=0 / riskLevel
 		// low / allowed=true. `tier2RawScore` is the pre-density / pre-rule
@@ -971,7 +976,11 @@ export class PromptDefense {
 			tier2SkipReason,
 			maxSentence,
 			fieldsDropped,
-			tier3: tier3Result,
+			// Conditionally include the `tier3` key so consumers can use
+			// `"tier3" in result` as a "Tier 3 ran" check, matching the
+			// DefenseResult docstring. An always-present-but-undefined key
+			// would silently flip that check to true for every call.
+			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
 			truncatedAtDepth: depthFlag.hit || undefined,
 			latencyMs: performance.now() - startTime,
 		};

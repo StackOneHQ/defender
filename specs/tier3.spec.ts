@@ -272,6 +272,33 @@ describe("PromptDefense cascade mode escalation band", () => {
 	});
 });
 
+describe("DefenseResult tier3 key shape", () => {
+	afterEach(() => setDefaultTier3Provider(null));
+
+	it("omits the tier3 key when Tier 3 did not run", async () => {
+		const defense = createPromptDefense({
+			enableTier1: true,
+			enableTier2: false,
+			// enableTier3 left default (false) — Tier 3 is fully off
+		});
+		const result = await defense.defendToolResult({ body: "hello" }, "test_tool");
+		expect("tier3" in result).toBe(false);
+	});
+
+	it("includes the tier3 key when Tier 3 ran (tier3_only)", async () => {
+		setDefaultTier3Provider(makeProvider("allow"));
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+		});
+		const result = await defense.defendToolResult({ body: "hello" }, "test_tool");
+		expect("tier3" in result).toBe(true);
+		expect(result.tier3?.decision).toBe("allow");
+	});
+});
+
 describe("PromptDefense tier3 verdict validation", () => {
 	afterEach(() => setDefaultTier3Provider(null));
 
