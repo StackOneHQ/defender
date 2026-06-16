@@ -25,7 +25,7 @@ const MODEL_DIRS = [
 	// mode by default; opt into multi-head decision rule via
 	// `tier2Config.multihead`. Calibrated T = 2.41, highRiskThreshold = 0.64
 	// (encoded in classifier_config.json:calibration).
-	"minilm-multihead-v5",
+	"minilm-multihead-v6",
 ];
 
 let copied = 0;

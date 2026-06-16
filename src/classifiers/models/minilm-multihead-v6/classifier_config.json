@@ -1,0 +1,33 @@
+{
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "model_type": "minilm",
+  "use_seq_clf": false,
+  "hidden_size": 384,
+  "freeze_layers": 4,
+  "pooling": "mean",
+  "optimal_threshold": 0.35,
+  "datasets": [
+    "qualifire",
+    "jayavibhav",
+    "agentdojo",
+    "jasperls",
+    "jailbreakbench",
+    "toxic-chat",
+    "chatgpt-jailbreaks",
+    "email-hardneg",
+    "email-hardneg-gen",
+    "multilingual-hardneg",
+    "jailbreakbench-neg",
+    "toxic-chat-neg",
+    "fujitsu-injecagent",
+    "fujitsu-rag",
+    "enron-ham",
+    "connector-hardneg-v2"
+  ],
+  "token_level": false,
+  "token_pool": "max",
+  "token_topk": 5,
+  "three_class": false,
+  "multi_head": false,
+  "aux_loss_alpha": 0.5
+}
