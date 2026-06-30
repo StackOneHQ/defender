@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/StackOneHQ/defender/compare/defender-v0.7.1...defender-v0.7.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* **tier3:** add optional usage field to Tier3Verdict ([#71](https://github.com/StackOneHQ/defender/issues/71)) ([c40bd0a](https://github.com/StackOneHQ/defender/commit/c40bd0aeb417ac3712bd03848a9778508114b285))
+
 ## [0.7.1](https://github.com/StackOneHQ/defender/compare/defender-v0.7.0...defender-v0.7.1) (2026-06-11)
 
 
