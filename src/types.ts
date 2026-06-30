@@ -115,6 +115,12 @@ export interface Tier3Verdict {
 	raw?: unknown;
 	/** Round-trip latency to the provider in milliseconds. */
 	latencyMs?: number;
+	/** Token usage reported by the provider (e.g. vLLM `usage` block). */
+	usage?: {
+		promptTokens: number;
+		completionTokens: number;
+		totalTokens: number;
+	};
 }
 
 /**
