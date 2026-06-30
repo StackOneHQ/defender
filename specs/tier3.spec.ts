@@ -245,6 +245,32 @@ describe("PromptDefense cascade mode escalation band", () => {
 		expect(registered.classify).not.toHaveBeenCalled();
 	});
 
+	it("passes provider-reported `usage` through to result.tier3.usage", async () => {
+		const provider: Tier3Provider = {
+			classify: vi.fn(async () => ({
+				decision: "allow" as const,
+				latencyMs: 42,
+				usage: { promptTokens: 311, completionTokens: 17, totalTokens: 328 },
+			})),
+		};
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			tier3: { provider },
+		});
+
+		const result = await defense.defendToolResult({ body: "test" }, "test_tool");
+
+		expect(result.tier3?.usage).toEqual({
+			promptTokens: 311,
+			completionTokens: 17,
+			totalTokens: 328,
+		});
+		expect(result.tier3?.latencyMs).toBe(42);
+	});
+
 	it("Tier 3 'allow' overrides a Tier 2 block on the escalated chunk", async () => {
 		const provider = makeProvider("allow");
 		const defense = createPromptDefense({
