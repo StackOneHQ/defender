@@ -285,6 +285,8 @@ export interface SanitizationMetadata {
 	riskyFieldNames: string[];
 	/** Paths of keys removed due to prototype pollution risk */
 	dangerousKeysRemoved?: string[];
+	/** True if any field exceeded `maxFieldAnalysisLength` and was only analysed up to the cap */
+	analysisTruncated?: boolean;
 }
 
 /**

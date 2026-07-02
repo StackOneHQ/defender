@@ -7,7 +7,12 @@
  */
 
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
-import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
+import {
+	DANGEROUS_KEYS,
+	DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
+	DEFAULT_RISKY_FIELDS,
+	DEFAULT_TRAVERSAL_CONFIG,
+} from "../config";
 import { containsSuspiciousEncodingDeep } from "../sanitizers/encoding-detector";
 import type {
 	CumulativeRiskTracker,
@@ -52,6 +57,12 @@ export interface ToolResultSanitizerConfig {
 	 * entirely (no `generateDataBoundary()` call per tool result).
 	 */
 	annotateBoundary: boolean;
+	/**
+	 * Per-field cap (characters) on the text Tier 1 runs heavy regex / encoding
+	 * detection over. ReDoS guard — content past the cap is not analysed and
+	 * `metadata.analysisTruncated` is set. Default: 50000.
+	 */
+	maxFieldAnalysisLength: number;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
@@ -72,6 +83,7 @@ export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	useTier1Classification: true,
 	blockHighRisk: false,
 	annotateBoundary: false,
+	maxFieldAnalysisLength: DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
@@ -394,10 +406,21 @@ export class ToolResultSanitizer {
 	 * Sanitize a string field
 	 */
 	private sanitizeStringField(value: string, context: SanitizationContext, metadata: SanitizationMetadata): string {
-		metadata.sizeMetrics.stringCount++;
+		// Count risky-field content toward the size budget. Previously these
+		// strings bypassed updateSizeMetrics entirely (they're handled here, not
+		// via sanitizeValue), so the maxSize cap never applied to the fields that
+		// carry the DoS/latency risk.
+		updateSizeMetrics(metadata.sizeMetrics, value);
 
 		// Determine risk level for this field
 		let riskLevel = context.riskLevel;
+
+		// Cap the text Tier 1 runs heavy regex / encoding detection over. Beyond
+		// the cap only the head is analysed and `analysisTruncated` is flagged —
+		// bounds worst-case regex cost on hostile inputs (ReDoS guard).
+		const cap = this.config.maxFieldAnalysisLength;
+		const analysisValue = value.length > cap ? value.slice(0, cap) : value;
+		if (value.length > cap) metadata.analysisTruncated = true;
 
 		// Every risky string field counts toward the cumulative-risk
 		// denominator, not just ones that matched a pattern. Otherwise the
@@ -413,7 +436,7 @@ export class ToolResultSanitizer {
 		// level; the block/allow decision is made upstream from that risk level.
 		let tier1Patterns: string[] = [];
 		if (this.config.useTier1Classification) {
-			const classificationResult = this.patternDetector.analyze(value);
+			const classificationResult = this.patternDetector.analyze(analysisValue);
 
 			if (classificationResult.hasDetections) {
 				tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
@@ -451,7 +474,7 @@ export class ToolResultSanitizer {
 		// are still caught, bounded by the deep check's iteration/amplification guard.
 		let escalatedFromEncoding = false;
 		if (riskLevel !== "high" && riskLevel !== "critical") {
-			if (containsSuspiciousEncodingDeep(value)) {
+			if (containsSuspiciousEncodingDeep(analysisValue)) {
 				riskLevel = "high";
 				escalatedFromEncoding = true;
 				if (context.cumulativeRisk) {
