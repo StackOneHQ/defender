@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DANGEROUS_KEYS, MAX_TRAVERSAL_DEPTH } from "../config";
+import { dynamicImport } from "../utils/dynamic-import";
 
 /** Predicate returned by the FastText classifier for each field. */
 type DropDecision = { label: "drop" | "pass"; prob: number };
@@ -105,18 +106,11 @@ async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
 		// Wrap the dynamic import in a Function() so bundlers (tsdown /
 		// rollup / esbuild) DON'T statically resolve "fasttext.wasm" at
 		// bundle time. We need that behavior because `fasttext.wasm` is an
-		// optional peer dependency — callers who don't enable useSfe must
-		// not be forced to install it, and a static import would either
-		// hard-fail at bundle time or emit a resolver error at load time.
-		//
-		// Safety: the specifier is a hard-coded string literal
-		// ("fasttext.wasm"), NOT caller-supplied input. This pattern is
-		// semantically identical to `import("fasttext.wasm")` — the
-		// Function() indirection only exists to evade bundler static
-		// analysis. There is no dynamic code execution or user-controlled
-		// string passed to Function() / eval() elsewhere in this module.
-		const dynImport = new Function("spec", "return import(spec)") as (s: string) => Promise<unknown>;
-		fasttextMod = (await dynImport("fasttext.wasm")) as typeof import("fasttext.wasm");
+		// optional peer dependency — callers who don't enable useSfe must not be
+		// forced to install it. Loaded via `dynamicImport` (hard-coded specifier)
+		// so bundlers don't try to resolve it at build time and Node consumers
+		// without it fail lazily here (caught below). See src/utils/dynamic-import.ts.
+		fasttextMod = (await dynamicImport("fasttext.wasm")) as typeof import("fasttext.wasm");
 	} catch {
 		console.warn(
 			"[defender] useSfe requires `fasttext.wasm` to be installed. SFE preprocessor disabled; payload passes through.",

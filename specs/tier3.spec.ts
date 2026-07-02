@@ -26,6 +26,17 @@ describe("Tier 3 provider registry", () => {
 		setDefaultTier3Provider(null);
 		expect(getDefaultTier3Provider()).toBeNull();
 	});
+
+	it("stores the provider on a shared globalThis Symbol slot (dual-package safe)", () => {
+		// The registry lives on globalThis so a dual CJS+ESM load shares it. A
+		// second copy of the module would read this exact slot.
+		const key = Symbol.for("@stackone/defender.tier3DefaultProvider");
+		const p = makeProvider("allow");
+		setDefaultTier3Provider(p);
+		expect((globalThis as Record<symbol, unknown>)[key]).toBe(p);
+		setDefaultTier3Provider(null);
+		expect((globalThis as Record<symbol, unknown>)[key]).toBeNull();
+	});
 });
 
 describe("PromptDefense tier3_only mode", () => {

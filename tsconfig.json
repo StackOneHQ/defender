@@ -3,7 +3,7 @@
         "module": "ES2020",
         "moduleResolution": "bundler",
         "lib": ["es2021"],
-        "types": ["vitest/globals"],
+        "types": ["vitest/globals", "node"],
         "declaration": true,
         "removeComments": true,
         "emitDecoratorMetadata": true,

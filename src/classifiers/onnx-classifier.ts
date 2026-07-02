@@ -11,6 +11,7 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dynamicImport } from "../utils/dynamic-import";
 
 /**
  * Default path to the bundled ONNX model directory (relative to dist/).
@@ -204,9 +205,10 @@ export class OnnxClassifier {
 		if (!inFlight) {
 			const modelPath = this.modelPath;
 			inFlight = (async () => {
-				// Dynamic imports — these are optional peer dependencies
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const transformers = (await import("@huggingface/transformers")) as unknown as {
+				// Dynamic imports — these are optional peer dependencies, loaded
+				// via `dynamicImport` so bundlers don't try to resolve them at
+				// build time (see src/utils/dynamic-import.ts).
+				const transformers = (await dynamicImport("@huggingface/transformers")) as {
 					AutoTokenizer: {
 						from_pretrained: (path: string, options?: { local_files_only: boolean }) => Promise<Tokenizer>;
 					};
@@ -215,8 +217,7 @@ export class OnnxClassifier {
 					local_files_only: true,
 				});
 
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const ort = (await import("onnxruntime-node")) as unknown as {
+				const ort = (await dynamicImport("onnxruntime-node")) as {
 					InferenceSession: {
 						create: (path: string) => Promise<OrtInferenceSession>;
 					};

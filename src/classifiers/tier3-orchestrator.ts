@@ -20,14 +20,22 @@
  */
 import type { Tier3Provider } from "../types";
 
-let _defaultProvider: Tier3Provider | null = null;
+// The registry is stored on `globalThis` under a shared Symbol rather than a
+// module-level variable so that a dual-package app — one that loads BOTH the
+// CJS (`require`) and ESM (`import`) builds of defender in the same process —
+// sees a single registry. With a plain module variable each build gets its own
+// copy, so `setDefaultTier3Provider()` in one realm is invisible to cascade
+// escalation running in the other ("No provider registered" despite registration).
+const REGISTRY_KEY = Symbol.for("@stackone/defender.tier3DefaultProvider");
+
+type ProviderRegistry = { [REGISTRY_KEY]?: Tier3Provider | null };
 
 /**
  * Register the process-wide default Tier 3 provider. Pass `null` to clear
  * (useful in tests). Calling again replaces any previously-set provider.
  */
 export function setDefaultTier3Provider(provider: Tier3Provider | null): void {
-	_defaultProvider = provider;
+	(globalThis as ProviderRegistry)[REGISTRY_KEY] = provider;
 }
 
 /**
@@ -35,5 +43,5 @@ export function setDefaultTier3Provider(provider: Tier3Provider | null): void {
  * none has been registered.
  */
 export function getDefaultTier3Provider(): Tier3Provider | null {
-	return _defaultProvider;
+	return (globalThis as ProviderRegistry)[REGISTRY_KEY] ?? null;
 }
