@@ -155,16 +155,16 @@ Use `allowed` for blocking decisions:
 - `allowed: true` — safe to pass to the LLM
 - `allowed: false` — content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-`riskLevel` is diagnostic metadata. It starts at `medium` (the default) and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced. Use it for logging and monitoring, not for allow/block logic.
+`riskLevel` is diagnostic metadata. It starts at `low` and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced within a call. Use it for logging and monitoring, not for allow/block logic.
 
 Risk escalation from detections:
 
 | Level | Detection Trigger |
 |-------|-------------------|
 | `low` | No threats detected |
-| `medium` | Suspicious patterns, role markers stripped |
-| `high` | Injection patterns detected, content redacted |
-| `critical` | Severe injection attempt with multiple indicators |
+| `medium` | Suspicious patterns or role markers detected |
+| `high` | Injection patterns or suspicious encoding detected |
+| `critical` | Severe injection attempt with multiple high-severity indicators |
 
 ## API
 
