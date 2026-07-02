@@ -247,30 +247,18 @@ export class ToolResultSanitizer {
 	): SanitizableValue[] {
 		metadata.sizeMetrics.arrayCount++;
 
-		// Check for large arrays
-		if (this.config.traversal.skipLargeArrays && arr.length > this.config.traversal.largeArrayThreshold) {
-			// Sanitize first N items only
-			const sampleSize = Math.min(100, arr.length);
-			const sanitized: SanitizableValue[] = [];
+		// Large arrays: bound Tier 1 detection cost by scanning only the first
+		// `scanLimit` items — but NEVER drop data (the previous behavior returned
+		// only the first 100 items plus a notice, silently losing the rest of the
+		// payload). Items past the limit pass through verbatim and coverage is
+		// flagged via `analysisTruncated`. Tier 2 still scans every string via its
+		// own walk, and the byte-based maxSize cap still bounds total traversal.
+		const isLarge = this.config.traversal.skipLargeArrays && arr.length > this.config.traversal.largeArrayThreshold;
+		const scanLimit = isLarge ? Math.min(100, arr.length) : arr.length;
+		if (isLarge && scanLimit < arr.length) metadata.analysisTruncated = true;
 
-			for (let i = 0; i < sampleSize; i++) {
-				const itemContext = {
-					...context,
-					path: `${context.path}[${i}]`,
-				};
-				sanitized.push(this.sanitizeValue(arr[i], itemContext, metadata, depth + 1));
-			}
-
-			// Add notice about skipped items
-			if (arr.length > sampleSize) {
-				sanitized.push(`[${arr.length - sampleSize} more items - sanitization skipped for performance]`);
-			}
-
-			return sanitized;
-		}
-
-		// Sanitize all items
 		return arr.map((item, index) => {
+			if (index >= scanLimit) return item;
 			const itemContext = {
 				...context,
 				path: `${context.path}[${index}]`,
@@ -311,6 +299,8 @@ export class ToolResultSanitizer {
 				continue;
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -349,9 +339,12 @@ export class ToolResultSanitizer {
 				continue;
 			}
 
+			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
-				path: context.path ? `${context.path}.${key}` : key,
+				path: fieldPath,
 				fieldName: key,
 			};
 
@@ -384,6 +377,8 @@ export class ToolResultSanitizer {
 				continue;
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -514,6 +509,39 @@ export class ToolResultSanitizer {
 	 */
 	private isFieldRisky(fieldName: string, toolName: string): boolean {
 		return isRiskyField(fieldName, this.config.riskyFields, toolName);
+	}
+
+	/**
+	 * Detect-only scan of an object KEY. Keys are never rewritten — that would
+	 * change the object's shape — but an injection hidden in a key (e.g. an API
+	 * that returns attacker-controlled text as map keys) must still be detected
+	 * so it contributes to the risk/allow decision. Records detected patterns in
+	 * metadata under `"<path> (key)"` and escalates cumulative risk like a
+	 * detected value field. No-op for short/benign keys (the detector's fast
+	 * filter short-circuits, so this is cheap on identifier-shaped keys).
+	 */
+	private detectInKey(
+		key: string,
+		keyPath: string,
+		context: SanitizationContext,
+		metadata: SanitizationMetadata,
+	): void {
+		if (!this.config.useTier1Classification || key.length < 3) return;
+		const cap = this.config.maxFieldAnalysisLength;
+		const analysisKey = key.length > cap ? key.slice(0, cap) : key;
+		const result = this.patternDetector.analyze(analysisKey);
+		if (!result.hasDetections || result.matches.length === 0) return;
+
+		const patterns = [...new Set(result.matches.map((m) => m.pattern))];
+		const path = `${keyPath} (key)`;
+		const methods: SanitizationMethod[] = ["pattern_removal"];
+		metadata.fieldsSanitized.push(path);
+		metadata.methodsByField[path] = methods;
+		metadata.patternsRemovedByField[path] = patterns;
+		if (context.cumulativeRisk) {
+			context.cumulativeRisk.totalFieldsProcessed++;
+			this.updateCumulativeRisk(context.cumulativeRisk, result.suggestedRisk, patterns);
+		}
 	}
 
 	/**

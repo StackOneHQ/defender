@@ -130,6 +130,14 @@ export interface DefenseResult {
 	 * unchanged. Stack-safety guard; typically never set on real payloads.
 	 */
 	truncatedAtDepth?: boolean;
+	/**
+	 * True when Tier 1 *detection* coverage was reduced on this payload — a
+	 * field exceeded `maxFieldAnalysisLength`, a large array was only partially
+	 * scanned, or a traversal depth/size limit was hit. Content is still
+	 * returned in full; only detection was capped. Monitor to catch payloads
+	 * shaped to hide content past the analysis limits.
+	 */
+	coverageDegraded?: boolean;
 	/** Total processing time in milliseconds */
 	latencyMs: number;
 }
@@ -600,6 +608,12 @@ export class PromptDefense {
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
 			truncatedAtDepth: depthFlag.hit || undefined,
+			coverageDegraded:
+				depthFlag.hit ||
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit ||
+				undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}
@@ -1058,6 +1072,12 @@ export class PromptDefense {
 			// would silently flip that check to true for every call.
 			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
 			truncatedAtDepth: depthFlag.hit || undefined,
+			coverageDegraded:
+				depthFlag.hit ||
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit ||
+				undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}
