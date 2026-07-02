@@ -44,11 +44,16 @@ export interface DefenseResult {
 	allowed: boolean;
 	/** Overall risk level (max of Tier 1 and Tier 2) */
 	riskLevel: RiskLevel;
-	/** The sanitized tool result (patterns removed) */
+	/**
+	 * The tool result to forward to the LLM. Detect-and-gate: this is the
+	 * ORIGINAL content, optionally wrapped in `[UD-…]` boundary markers when
+	 * `annotateBoundary` is enabled — it is never rewritten or redacted. Use
+	 * `allowed` to decide whether to forward it.
+	 */
 	sanitized: unknown;
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
-	/** Fields that were sanitized (e.g. ['subject', 'body']) */
+	/** Fields where a Tier 1 threat was detected (e.g. ['subject', 'body']). Content is not modified. */
 	fieldsSanitized: string[];
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
@@ -481,11 +486,11 @@ export class PromptDefense {
 	/**
 	 * tier3_only short-circuit. Builds one joined text from all extracted
 	 * strings and asks the provider for a verdict; that verdict drives the
-	 * entire decision. Tier 1 sanitization is still applied to the returned
-	 * `sanitized` payload (so role markers etc. don't reach the LLM) but
-	 * Tier 1 risk does NOT contribute to the block decision — tier3_only
-	 * means tier3-decides. On provider error we fail open (allowed: true)
-	 * and record a skipReason; the caller's telemetry surfaces the outage.
+	 * entire decision. Tier 1 detection still runs to populate `detections`
+	 * metadata, but content is NOT rewritten (detect-and-gate) and Tier 1 risk
+	 * does NOT contribute to the block decision — tier3_only means tier3-decides.
+	 * On provider error we fail open (allowed: true) and record a skipReason;
+	 * the caller's telemetry surfaces the outage.
 	 */
 	private async runTier3Only(
 		value: unknown,
@@ -518,9 +523,9 @@ export class PromptDefense {
 			}
 		}
 
-		// Always run Tier 1 sanitization so role markers / encoding still get
-		// stripped from the payload before it reaches the LLM. The risk level
-		// from Tier 1 is intentionally NOT used for the block decision here —
+		// Always run Tier 1 detection so `detections` metadata is populated even
+		// in tier3_only mode. Detect-and-gate: content is not rewritten, and the
+		// Tier 1 risk level is intentionally NOT used for the block decision —
 		// in tier3_only mode the LLM is authoritative.
 		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
