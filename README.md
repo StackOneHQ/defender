@@ -112,7 +112,7 @@ Authoritative LLM-based classification for the cases Tier 2 finds ambiguous. Def
 
 Two modes selectable via `defenderMode`:
 - **`"cascade"`** (default): T1 → T2 → T3, with T3 invoked only when the Tier 2 effective score is in the configured gray band (default `[0.3, 0.85)`). The T3 verdict authoritatively overrides T2 on the escalated chunk: a `"block"` forces a block, an `"allow"` rescues the chunk back to allowed. Outside the band defender skips the round trip.
-- **`"tier3_only"`**: skip T1 + T2 entirely. T1 sanitization (role-marker stripping, etc.) is still applied to the returned payload, but the block/allow decision is the T3 verdict alone.
+- **`"tier3_only"`**: skip T1 + T2 entirely. T1 detection still runs to populate `detections` metadata, but content is not rewritten (detect-and-gate) and the block/allow decision is the T3 verdict alone.
 
 Register a provider once at app startup:
 
@@ -316,7 +316,9 @@ const result = await generateText({
 
 ## Risky Field Detection
 
-Defender only scans string fields that are likely to contain user-generated or external content. Per-tool overrides focus scanning on the relevant fields:
+This scoping applies to **Tier 1 (pattern detection) on field values**. Tier 2 (ML) scans **all** string values by default regardless of field name, and Tier 1 also scans object **keys** — so the lists below narrow where Tier 1 looks at field *values*, not what Defender inspects overall.
+
+For Tier 1 value scanning, per-tool overrides focus on the fields most likely to carry user-generated or external content:
 
 | Tool Pattern | Scanned Fields |
 |---|---|
@@ -329,7 +331,7 @@ Defender only scans string fields that are likely to contain user-generated or e
 
 Tools not matching any pattern use the default risky field list: `name`, `description`, `content`, `title`, `notes`, `summary`, `bio`, `body`, `text`, `message`, `comment`, `subject`, plus patterns like `*_description`, `*_body`, etc.
 
-Fields like `id`, `url`, `created_at` are never scanned — they aren't in the risky fields list.
+Fields like `id`, `url`, `created_at` are outside the Tier 1 risky-field list, so Tier 1 pattern detection skips their values — but Tier 2 still scores them (it scans all strings), so an injection there is not invisible to Defender.
 
 ## Development
 

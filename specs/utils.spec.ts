@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   generateDataBoundary,
-  generateXMLBoundary,
   wrapWithBoundary,
   containsBoundaryPatterns,
 } from '../src/utils/boundary';
@@ -31,15 +30,6 @@ describe('#BoundaryUtilities', () => {
     it('respects custom length', () => {
       const boundary = generateDataBoundary(8);
       expect(boundary.id).toHaveLength(8);
-    });
-  });
-
-  describe('.generateXMLBoundary', () => {
-    it('generates XML-style boundaries', () => {
-      const boundary = generateXMLBoundary();
-
-      expect(boundary.startTag).toMatch(/^<user-data-[A-Za-z0-9_-]+>$/);
-      expect(boundary.endTag).toMatch(/^<\/user-data-[A-Za-z0-9_-]+>$/);
     });
   });
 
