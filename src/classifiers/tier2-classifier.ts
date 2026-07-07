@@ -234,16 +234,25 @@ export class Tier2Classifier {
 		const analysisText = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
 
 		try {
-			// Guard against a NaN/non-finite logit (matches the batch/sentence/chunk
-			// paths). Without this, NaN → score NaN with skipped:false → getRiskLevel
-			// buckets it "low" and isInjection is false, silently treating a broken
-			// model output as benign.
 			const raw = await this.onnxClassifier.classify(analysisText);
-			const score = Number.isFinite(raw) ? raw : 0;
-			const confidence = Math.abs(score - 0.5) * 2;
+			// A non-finite logit (NaN/Infinity) means the model produced no usable
+			// output. Report it as a SKIP with an explicit reason, not score 0 —
+			// score 0 would yield confidence 1.0 (|0 - 0.5| * 2), making a broken
+			// inference look like a max-confidence benign classification and
+			// misleading any telemetry keyed on `skipped`/`confidence`.
+			if (!Number.isFinite(raw)) {
+				return {
+					score: 0,
+					confidence: 0,
+					skipped: true,
+					skipReason: "Non-finite model output (NaN/Infinity)",
+					latencyMs: performance.now() - startTime,
+				};
+			}
+			const confidence = Math.abs(raw - 0.5) * 2;
 
 			return {
-				score,
+				score: raw,
 				confidence,
 				skipped: false,
 				latencyMs: performance.now() - startTime,

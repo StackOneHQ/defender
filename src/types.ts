@@ -285,7 +285,13 @@ export interface SanitizationMetadata {
 	riskyFieldNames: string[];
 	/** Paths of keys removed due to prototype pollution risk */
 	dangerousKeysRemoved?: string[];
-	/** True if any field exceeded `maxFieldAnalysisLength` and was only analysed up to the cap */
+	/**
+	 * True when Tier 1 *detection* coverage was reduced on this result — either a
+	 * field exceeded `maxFieldAnalysisLength` (only its head was analysed) or a
+	 * large array was only partially scanned (items past the scan limit skip Tier 1
+	 * detection; see `ToolResultSanitizer.sanitizeArray`). Content is always
+	 * returned in full — only detection coverage was capped.
+	 */
 	analysisTruncated?: boolean;
 }
 
