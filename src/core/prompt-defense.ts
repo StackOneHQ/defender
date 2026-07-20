@@ -288,6 +288,24 @@ export interface PromptDefenseOptions {
 		 * Default: 10000.
 		 */
 		maxTextLength?: number;
+		/**
+		 * Decide by `verdict.score >= blockThreshold` instead of trusting the
+		 * model's generated `decision` word.
+		 *
+		 * The generated word is the model's argmax — an implicit 0.5 cut that
+		 * nobody chose, and one that silently moves whenever the model is
+		 * retrained. Thresholding the score makes the operating point an
+		 * explicit config value: raise it to trade recall for fewer false
+		 * positives, lower it for the reverse. Setting `0.5` reproduces argmax.
+		 *
+		 * Requires a provider that reports `score` as P(block). When `score` is
+		 * absent or outside [0, 1] the verdict's `decision` is used instead
+		 * (and defender warns once), so a provider that cannot report a score
+		 * degrades to today's behavior rather than failing.
+		 *
+		 * Default: unset — the provider's `decision` is authoritative.
+		 */
+		blockThreshold?: number;
 	};
 }
 
@@ -322,6 +340,8 @@ export class PromptDefense {
 	private tier3Band: { lower: number; upper: number } = { lower: 0.3, upper: 0.85 };
 	private tier3MaxTextLength: number = 10000;
 	private tier3MissingProviderWarned: boolean = false;
+	private tier3BlockThreshold: number | undefined = undefined;
+	private tier3MissingScoreWarned: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -386,6 +406,16 @@ export class PromptDefense {
 			} else {
 				console.warn(
 					`[defender] invalid tier3.escalationBand { lower: ${lower}, upper: ${upper} } — must satisfy 0 <= lower < upper <= 1. Falling back to default { lower: 0.3, upper: 0.85 }.`,
+				);
+			}
+		}
+		if (options.tier3?.blockThreshold !== undefined) {
+			const threshold = options.tier3.blockThreshold;
+			if (Number.isFinite(threshold) && threshold >= 0 && threshold <= 1) {
+				this.tier3BlockThreshold = threshold;
+			} else {
+				console.warn(
+					`[defender] invalid tier3.blockThreshold ${threshold} — must be a finite number in [0, 1]. Falling back to the provider's decision.`,
 				);
 			}
 		}
@@ -479,6 +509,36 @@ export class PromptDefense {
 	}
 
 	/**
+	 * Resolve a validated verdict to block/allow.
+	 *
+	 * With `tier3.blockThreshold` unset this is just the model's `decision`
+	 * word — its argmax, i.e. an implicit 0.5 cut. With a threshold set we
+	 * decide on `score` (P(block)) instead, which is what makes any other
+	 * operating point reachable and keeps the cut stable across retrains that
+	 * shift the model's calibration.
+	 *
+	 * A configured threshold with no usable score falls back to `decision`
+	 * (warned once) rather than failing: a provider that cannot report P(block)
+	 * degrades to today's behavior instead of taking the tier offline.
+	 */
+	private isTier3Block(verdict: Tier3Verdict): boolean {
+		if (this.tier3BlockThreshold === undefined) {
+			return verdict.decision === "block";
+		}
+		const { score } = verdict;
+		if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) {
+			return score >= this.tier3BlockThreshold;
+		}
+		if (!this.tier3MissingScoreWarned) {
+			this.tier3MissingScoreWarned = true;
+			console.warn(
+				`[defender] tier3.blockThreshold=${this.tier3BlockThreshold} is set but the provider returned score=${JSON.stringify(score)} (expected a number in [0, 1]). Falling back to the provider's decision — the threshold is not being applied.`,
+			);
+		}
+		return verdict.decision === "block";
+	}
+
+	/**
 	 * tier3_only short-circuit. Builds one joined text from all extracted
 	 * strings and asks the provider for a verdict; that verdict drives the
 	 * entire decision. Tier 1 sanitization is still applied to the returned
@@ -530,7 +590,7 @@ export class PromptDefense {
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
-		const blocked = verdict?.decision === "block";
+		const blocked = verdict !== undefined && this.isTier3Block(verdict);
 		const riskLevel: RiskLevel = blocked ? "high" : "low";
 		// Honor the library invariant: `blockHighRisk: false` always yields
 		// `allowed: true` — Tier 3 contributes to `riskLevel` for diagnostics
@@ -890,7 +950,7 @@ export class PromptDefense {
 						tier3Result = { skipReason: validated.skipReason };
 					} else {
 						tier3Result = { ...validated };
-						tier3OverrideBlock = validated.decision === "block";
+						tier3OverrideBlock = this.isTier3Block(validated);
 					}
 				} catch (err) {
 					tier3Result = {
