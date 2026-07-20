@@ -523,4 +523,50 @@ describe("PromptDefense tier3 blockThreshold", () => {
 		expect(result.tier3?.decision).toBe("allow");
 		expect(result.allowed).toBe(false);
 	});
+
+	it("blocks when score exactly equals the threshold (>= not >)", async () => {
+		const result = await defenseWith(scored("allow", 0.622), 0.622).defendToolResult({ body: "x" }, "t");
+
+		expect(result.allowed).toBe(false);
+	});
+
+	it.each([
+		["0 blocks everything", 0, 0, false],
+		["1 blocks only a certain score", 1, 1, false],
+		["1 allows just below certainty", 1, 0.99, true],
+	] as const)("accepts the inclusive threshold bounds: %s", async (_label, threshold, score, expectedAllowed) => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const result = await defenseWith(scored("allow", score), threshold).defendToolResult({ body: "x" }, "t");
+
+		expect(result.allowed).toBe(expectedAllowed);
+		expect(warn).not.toHaveBeenCalled(); // 0 and 1 are valid, not rejected
+		warn.mockRestore();
+	});
+
+	it("drops a non-numeric score instead of leaking it to DefenseResult.tier3", async () => {
+		// The exported contract is `score?: number`; an untyped JS provider must
+		// not be able to put a string on the public result.
+		const provider: Tier3Provider = {
+			classify: vi.fn(async () => ({ decision: "allow" as const, score: "0.9" as unknown as number })),
+		};
+		const result = await defenseWith(provider).defendToolResult({ body: "x" }, "t");
+
+		expect(result.tier3?.score).toBeUndefined();
+		expect(result.allowed).toBe(true);
+	});
+
+	it("does not throw when a provider returns an unstringifiable score", async () => {
+		// bigint throws under JSON.stringify — the warn path must not take the
+		// defense call down with it.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const provider: Tier3Provider = {
+			classify: vi.fn(async () => ({ decision: "block" as const, score: 1n as unknown as number })),
+		};
+
+		const result = await defenseWith(provider, 0.622).defendToolResult({ body: "x" }, "t");
+
+		expect(result.tier3?.score).toBeUndefined();
+		expect(result.allowed).toBe(false); // fell back to the "block" word
+		warn.mockRestore();
+	});
 });

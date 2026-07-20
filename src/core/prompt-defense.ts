@@ -505,6 +505,16 @@ export class PromptDefense {
 				skipReason: `Tier 3 provider returned invalid decision: ${JSON.stringify(decision)} (expected "block" | "allow")`,
 			};
 		}
+		// Normalize `score` here, before it can reach either the decision path or
+		// the public `DefenseResult.tier3`. An untyped JS provider can hand back a
+		// string, a bigint, or an out-of-range number, but the exported contract is
+		// `score?: number` in [0, 1] — anything else is dropped rather than leaked
+		// to consumers doing numeric processing on it.
+		const { score } = verdict as { score?: unknown };
+		const scoreUsable = typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1;
+		if (score !== undefined && !scoreUsable) {
+			return { ...(verdict as Tier3Verdict), score: undefined };
+		}
 		return verdict as Tier3Verdict;
 	}
 
@@ -525,14 +535,18 @@ export class PromptDefense {
 		if (this.tier3BlockThreshold === undefined) {
 			return verdict.decision === "block";
 		}
-		const { score } = verdict;
-		if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) {
-			return score >= this.tier3BlockThreshold;
+		// `validateTier3Verdict` has already dropped any score outside [0, 1], so a
+		// number here is usable as P(block). The warning deliberately does not
+		// interpolate the provider's raw value: stringifying an arbitrary
+		// provider-supplied value can itself throw (bigint, circular object), and
+		// this call site is outside the provider try/catch.
+		if (typeof verdict.score === "number") {
+			return verdict.score >= this.tier3BlockThreshold;
 		}
 		if (!this.tier3MissingScoreWarned) {
 			this.tier3MissingScoreWarned = true;
 			console.warn(
-				`[defender] tier3.blockThreshold=${this.tier3BlockThreshold} is set but the provider returned score=${JSON.stringify(score)} (expected a number in [0, 1]). Falling back to the provider's decision — the threshold is not being applied.`,
+				`[defender] tier3.blockThreshold=${this.tier3BlockThreshold} is set but the provider did not report a usable score (missing, or not a number in [0, 1]). Falling back to the provider's decision — the threshold is not being applied.`,
 			);
 		}
 		return verdict.decision === "block";
