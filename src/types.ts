@@ -102,14 +102,34 @@ export interface Tier2Result {
 /**
  * Verdict returned by a Tier 3 provider.
  *
- * Tier 3 is authoritative when invoked — the defender does not re-threshold
- * the score. `decision: "block"` ⇒ the chunk (cascade) or payload (tier3-only)
- * is blocked; `decision: "allow"` ⇒ allowed.
+ * How a verdict becomes a block/allow depends on `tier3.blockThreshold`:
+ *  - **Unset (default)** — the model's own `decision` is authoritative and the
+ *    defender does not re-threshold. `decision: "block"` ⇒ the chunk (cascade)
+ *    or payload (tier3-only) is blocked; `decision: "allow"` ⇒ allowed.
+ *  - **Set** — the defender decides by `score >= blockThreshold`, and falls
+ *    back to `decision` only when `score` is absent or out of range. Because
+ *    the generated `decision` word is the model's argmax at an implicit 0.5
+ *    cut, thresholding `score` is what makes any other operating point
+ *    reachable (e.g. higher recall at a fixed false-positive rate).
+ *
+ * Setting a threshold is the operator asserting that their provider reports
+ * `score` as P(block) — see the `score` field.
  */
 export interface Tier3Verdict {
-	/** Authoritative block/allow decision from the Tier 3 model. */
+	/**
+	 * Block/allow decision from the Tier 3 model. Authoritative unless
+	 * `tier3.blockThreshold` is configured, in which case it is the fallback
+	 * for an unusable `score`.
+	 */
 	decision: "block" | "allow";
-	/** Optional confidence in [0, 1]. Reported for forensics; not used in decision. */
+	/**
+	 * P(block) in [0, 1], when the provider can report it — e.g. a softmax over
+	 * the `block`/`allow` alternatives at the decision token's logprobs slot.
+	 *
+	 * Forensics-only until `tier3.blockThreshold` is set, at which point it
+	 * drives the decision. Providers MUST report it as P(block), not as
+	 * "confidence in whichever decision I made" — the two invert on allows.
+	 */
 	score?: number;
 	/** Raw provider output for logging / debugging. Opaque to defender. */
 	raw?: unknown;

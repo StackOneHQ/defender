@@ -127,9 +127,30 @@ const defense = createPromptDefense({
   tier3: {
     escalationBand: { lower: 0.3, upper: 0.85 },  // [lower, upper), defaults shown
     maxTextLength: 10000,                          // caps input passed to the provider
+    blockThreshold: 0.622,                         // optional; decide on score instead of the model's word
   },
 });
 ```
+
+#### Choosing the operating point (`blockThreshold`)
+
+By default the model's generated `decision` word is authoritative. That word is
+the model's argmax, which means an implicit 0.5 cut that nobody chose — and one
+that moves on its own whenever the model is retrained.
+
+Set `tier3.blockThreshold` to decide on `verdict.score` (P(block)) instead. The
+cut becomes an explicit config value: raise it to trade recall for fewer false
+positives, lower it for the reverse. `0.5` reproduces argmax exactly.
+
+```typescript
+tier3: { blockThreshold: 0.622 }   // e.g. matched to a target false-positive rate
+```
+
+Requires a provider that reports `score` as P(block) — not as "confidence in
+whichever decision I made", since those invert on allows. If `score` is missing
+or out of range the verdict's `decision` is used instead and defender warns
+once, so a provider that cannot report a score degrades to the default behavior
+rather than failing.
 
 Fail-open semantics:
 - Provider error or timeout in either mode records a `skipReason` on `result.tier3`; in cascade defender falls back to the Tier 2 decision, in `tier3_only` defender allows the request.
@@ -177,6 +198,7 @@ const defense = createPromptDefense({
     provider: myProvider,                          // overrides the registry-default provider for this instance
     escalationBand: { lower: 0.3, upper: 0.85 },   // cascade-mode gray band; [lower, upper)
     maxTextLength: 10000,                          // caps text passed to the provider
+    blockThreshold: 0.622,                         // (default: unset) decide on score >= threshold, not the model's word
   },
 });
 ```
