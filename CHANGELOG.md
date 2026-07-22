@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/StackOneHQ/defender/compare/defender-v0.7.2...defender-v0.7.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **ENG-1279:** let Tier 3 decide on score, not the model's word ([#74](https://github.com/StackOneHQ/defender/issues/74)) ([01aba74](https://github.com/StackOneHQ/defender/commit/01aba7450b3fdd4bdae0071fd46b6909c7a7c6fe))
+
 ## [0.7.2](https://github.com/StackOneHQ/defender/compare/defender-v0.7.1...defender-v0.7.2) (2026-06-30)
 
 
