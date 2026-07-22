@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.3](https://github.com/StackOneHQ/defender/compare/defender-v0.7.2...defender-v0.7.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **ENG-1279:** let Tier 3 decide on score, not the model's word ([#74](https://github.com/StackOneHQ/defender/issues/74)) ([01aba74](https://github.com/StackOneHQ/defender/commit/01aba7450b3fdd4bdae0071fd46b6909c7a7c6fe))
+
+## [0.7.2](https://github.com/StackOneHQ/defender/compare/defender-v0.7.1...defender-v0.7.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* **tier3:** add optional usage field to Tier3Verdict ([#71](https://github.com/StackOneHQ/defender/issues/71)) ([c40bd0a](https://github.com/StackOneHQ/defender/commit/c40bd0aeb417ac3712bd03848a9778508114b285))
+
+## [0.7.1](https://github.com/StackOneHQ/defender/compare/defender-v0.7.0...defender-v0.7.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **ENG-769:** add Tier 3 provider interface + cascade orchestration ([#67](https://github.com/StackOneHQ/defender/issues/67)) ([d44ce66](https://github.com/StackOneHQ/defender/commit/d44ce66a897966006ea00daaa4271eba1c98d0d6))
+
 ## [0.7.0](https://github.com/StackOneHQ/defender/compare/defender-v0.6.3...defender-v0.7.0) (2026-05-14)
 
 

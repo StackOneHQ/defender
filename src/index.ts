@@ -17,9 +17,17 @@
  * ```
  */
 
+// Tier 3 provider registry — consumers register a proprietary provider
+// (e.g. a SageMaker-hosted LLM) once at app startup; defender ships only
+// the interface and orchestration.
+export {
+	getDefaultTier3Provider,
+	setDefaultTier3Provider,
+} from "./classifiers/tier3-orchestrator";
 // Core API
 export {
 	createPromptDefense,
+	type DefenderMode,
 	type DefenseResult,
 	PromptDefense,
 	type PromptDefenseOptions,
@@ -34,6 +42,6 @@ export {
 	sfePreprocess,
 } from "./sfe/preprocess";
 // Types
-export type { RiskLevel, Tier1Result } from "./types";
+export type { RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "./types";
 // Boundary helpers for consumers that opt into `annotateBoundary`
 export { containsBoundaryPatterns, generateBoundaryInstructions } from "./utils/boundary";

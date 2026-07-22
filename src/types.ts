@@ -100,6 +100,75 @@ export interface Tier2Result {
 }
 
 /**
+ * Verdict returned by a Tier 3 provider.
+ *
+ * How a verdict becomes a block/allow depends on `tier3.blockThreshold`:
+ *  - **Unset (default)** — the model's own `decision` is authoritative and the
+ *    defender does not re-threshold. `decision: "block"` ⇒ the chunk (cascade)
+ *    or payload (tier3-only) is blocked; `decision: "allow"` ⇒ allowed.
+ *  - **Set** — the defender decides by `score >= blockThreshold`, and falls
+ *    back to `decision` only when `score` is absent or out of range. Because
+ *    the generated `decision` word is the model's argmax at an implicit 0.5
+ *    cut, thresholding `score` is what makes any other operating point
+ *    reachable (e.g. higher recall at a fixed false-positive rate).
+ *
+ * Setting a threshold is the operator asserting that their provider reports
+ * `score` as P(block) — see the `score` field.
+ */
+export interface Tier3Verdict {
+	/**
+	 * Block/allow decision from the Tier 3 model. Authoritative unless
+	 * `tier3.blockThreshold` is configured, in which case it is the fallback
+	 * for an unusable `score`.
+	 */
+	decision: "block" | "allow";
+	/**
+	 * P(block) in [0, 1], when the provider can report it — e.g. a softmax over
+	 * the `block`/`allow` alternatives at the decision token's logprobs slot.
+	 *
+	 * Forensics-only until `tier3.blockThreshold` is set, at which point it
+	 * drives the decision. Providers MUST report it as P(block), not as
+	 * "confidence in whichever decision I made" — the two invert on allows.
+	 */
+	score?: number;
+	/** Raw provider output for logging / debugging. Opaque to defender. */
+	raw?: unknown;
+	/** Round-trip latency to the provider in milliseconds. */
+	latencyMs?: number;
+	/** Token usage reported by the provider (e.g. vLLM `usage` block). */
+	usage?: {
+		promptTokens: number;
+		completionTokens: number;
+		totalTokens: number;
+	};
+}
+
+/**
+ * Tier 3 classifier interface.
+ *
+ * Implementations live OUTSIDE the defender package — defender ships only the
+ * interface and orchestration. Register a default provider at app startup via
+ * `setDefaultTier3Provider(...)`; `createPromptDefense` will pick it up when
+ * `enableTier3: true` is set on options.
+ *
+ * Implementations are responsible for: prompt formatting, model invocation
+ * (e.g. SageMaker, OpenAI, local LLM), result parsing, and their own
+ * timeout/retry policy.
+ */
+export interface Tier3Provider {
+	/**
+	 * Classify a text snippet for prompt-injection risk.
+	 *
+	 * @param text - Content to classify. In cascade mode this is the highest-
+	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode it is the
+	 *   joined extracted strings of the tool result.
+	 * @param ctx - Optional context (e.g. originating tool name) the provider
+	 *   may include in its prompt.
+	 */
+	classify(text: string, ctx?: { toolName?: string }): Promise<Tier3Verdict>;
+}
+
+/**
  * Combined classification result
  */
 export interface ClassificationResult {
