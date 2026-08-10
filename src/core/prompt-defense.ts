@@ -138,8 +138,10 @@ export interface DefenseResult {
 	tier2Stats?: {
 		/** Strings extracted and sent to Tier 2. */
 		stringCount: number;
-		/** Packed chunks classified. */
+		/** Packed chunks (including duplicates) across all strings. */
 		chunkCount: number;
+		/** Distinct chunks actually run through ONNX (chunkCount − duplicates). */
+		uniqueChunkCount: number;
 		/** Sum of real (non-pad) tokens across chunks. */
 		realTokens: number;
 		/** Tokens actually run through ONNX, including padding. */
@@ -821,26 +823,47 @@ export class PromptDefense {
 					// Cold start iff the model is not yet loaded when inference begins.
 					coldLoad = !this.tier2Classifier.isReady();
 					const padding = { realTokens: 0, paddedTokens: 0 };
+
+					// Dedupe before inference: identical chunk strings score identically
+					// (fixed-width buckets make scores neighbour-independent), so classify
+					// each unique chunk once and fan the score back out. List responses
+					// repeat enum/status/boolean values heavily — most of the saving here.
+					const uniqueChunks: string[] = [];
+					const uniqueIndex = new Map<string, number>();
+					const dedupeIndex = allChunks.map((c) => {
+						let u = uniqueIndex.get(c);
+						if (u === undefined) {
+							u = uniqueChunks.length;
+							uniqueIndex.set(c, u);
+							uniqueChunks.push(c);
+						}
+						return u;
+					});
+
 					const multiheadCfg = this.tier2Classifier.getMultiheadConfig();
 					let allScores: number[] | null = null;
 					let allPairs: Array<{ main: number; aux: number | null }> | null = null;
 					try {
 						if (multiheadCfg) {
-							allPairs = await this.tier2Classifier.classifyChunksBatchPair(allChunks, padding);
+							const uniquePairs = await this.tier2Classifier.classifyChunksBatchPair(
+								uniqueChunks,
+								padding,
+							);
 							// Single-head model under a multi-head config: every aux is null.
 							// Without this guard the rule path sees no aux signal, treats no
 							// chunk as a multihead block, fires the aux-veto branch, and
 							// collapses tier2EffectiveScore to 0 — Tier 2 is silently
 							// disabled. Surface the misconfig instead.
-							if (allPairs.length > 0 && allPairs.every((p) => p.aux === null)) {
+							if (uniquePairs.length > 0 && uniquePairs.every((p) => p.aux === null)) {
 								tier2SkipReason =
 									"multihead configured but model emits single-head logits — remove `multihead` config or use a dual-head model";
-								allPairs = null;
 							} else {
+								allPairs = dedupeIndex.map((u) => uniquePairs[u]);
 								allScores = allPairs.map((p) => p.main);
 							}
 						} else {
-							allScores = await this.tier2Classifier.classifyChunksBatch(allChunks, padding);
+							const uniqueScores = await this.tier2Classifier.classifyChunksBatch(uniqueChunks, padding);
+							allScores = dedupeIndex.map((u) => uniqueScores[u]);
 						}
 					} catch (err) {
 						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
@@ -975,6 +998,7 @@ export class PromptDefense {
 						tier2Stats = {
 							stringCount: strings.length,
 							chunkCount: allChunks.length,
+							uniqueChunkCount: uniqueChunks.length,
 							realTokens: padding.realTokens,
 							paddedTokens: padding.paddedTokens,
 						};
