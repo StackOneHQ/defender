@@ -269,8 +269,8 @@ describe('PromptDefense', () => {
     });
 
     // ONNX model load is too slow for CI shared runners, so Tier 2 (and its
-    // phaseTimings) only run locally.
-    it.skipIf(!!process.env.CI)('reports Tier 2 phaseTimings when the classifier runs', async () => {
+    // telemetry) only run locally.
+    it.skipIf(!!process.env.CI)('reports Tier 2 telemetry when the classifier runs', async () => {
       const input = { content: 'The quarterly revenue report shows steady growth this year.' };
 
       const result = await defense.defendToolResult(input, 'documents_get');
@@ -280,15 +280,26 @@ describe('PromptDefense', () => {
         expect(ms).toBeGreaterThanOrEqual(0);
         expect(Number.isFinite(ms)).toBe(true);
       }
+      // #6 counts: padded >= real > 0, and at least one string/chunk classified.
+      expect(result.tier2Stats).toBeDefined();
+      expect(result.tier2Stats!.stringCount).toBeGreaterThanOrEqual(1);
+      expect(result.tier2Stats!.chunkCount).toBeGreaterThanOrEqual(1);
+      expect(result.tier2Stats!.realTokens).toBeGreaterThan(0);
+      expect(result.tier2Stats!.paddedTokens).toBeGreaterThanOrEqual(result.tier2Stats!.realTokens);
+      expect(result.tier1Ms).toBeGreaterThanOrEqual(0);
+      expect(typeof result.coldLoad).toBe('boolean');
     }, 60000);
 
-    it.skipIf(!!process.env.CI)('omits phaseTimings when Tier 2 scores nothing', async () => {
+    it.skipIf(!!process.env.CI)('omits Tier 2 telemetry when Tier 2 scores nothing', async () => {
       // All strings skipped (too short to classify) → no batched inference ran,
-      // so phaseTimings must be absent (same contract the error/misconfig paths
-      // rely on: present only on a successful batched classification).
+      // so phaseTimings/tier2Stats/coldLoad must be absent (present only on a
+      // successful batched classification). tier1Ms still reports.
       const result = await defense.defendToolResult({ a: 'hi', b: 'yo' }, 'documents_get');
 
       expect(result.phaseTimings).toBeUndefined();
+      expect(result.tier2Stats).toBeUndefined();
+      expect(result.coldLoad).toBeUndefined();
+      expect(result.tier1Ms).toBeGreaterThanOrEqual(0);
       expect(result.tier2SkipReason).toBeDefined();
     }, 60000);
 

@@ -131,6 +131,24 @@ export interface DefenseResult {
 		/** Per-string max aggregation + verdict assembly. */
 		aggregateMs: number;
 	};
+	/**
+	 * Tier 2 batch shape + padding counts. Same presence rule as `phaseTimings`.
+	 * `realTokens / paddedTokens` is the padding efficiency (1.0 = no waste).
+	 */
+	tier2Stats?: {
+		/** Strings extracted and sent to Tier 2. */
+		stringCount: number;
+		/** Packed chunks classified. */
+		chunkCount: number;
+		/** Sum of real (non-pad) tokens across chunks. */
+		realTokens: number;
+		/** Tokens actually run through ONNX, including padding. */
+		paddedTokens: number;
+	};
+	/** Tier 1 pattern-scan time (ms). Absent in tier3_only mode. */
+	tier1Ms?: number;
+	/** True when this call loaded the ONNX model (cold start). Present only when Tier 2 ran. */
+	coldLoad?: boolean;
 }
 
 /**
@@ -707,7 +725,9 @@ export class PromptDefense {
 
 		// Tier 1: pattern-based sanitization on the original value — SFE
 		// filtering is classifier-only and must not affect the returned payload.
+		const tTier1Start = performance.now();
 		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+		const tier1Ms = performance.now() - tTier1Start;
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
@@ -740,6 +760,8 @@ export class PromptDefense {
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
 		let phaseTimings: DefenseResult["phaseTimings"];
+		let tier2Stats: DefenseResult["tier2Stats"];
+		let coldLoad: boolean | undefined;
 
 		if (this.tier2Classifier) {
 			// Use explicit tier2Fields if provided; otherwise scan all strings.
@@ -796,12 +818,15 @@ export class PromptDefense {
 					// propagating out of defendToolResult (matches the old
 					// classifyByChunks contract).
 					const tInferStart = performance.now();
+					// Cold start iff the model is not yet loaded when inference begins.
+					coldLoad = !this.tier2Classifier.isReady();
+					const padding = { realTokens: 0, paddedTokens: 0 };
 					const multiheadCfg = this.tier2Classifier.getMultiheadConfig();
 					let allScores: number[] | null = null;
 					let allPairs: Array<{ main: number; aux: number | null }> | null = null;
 					try {
 						if (multiheadCfg) {
-							allPairs = await this.tier2Classifier.classifyChunksBatchPair(allChunks);
+							allPairs = await this.tier2Classifier.classifyChunksBatchPair(allChunks, padding);
 							// Single-head model under a multi-head config: every aux is null.
 							// Without this guard the rule path sees no aux signal, treats no
 							// chunk as a multihead block, fires the aux-veto branch, and
@@ -815,7 +840,7 @@ export class PromptDefense {
 								allScores = allPairs.map((p) => p.main);
 							}
 						} else {
-							allScores = await this.tier2Classifier.classifyChunksBatch(allChunks);
+							allScores = await this.tier2Classifier.classifyChunksBatch(allChunks, padding);
 						}
 					} catch (err) {
 						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
@@ -946,6 +971,12 @@ export class PromptDefense {
 							prepareMs: tInferStart - tPrepStart,
 							inferMs: tAggStart - tInferStart,
 							aggregateMs: performance.now() - tAggStart,
+						};
+						tier2Stats = {
+							stringCount: strings.length,
+							chunkCount: allChunks.length,
+							realTokens: padding.realTokens,
+							paddedTokens: padding.paddedTokens,
 						};
 					}
 				}
@@ -1083,6 +1114,9 @@ export class PromptDefense {
 			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
 			truncatedAtDepth: depthFlag.hit || undefined,
 			...(phaseTimings ? { phaseTimings } : {}),
+			...(tier2Stats ? { tier2Stats } : {}),
+			...(coldLoad !== undefined ? { coldLoad } : {}),
+			tier1Ms,
 			latencyMs: performance.now() - startTime,
 		};
 	}

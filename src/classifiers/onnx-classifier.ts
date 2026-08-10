@@ -17,6 +17,14 @@ import { fileURLToPath } from "node:url";
  * Exported so `Tier2Classifier` can read model-specific calibration defaults
  * from the model's `classifier_config.json` at construction time.
  */
+/** Padding accounting accumulated across a batched classification (see #6 telemetry). */
+export interface BatchTokenStats {
+	/** Sum of real (non-pad) tokens across all chunks. */
+	realTokens: number;
+	/** Sum of tokens actually run through ONNX, including padding. */
+	paddedTokens: number;
+}
+
 export function getDefaultModelPath(): string {
 	// Works for both CJS (__dirname) and ESM (import.meta.url)
 	let baseDir: string;
@@ -337,8 +345,8 @@ export class OnnxClassifier {
 	 * @param texts - Array of texts to classify
 	 * @returns Array of main-head sigmoid scores in [0, 1]
 	 */
-	async classifyBatch(texts: string[]): Promise<number[]> {
-		const pairs = await this.classifyBatchPair(texts);
+	async classifyBatch(texts: string[], stats?: BatchTokenStats): Promise<number[]> {
+		const pairs = await this.classifyBatchPair(texts, stats);
 		return pairs.map((p) => p.main);
 	}
 
@@ -349,7 +357,10 @@ export class OnnxClassifier {
 	 * @param texts - Array of texts to classify
 	 * @returns Array of `{ main, aux }`
 	 */
-	async classifyBatchPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
+	async classifyBatchPair(
+		texts: string[],
+		stats?: BatchTokenStats,
+	): Promise<Array<{ main: number; aux: number | null }>> {
 		if (texts.length === 0) return [];
 
 		await this.ensureLoaded();
@@ -378,10 +389,14 @@ export class OnnxClassifier {
 			if (!bucketIdxs) continue;
 			for (let offset = 0; offset < bucketIdxs.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
 				const idxs = bucketIdxs.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
-				const chunkPairs = await this.classifyBatchChunkPair(
-					idxs.map((i) => tokenized[i]),
-					width,
-				);
+				const chunk = idxs.map((i) => tokenized[i]);
+				if (stats) {
+					// Every row in the bucket pads to the bucket width; realTokens is
+					// the useful work, paddedTokens is what ONNX actually ran.
+					stats.paddedTokens += chunk.length * width;
+					for (const t of chunk) stats.realTokens += t.inputIds.length;
+				}
+				const chunkPairs = await this.classifyBatchChunkPair(chunk, width);
 				idxs.forEach((origIdx, k) => {
 					pairs[origIdx] = chunkPairs[k];
 				});
