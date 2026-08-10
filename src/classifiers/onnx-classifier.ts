@@ -347,27 +347,38 @@ export class OnnxClassifier {
 
 		await this.ensureLoaded();
 
-		const allPairs: Array<{ main: number; aux: number | null }> = [];
+		// Sort by token length so similar-length strings share a chunk: each chunk
+		// pads to its longest member, so a lone long string would otherwise inflate
+		// every row. Results are scattered back to input order below.
+		const tokenized = texts.map((t) => this.tokenize(t));
+		const order = tokenized
+			.map((_, i) => i)
+			.sort((a, b) => tokenized[a].inputIds.length - tokenized[b].inputIds.length);
 
-		for (let offset = 0; offset < texts.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
-			const chunk = texts.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
-			const chunkPairs = await this.classifyBatchChunkPair(chunk);
-			allPairs.push(...chunkPairs);
+		const pairs = new Array<{ main: number; aux: number | null }>(texts.length);
+		for (let offset = 0; offset < order.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
+			const idxs = order.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
+			const chunkPairs = await this.classifyBatchChunkPair(idxs.map((i) => tokenized[i]));
+			idxs.forEach((origIdx, k) => {
+				pairs[origIdx] = chunkPairs[k];
+			});
 		}
 
-		return allPairs;
+		return pairs;
 	}
 
 	/**
-	 * Classify a single chunk of texts in one ONNX session.run() call.
+	 * Classify a single pre-tokenized chunk in one ONNX session.run() call.
 	 * Handles both single-head `[batch]`/`[batch, 1]` and multi-head `[batch, 2]`
-	 * outputs; the latter returns paired (main, aux) sigmoid scores.
+	 * outputs; the latter returns paired (main, aux) sigmoid scores. Inputs are
+	 * pre-tokenized so `classifyBatchPair` can length-bucket without re-tokenizing.
 	 */
-	private async classifyBatchChunkPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
-		const tokenized = texts.map((t) => this.tokenize(t));
+	private async classifyBatchChunkPair(
+		tokenized: Array<{ inputIds: BigInt64Array; attentionMask: BigInt64Array }>,
+	): Promise<Array<{ main: number; aux: number | null }>> {
 		const maxLen = Math.max(...tokenized.map((t) => t.inputIds.length));
 
-		const batchSize = texts.length;
+		const batchSize = tokenized.length;
 		const batchInputIds = new BigInt64Array(batchSize * maxLen);
 		const batchAttentionMask = new BigInt64Array(batchSize * maxLen);
 

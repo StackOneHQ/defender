@@ -119,6 +119,18 @@ export interface DefenseResult {
 	truncatedAtDepth?: boolean;
 	/** Total processing time in milliseconds */
 	latencyMs: number;
+	/**
+	 * Tier 2 per-phase timing (ms). Present only when the cascade ran the batched
+	 * classifier — absent in tier3_only mode or when no strings were extracted.
+	 */
+	phaseTimings?: {
+		/** Chunk prep: warmup + tokenize + pack. */
+		prepareMs: number;
+		/** The single batched ONNX inference over all chunks. */
+		inferMs: number;
+		/** Per-string max aggregation + verdict assembly. */
+		aggregateMs: number;
+	};
 }
 
 /**
@@ -727,6 +739,7 @@ export class PromptDefense {
 		let tier2SkipReason: string | undefined;
 		let maxSentence: string | undefined;
 		let tier2Risk: RiskLevel = "low";
+		let phaseTimings: DefenseResult["phaseTimings"];
 
 		if (this.tier2Classifier) {
 			// Use explicit tier2Fields if provided; otherwise scan all strings.
@@ -756,6 +769,7 @@ export class PromptDefense {
 
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
+				const tPrepStart = performance.now();
 				const preps = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
@@ -781,6 +795,7 @@ export class PromptDefense {
 					// Fail-safe: inference errors mark Tier 2 as skipped rather than
 					// propagating out of defendToolResult (matches the old
 					// classifyByChunks contract).
+					const tInferStart = performance.now();
 					const multiheadCfg = this.tier2Classifier.getMultiheadConfig();
 					let allScores: number[] | null = null;
 					let allPairs: Array<{ main: number; aux: number | null }> | null = null;
@@ -805,6 +820,7 @@ export class PromptDefense {
 					} catch (err) {
 						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
 					}
+					const tAggStart = performance.now();
 
 					if (allScores) {
 						// Phase 3: compute per-string max; track global max + chunk.
@@ -927,6 +943,11 @@ export class PromptDefense {
 							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 						}
 					}
+					phaseTimings = {
+						prepareMs: tInferStart - tPrepStart,
+						inferMs: tAggStart - tInferStart,
+						aggregateMs: performance.now() - tAggStart,
+					};
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length
@@ -1061,6 +1082,7 @@ export class PromptDefense {
 			// would silently flip that check to true for every call.
 			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
 			truncatedAtDepth: depthFlag.hit || undefined,
+			...(phaseTimings ? { phaseTimings } : {}),
 			latencyMs: performance.now() - startTime,
 		};
 	}

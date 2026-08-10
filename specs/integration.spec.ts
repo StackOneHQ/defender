@@ -268,6 +268,20 @@ describe('PromptDefense', () => {
       expect(result.fieldsSanitized).toContain('name');
     });
 
+    // ONNX model load is too slow for CI shared runners, so Tier 2 (and its
+    // phaseTimings) only run locally.
+    it.skipIf(!!process.env.CI)('reports Tier 2 phaseTimings when the classifier runs', async () => {
+      const input = { content: 'The quarterly revenue report shows steady growth this year.' };
+
+      const result = await defense.defendToolResult(input, 'documents_get');
+
+      expect(result.phaseTimings).toBeDefined();
+      for (const ms of Object.values(result.phaseTimings!)) {
+        expect(ms).toBeGreaterThanOrEqual(0);
+        expect(Number.isFinite(ms)).toBe(true);
+      }
+    }, 60000);
+
     it('should defend tool results with injection patterns', async () => {
       const input = {
         name: 'Report',
