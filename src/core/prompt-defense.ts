@@ -942,12 +942,12 @@ export class PromptDefense {
 							}
 							tier2Risk = this.tier2Classifier.getRiskLevel(tier2EffectiveScore);
 						}
+						phaseTimings = {
+							prepareMs: tInferStart - tPrepStart,
+							inferMs: tAggStart - tInferStart,
+							aggregateMs: performance.now() - tAggStart,
+						};
 					}
-					phaseTimings = {
-						prepareMs: tInferStart - tPrepStart,
-						inferMs: tAggStart - tInferStart,
-						aggregateMs: performance.now() - tAggStart,
-					};
 				}
 			} else {
 				tier2SkipReason = this.tier2Fields?.length

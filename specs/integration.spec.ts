@@ -282,6 +282,16 @@ describe('PromptDefense', () => {
       }
     }, 60000);
 
+    it.skipIf(!!process.env.CI)('omits phaseTimings when Tier 2 scores nothing', async () => {
+      // All strings skipped (too short to classify) → no batched inference ran,
+      // so phaseTimings must be absent (same contract the error/misconfig paths
+      // rely on: present only on a successful batched classification).
+      const result = await defense.defendToolResult({ a: 'hi', b: 'yo' }, 'documents_get');
+
+      expect(result.phaseTimings).toBeUndefined();
+      expect(result.tier2SkipReason).toBeDefined();
+    }, 60000);
+
     it('should defend tool results with injection patterns', async () => {
       const input = {
         name: 'Report',
