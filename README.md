@@ -34,7 +34,17 @@ Defender **does not rewrite your data**. It returns the original tool-result con
 npm install @stackone/defender
 ```
 
-The ONNX model (~22MB) is bundled in the package — no extra downloads needed.
+The ONNX model (~22MB) is bundled in the package — no model download needed.
+
+### Requirements
+
+Tier 2 (ML classification) is **on by default** and needs two optional peer dependencies at runtime:
+
+```bash
+npm install onnxruntime-node @huggingface/transformers
+```
+
+If they're missing, Defender does **not** silently run unprotected. It logs a warning, sets `result.tier2Available === false` (alert on this to detect degraded ML defense), and falls back to Tier 1 pattern detection. To **fail closed** instead — throw when Tier 2 can't load — pass `requireTier2: true` to `createPromptDefense`. To run Tier-1-only intentionally, pass `enableTier2: false`.
 
 ## Quick Start
 

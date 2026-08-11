@@ -189,11 +189,11 @@ export class OnnxClassifier {
 		try {
 			await this.loadingPromise;
 		} catch (error) {
+			// Reset so a later call can retry (e.g. after a missing peer dep is
+			// installed). Do NOT warn here — the error propagates to the caller,
+			// which owns user-facing messaging (PromptDefense warns once per
+			// instance). Warning here emitted a log line on every failed call.
 			this.loadingPromise = null;
-			console.warn(
-				"[defender] ONNX model failed to load:",
-				error instanceof Error ? error.message : String(error),
-			);
 			throw error;
 		}
 	}
