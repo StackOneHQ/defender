@@ -258,6 +258,27 @@ describe('ToolResultSanitizer', () => {
   });
 });
 
+describe('ReDoS / DoS guards', () => {
+  it('handles a huge dot-only field in linear time (Morse regex ReDoS guard)', () => {
+    const sanitizer = createToolResultSanitizer();
+    const input = { description: '.'.repeat(200000) };
+    const t0 = performance.now();
+    sanitizer.sanitize(input, { toolName: 'crm_get_contact' });
+    const dt = performance.now() - t0;
+    // Pre-fix this took ~30s (catastrophic backtracking). Guard well below that.
+    expect(dt).toBeLessThan(2000);
+  });
+
+  it('caps per-field analysis length and flags truncation without dropping content', () => {
+    const sanitizer = createToolResultSanitizer({ maxFieldAnalysisLength: 1000 });
+    const input = { description: 'a'.repeat(5000) };
+    const result = sanitizer.sanitize(input, { toolName: 'crm_get_contact' });
+    expect(result.metadata.analysisTruncated).toBe(true);
+    // Detect-and-gate: full content is still preserved, only analysis is capped.
+    expect((result.sanitized as { description: string }).description).toHaveLength(5000);
+  });
+});
+
 describe('PromptDefense', () => {
   const defense = createPromptDefense({ blockHighRisk: true });
 

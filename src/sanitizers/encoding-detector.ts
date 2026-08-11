@@ -552,8 +552,11 @@ const MORSE_TABLE: Record<string, string> = {
  */
 function detectMorse(text: string): EncodingDetection[] {
 	const detections: EncodingDetection[] = [];
-	// Gate: 5+ Morse symbol groups
-	const morsePattern = /(?:[.-]+[ ]){4,}[.-]+/g;
+	// Gate: 5+ Morse symbol groups. Each group is bounded to {1,8} symbols
+	// (longer runs are not valid Morse anyway) so the regex is linear — the
+	// prior unbounded `[.-]+` backtracked catastrophically on long dot/dash
+	// runs with no spaces (ReDoS; 200k dots ≈ 30s of blocked event loop).
+	const morsePattern = /(?:[.-]{1,8}[ ]){4,}[.-]{1,8}/g;
 	let match: RegExpExecArray | null;
 
 	while ((match = morsePattern.exec(text)) !== null) {
