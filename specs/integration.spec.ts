@@ -315,6 +315,23 @@ describe('H6 — large arrays are never truncated', () => {
     // Detection coverage was capped, so the degraded flag is surfaced.
     expect(result.coverageDegraded).toBe(true);
   });
+
+  it('still applies structural protections (dangerous-key stripping) to tail items past the scan limit', async () => {
+    const defense = createPromptDefense({ enableTier2: false });
+    const items: Array<Record<string, unknown>> = Array.from({ length: 1500 }, (_, i) => ({ id: String(i) }));
+    // Inject an own `__proto__` key into a TAIL item (index 1400 > the 100-item
+    // detection scan limit). JSON.parse creates it as an own enumerable property.
+    items[1400] = JSON.parse('{"id":"1400","__proto__":{"isAdmin":true}}');
+
+    const result = await defense.defendToolResult({ data: items, next: 'cur' }, 'documents_list_files');
+    const out = result.sanitized as { data: Array<Record<string, unknown>> };
+
+    expect(out.data).toHaveLength(1500);
+    // Detection is skipped for tail items, but structural protection is not:
+    // the dangerous key is still stripped even past the scan limit.
+    expect(Object.hasOwn(out.data[1400], '__proto__')).toBe(false);
+    expect(result.sanitized).toBeDefined();
+  });
 });
 
 describe('Phase 3 — risk reporting + config coherence', () => {
