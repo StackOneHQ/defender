@@ -236,6 +236,16 @@ interface DefenseResult {
   truncatedAtDepth?: boolean;
 
   latencyMs: number;                      // Total processing time in milliseconds
+
+  // Cost telemetry
+  tier1Ms?: number;                       // Tier 1 pattern-scan time (absent in tier3_only mode)
+  // The rest are present only when the cascade ran the batched Tier 2 classifier:
+  phaseTimings?: { prepareMs: number; inferMs: number; aggregateMs: number }; // Tier 2 time split
+  tier2Stats?: {                          // Tier 2 batch shape + padding counts
+    stringCount: number; chunkCount: number; uniqueChunkCount: number;
+    realTokens: number; paddedTokens: number; // realTokens / paddedTokens = padding efficiency (1.0 = no waste)
+  };
+  coldLoad?: boolean;                     // True when this call loaded the ONNX model (cold start)
 }
 ```
 
