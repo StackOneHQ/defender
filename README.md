@@ -24,7 +24,9 @@
 
 ---
 
-Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and gates prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+
+Defender **does not rewrite your data**. It returns the original tool-result content together with an allow/block verdict (and optional boundary annotation); your code decides whether to forward it. This "detect-and-gate" model keeps benign data intact and avoids the false confidence of regex-based content redaction.
 
 ## Installation
 
@@ -68,12 +70,12 @@ if (!result.allowed) {
 
 ### Tier 1 — Pattern Detection (sync, ~1ms)
 
-Regex-based detection and sanitization:
-- **Unicode normalization** — prevents homoglyph attacks (Cyrillic 'а' → ASCII 'a')
-- **Role stripping** — removes `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
-- **Pattern removal** — redacts injection patterns like "ignore previous instructions"
-- **Encoding detection** — detects and handles Base64/URL encoded payloads
-- **Boundary annotation** — opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
+Regex-based detection that scores content and escalates risk — it does **not** rewrite the payload:
+- **Role markers** — detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
+- **Injection patterns** — detects phrases like "ignore previous instructions"
+- **Encoding** — detects Base64/URL/ROT/Morse-encoded payloads as a risk signal
+- **Unicode/leet normalization** — analysis-only (homoglyphs like Cyrillic 'а' → 'a', leetspeak) so obfuscated variants are still detected; the returned content is never normalized
+- **Boundary annotation** — opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it. This is the recommended structural mitigation.
 
 ### Tier 2 — ML Classification (async)
 
@@ -211,7 +213,7 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
   riskLevel: RiskLevel;                   // Diagnostic: tool base risk + detection escalation (see docs above)
-  sanitized: unknown;                     // The sanitized tool result
+  sanitized: unknown;                     // Tool result to forward — ORIGINAL content, optionally boundary-wrapped; never rewritten
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
   patternsByField: Record<string, string[]>; // Patterns per field

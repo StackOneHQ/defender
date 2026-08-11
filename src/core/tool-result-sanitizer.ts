@@ -9,7 +9,6 @@
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
 import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
 import { containsSuspiciousEncodingDeep } from "../sanitizers/encoding-detector";
-import { createSanitizer, type Sanitizer } from "../sanitizers/sanitizer";
 import type {
 	CumulativeRiskTracker,
 	DataBoundary,
@@ -22,7 +21,7 @@ import type {
 	SanitizationResult,
 	TraversalConfig,
 } from "../types";
-import { generateDataBoundary } from "../utils/boundary";
+import { generateDataBoundary, wrapWithBoundary } from "../utils/boundary";
 import { isRiskyField } from "../utils/field-detection";
 import {
 	createSizeMetrics,
@@ -111,12 +110,10 @@ export interface SanitizeToolResultOptions {
  */
 export class ToolResultSanitizer {
 	private config: ToolResultSanitizerConfig;
-	private sanitizer: Sanitizer;
 	private patternDetector: PatternDetector;
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.sanitizer = createSanitizer({ annotateBoundary: this.config.annotateBoundary });
 		this.patternDetector = createPatternDetector();
 	}
 
@@ -411,13 +408,15 @@ export class ToolResultSanitizer {
 			context.cumulativeRisk.totalFieldsProcessed++;
 		}
 
-		// Use Tier 1 classification if enabled
+		// Tier 1 detection (detect-and-gate: analyze only, never rewrite the
+		// field). Records detected patterns and escalates the field's risk
+		// level; the block/allow decision is made upstream from that risk level.
 		let tier1Patterns: string[] = [];
 		if (this.config.useTier1Classification) {
 			const classificationResult = this.patternDetector.analyze(value);
 
 			if (classificationResult.hasDetections) {
-				tier1Patterns = classificationResult.matches.map((m) => m.pattern);
+				tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
 
 				// Escalate risk based on classification
 				if (classificationResult.suggestedRisk === "critical") {
@@ -444,15 +443,12 @@ export class ToolResultSanitizer {
 			}
 		}
 
-		// Escalate risk when suspicious encoding is detected (ROT13, binary, Morse,
-		// HTML entities, ROT47, plus chained encodings like btoa(btoa(payload))).
-		// These encodings don't trigger Tier 1 patterns (no fast-filter keywords), so
-		// without this check, risk stays at the default "medium" and encoding detection
-		// in the sanitizer (Step 4, high-risk only) never runs.
-		// Uses the deep multi-level check so doubly-encoded payloads — where the outer
-		// layer decodes to another encoded blob with no visible keywords — are still
-		// caught. The deep check loops up to maxIterations (default 5) with an
-		// amplification guard, so cost stays bounded.
+		// Suspicious encoding is a detection-only risk signal (never redacted).
+		// ROT13/binary/Morse/HTML-entity/ROT47 and chained encodings don't trip
+		// the Tier 1 keyword patterns, so escalate risk here so the gate can act.
+		// Uses the deep multi-level check so doubly-encoded payloads — where the
+		// outer layer decodes to another encoded blob with no visible keywords —
+		// are still caught, bounded by the deep check's iteration/amplification guard.
 		let escalatedFromEncoding = false;
 		if (riskLevel !== "high" && riskLevel !== "critical") {
 			if (containsSuspiciousEncodingDeep(value)) {
@@ -464,12 +460,11 @@ export class ToolResultSanitizer {
 			}
 		}
 
-		// Block if high or critical and blocking is enabled
-		if (this.config.blockHighRisk && (riskLevel === "high" || riskLevel === "critical")) {
+		// Record detection metadata, sourced from the detector (not from mutation
+		// side-effects), so every detected pattern is reported — including
+		// medium-severity matches and matches found only on normalised text.
+		if (tier1Patterns.length > 0 || escalatedFromEncoding) {
 			metadata.fieldsSanitized.push(context.path);
-			// Record what triggered the block so DefenseResult.fieldsSanitized (which only
-			// counts active methods) and hasThreats see this as a real threat — otherwise
-			// an encoding-only escalation would keep `allowed: true` despite the redaction.
 			const methods: SanitizationMethod[] = [];
 			if (tier1Patterns.length > 0) methods.push("pattern_removal");
 			if (escalatedFromEncoding) methods.push("encoding_detection");
@@ -477,26 +472,14 @@ export class ToolResultSanitizer {
 			if (tier1Patterns.length > 0) {
 				metadata.patternsRemovedByField[context.path] = tier1Patterns;
 			}
-			return "[CONTENT BLOCKED FOR SECURITY]";
 		}
 
-		// Apply sanitization
-		const result = this.sanitizer.sanitize(value, {
-			riskLevel,
-			boundary: context.boundary,
-			fieldName: context.fieldName,
-		});
-
-		// Update metadata
-		if (result.methodsApplied.length > 0) {
-			metadata.fieldsSanitized.push(context.path);
-			metadata.methodsByField[context.path] = result.methodsApplied;
-			if (result.patternsRemoved.length > 0) {
-				metadata.patternsRemovedByField[context.path] = result.patternsRemoved;
-			}
-		}
-
-		return result.sanitized;
+		// Detect-and-gate: return the ORIGINAL content, never rewritten. Wrap it
+		// in boundary markers when annotation is enabled (structural
+		// data/instruction separation). Blocking is expressed upstream via
+		// `allowed: false` derived from the escalated risk level — not by
+		// mutating the field here.
+		return context.boundary ? wrapWithBoundary(value, context.boundary) : value;
 	}
 
 	// ==========================================================================
