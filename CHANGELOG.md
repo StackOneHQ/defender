@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/StackOneHQ/defender/compare/defender-v0.7.3...defender-v0.7.4) (2026-08-11)
+
+
+### Bug Fixes
+
+* **ENG-1536:** length-bucket Tier 2 batches to cut padding cost ([#82](https://github.com/StackOneHQ/defender/issues/82)) ([bba3dcb](https://github.com/StackOneHQ/defender/commit/bba3dcb5d8c4af9c7470a45b71d08c65525106d2))
+
 ## [0.7.3](https://github.com/StackOneHQ/defender/compare/defender-v0.7.2...defender-v0.7.3) (2026-07-22)
 
 
