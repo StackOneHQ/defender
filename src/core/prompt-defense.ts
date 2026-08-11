@@ -387,6 +387,12 @@ export interface PromptDefenseOptions {
  * }
  * ```
  */
+
+// Module-scoped so the "Tier 2 failed to load" warning fires once per process,
+// not once per instance — PromptDefense is constructed per-request in some hosts
+// (e.g. connect-sdk), where an instance flag would log at full request volume.
+let tier2UnavailableWarned = false;
+
 export class PromptDefense {
 	private config: PromptDefenseConfig;
 	private toolResultSanitizer: ToolResultSanitizer;
@@ -405,7 +411,6 @@ export class PromptDefense {
 	private tier3BlockThreshold: number | undefined = undefined;
 	private tier3MissingScoreWarned: boolean = false;
 	private tier2Required: boolean = false;
-	private tier2UnavailableWarned: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -561,8 +566,8 @@ export class PromptDefense {
 				`[defender] Tier 2 is required (requireTier2: true) but the model/runtime failed to load: ${msg}. Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers'.`,
 			);
 		}
-		if (!this.tier2UnavailableWarned) {
-			this.tier2UnavailableWarned = true;
+		if (!tier2UnavailableWarned) {
+			tier2UnavailableWarned = true;
 			console.warn(
 				`[defender] Tier 2 is enabled but the model/runtime failed to load — running WITHOUT ML classification (Tier 1 only). Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers', pass enableTier2:false to silence this, or requireTier2:true to fail closed. Reason: ${msg}`,
 			);

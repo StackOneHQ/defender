@@ -34,18 +34,26 @@ describe('H2 — Tier 2 availability (peer-dep / model load failure)', () => {
     expect(warn).toHaveBeenCalled();
   }, 30000);
 
-  it('warns only once per instance across multiple calls', async () => {
+  it('warns at most once per process, even across instances', async () => {
+    // The warn-once flag is module-scoped (not per-instance): hosts construct a
+    // fresh PromptDefense per request, so a per-instance flag would log at full
+    // request volume. Two instances + multiple calls must still warn <= once.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const defense = createPromptDefense({ tier2Config: BAD_MODEL });
+    const a = createPromptDefense({ tier2Config: BAD_MODEL });
+    const b = createPromptDefense({ tier2Config: BAD_MODEL });
 
-    for (let i = 0; i < 3; i++) {
-      await defense.defendToolResult({ content: `call ${i} with enough text to classify` }, 'docs_get');
+    for (const d of [a, b]) {
+      for (let i = 0; i < 2; i++) {
+        await d.defendToolResult({ content: `call ${i} with enough text to classify` }, 'docs_get');
+      }
     }
 
     const degradedWarnings = warn.mock.calls.filter((c) =>
       String(c[0]).includes('running WITHOUT ML classification'),
     );
-    expect(degradedWarnings).toHaveLength(1);
+    // Instance-scoped (the old bug) would warn twice; module-scoped warns <= once
+    // (0 if a prior test already tripped the process-wide flag).
+    expect(degradedWarnings.length).toBeLessThanOrEqual(1);
   }, 30000);
 
   it('fails closed when requireTier2 is set: defendToolResult throws', async () => {

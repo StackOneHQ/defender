@@ -187,6 +187,15 @@ Risk escalation from detections:
 | `high` | Injection patterns or suspicious encoding detected |
 | `critical` | Severe injection attempt with multiple high-severity indicators |
 
+### Migrating to 0.8 (detect-and-gate)
+
+0.8 stops rewriting tool-result content. `result.sanitized` now returns the **original** value (optionally boundary-wrapped) instead of a redacted/role-stripped copy; the block signal is `result.allowed` alone.
+
+- **If you gate on `result.allowed`** (block when `false`, otherwise forward the result) — no change needed. `sanitized` is still the value to forward when `allowed`.
+- **If you relied on `sanitized` being scrubbed** (passing it through even for risky-but-allowed content) — note that content is no longer redacted. For gray-band content (detected but below the block threshold), either enable **`annotateBoundary: true`** so untrusted content is wrapped as data, and/or tighten `blockHighRisk`/thresholds so genuinely risky content is **blocked** rather than forwarded.
+
+Detection, scoring, and the `allowed` decision are otherwise unchanged.
+
 ## API
 
 ### `createPromptDefense(options?)`
