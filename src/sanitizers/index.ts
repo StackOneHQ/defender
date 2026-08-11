@@ -3,7 +3,5 @@
  */
 
 export * from "./encoding-detector";
+export * from "./leet-normalizer";
 export * from "./normalizer";
-export * from "./pattern-remover";
-export * from "./role-stripper";
-export * from "./sanitizer";
