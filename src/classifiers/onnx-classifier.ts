@@ -17,6 +17,14 @@ import { fileURLToPath } from "node:url";
  * Exported so `Tier2Classifier` can read model-specific calibration defaults
  * from the model's `classifier_config.json` at construction time.
  */
+/** Padding accounting accumulated across a batched classification (see #6 telemetry). */
+export interface BatchTokenStats {
+	/** Sum of real (non-pad) tokens across all chunks. */
+	realTokens: number;
+	/** Sum of tokens actually run through ONNX, including padding. */
+	paddedTokens: number;
+}
+
 export function getDefaultModelPath(): string {
 	// Works for both CJS (__dirname) and ESM (import.meta.url)
 	let baseDir: string;
@@ -323,6 +331,13 @@ export class OnnxClassifier {
 	private static readonly MAX_BATCH_CHUNK = 32;
 
 	/**
+	 * Fixed pad widths (ascending) for Tier 2 batching. A string is padded to the
+	 * smallest bucket >= its token length, so its padded length — and thus its
+	 * quantized score — is a function of the string alone, not its batch peers.
+	 */
+	private static readonly PAD_BUCKETS = [32, 64, 128, 256];
+
+	/**
 	 * Classify multiple texts in batch, processing in chunks to bound memory.
 	 * Returns main-head scores only (back-compat). Use `classifyBatchPair()`
 	 * when aux scores are needed.
@@ -330,8 +345,8 @@ export class OnnxClassifier {
 	 * @param texts - Array of texts to classify
 	 * @returns Array of main-head sigmoid scores in [0, 1]
 	 */
-	async classifyBatch(texts: string[]): Promise<number[]> {
-		const pairs = await this.classifyBatchPair(texts);
+	async classifyBatch(texts: string[], stats?: BatchTokenStats): Promise<number[]> {
+		const pairs = await this.classifyBatchPair(texts, stats);
 		return pairs.map((p) => p.main);
 	}
 
@@ -342,32 +357,72 @@ export class OnnxClassifier {
 	 * @param texts - Array of texts to classify
 	 * @returns Array of `{ main, aux }`
 	 */
-	async classifyBatchPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
+	async classifyBatchPair(
+		texts: string[],
+		stats?: BatchTokenStats,
+	): Promise<Array<{ main: number; aux: number | null }>> {
 		if (texts.length === 0) return [];
 
 		await this.ensureLoaded();
 
-		const allPairs: Array<{ main: number; aux: number | null }> = [];
-
-		for (let offset = 0; offset < texts.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
-			const chunk = texts.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
-			const chunkPairs = await this.classifyBatchChunkPair(chunk);
-			allPairs.push(...chunkPairs);
+		// Group strings into fixed pad-width buckets by token length, then batch
+		// within each bucket and pad every row to the BUCKET width (not the batch
+		// max). This bounds padding waste — a lone long string no longer inflates a
+		// batch of short ones — and, unlike a plain length sort, makes a string's
+		// padded length (hence its quantized score) depend only on itself, never on
+		// its batch neighbours. Per-string verdicts become deterministic across
+		// payloads. Results scatter back to input order below.
+		const tokenized = texts.map((t) => this.tokenize(t));
+		const buckets = new Map<number, number[]>();
+		const lastBucket = OnnxClassifier.PAD_BUCKETS[OnnxClassifier.PAD_BUCKETS.length - 1];
+		for (let i = 0; i < tokenized.length; i++) {
+			const len = tokenized[i].inputIds.length;
+			const width = OnnxClassifier.PAD_BUCKETS.find((b) => len <= b) ?? lastBucket;
+			const group = buckets.get(width);
+			if (group) group.push(i);
+			else buckets.set(width, [i]);
 		}
 
-		return allPairs;
+		const pairs = new Array<{ main: number; aux: number | null }>(texts.length);
+		for (const width of OnnxClassifier.PAD_BUCKETS) {
+			const bucketIdxs = buckets.get(width);
+			if (!bucketIdxs) continue;
+			for (let offset = 0; offset < bucketIdxs.length; offset += OnnxClassifier.MAX_BATCH_CHUNK) {
+				const idxs = bucketIdxs.slice(offset, offset + OnnxClassifier.MAX_BATCH_CHUNK);
+				const chunk = idxs.map((i) => tokenized[i]);
+				if (stats) {
+					// Every row in the bucket pads to the bucket width; realTokens is
+					// the useful work, paddedTokens is what ONNX actually ran.
+					stats.paddedTokens += chunk.length * width;
+					for (const t of chunk) stats.realTokens += t.inputIds.length;
+				}
+				const chunkPairs = await this.classifyBatchChunkPair(chunk, width);
+				idxs.forEach((origIdx, k) => {
+					pairs[origIdx] = chunkPairs[k];
+				});
+			}
+		}
+
+		return pairs;
 	}
 
 	/**
-	 * Classify a single chunk of texts in one ONNX session.run() call.
+	 * Classify a single pre-tokenized chunk in one ONNX session.run() call.
 	 * Handles both single-head `[batch]`/`[batch, 1]` and multi-head `[batch, 2]`
-	 * outputs; the latter returns paired (main, aux) sigmoid scores.
+	 * outputs; the latter returns paired (main, aux) sigmoid scores. Inputs are
+	 * pre-tokenized so `classifyBatchPair` can length-bucket without re-tokenizing.
+	 *
+	 * `padTo` fixes the padded sequence length (the bucket width); rows are still
+	 * padded to at least the batch max so a caller can never under-pad.
 	 */
-	private async classifyBatchChunkPair(texts: string[]): Promise<Array<{ main: number; aux: number | null }>> {
-		const tokenized = texts.map((t) => this.tokenize(t));
-		const maxLen = Math.max(...tokenized.map((t) => t.inputIds.length));
+	private async classifyBatchChunkPair(
+		tokenized: Array<{ inputIds: BigInt64Array; attentionMask: BigInt64Array }>,
+		padTo?: number,
+	): Promise<Array<{ main: number; aux: number | null }>> {
+		const actualMax = Math.max(...tokenized.map((t) => t.inputIds.length));
+		const maxLen = padTo !== undefined ? Math.max(padTo, actualMax) : actualMax;
 
-		const batchSize = texts.length;
+		const batchSize = tokenized.length;
 		const batchInputIds = new BigInt64Array(batchSize * maxLen);
 		const batchAttentionMask = new BigInt64Array(batchSize * maxLen);
 

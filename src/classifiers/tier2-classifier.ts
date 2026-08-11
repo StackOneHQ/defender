@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 
 import type { Tier2Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
-import { getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
+import { type BatchTokenStats, getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
 
 /**
  * Subset of the bundled model's `classifier_config.json` that defender cares
@@ -585,10 +585,10 @@ export class Tier2Classifier {
 	 * ONNX call. Used by the per-string batching path in `defendToolResult`
 	 * to amortise per-call thread-spin-up over many chunks.
 	 */
-	async classifyChunksBatch(chunks: string[]): Promise<number[]> {
+	async classifyChunksBatch(chunks: string[], stats?: BatchTokenStats): Promise<number[]> {
 		if (chunks.length === 0) return [];
 		await this.onnxClassifier.warmup();
-		return this.onnxClassifier.classifyBatch(chunks);
+		return this.onnxClassifier.classifyBatch(chunks, stats);
 	}
 
 	/**
@@ -596,10 +596,13 @@ export class Tier2Classifier {
 	 * scores per chunk. For single-head models, `aux` is `null` per row.
 	 * Callers in the multi-head path use the aux scores to apply the veto rule.
 	 */
-	async classifyChunksBatchPair(chunks: string[]): Promise<Array<{ main: number; aux: number | null }>> {
+	async classifyChunksBatchPair(
+		chunks: string[],
+		stats?: BatchTokenStats,
+	): Promise<Array<{ main: number; aux: number | null }>> {
 		if (chunks.length === 0) return [];
 		await this.onnxClassifier.warmup();
-		return this.onnxClassifier.classifyBatchPair(chunks);
+		return this.onnxClassifier.classifyBatchPair(chunks, stats);
 	}
 
 	/**
