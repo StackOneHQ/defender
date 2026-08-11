@@ -234,7 +234,12 @@ export class Tier2Classifier {
 		const analysisText = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
 
 		try {
-			const score = await this.onnxClassifier.classify(analysisText);
+			// Guard against a NaN/non-finite logit (matches the batch/sentence/chunk
+			// paths). Without this, NaN → score NaN with skipped:false → getRiskLevel
+			// buckets it "low" and isInjection is false, silently treating a broken
+			// model output as benign.
+			const raw = await this.onnxClassifier.classify(analysisText);
+			const score = Number.isFinite(raw) ? raw : 0;
 			const confidence = Math.abs(score - 0.5) * 2;
 
 			return {

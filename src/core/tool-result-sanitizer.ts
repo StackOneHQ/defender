@@ -37,6 +37,9 @@ import {
 	updateSizeMetrics,
 } from "../utils/structure";
 
+/** Risk levels in ascending order, for max-comparison. */
+const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
+
 /**
  * Configuration for the tool result sanitizer
  */
@@ -49,8 +52,6 @@ export interface ToolResultSanitizerConfig {
 	defaultRiskLevel: RiskLevel;
 	/** Whether to use Tier 1 classification */
 	useTier1Classification: boolean;
-	/** Whether to block high/critical risk entirely */
-	blockHighRisk: boolean;
 	/**
 	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
 	 * markers. Default: false. When disabled, boundary generation is skipped
@@ -79,9 +80,8 @@ export interface ToolResultSanitizerConfig {
 export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	riskyFields: DEFAULT_RISKY_FIELDS,
 	traversal: DEFAULT_TRAVERSAL_CONFIG,
-	defaultRiskLevel: "medium",
+	defaultRiskLevel: "low",
 	useTier1Classification: true,
-	blockHighRisk: false,
 	annotateBoundary: false,
 	maxFieldAnalysisLength: DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
 	cumulativeRiskThresholds: {
@@ -177,10 +177,12 @@ export class ToolResultSanitizer {
 		// Sanitize the value
 		const sanitized = this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
 
-		// Check if cumulative risk requires escalation
+		// Check if cumulative risk requires escalation (fragmented attack across
+		// many fields). Raise (max) rather than overwrite so it can't downgrade a
+		// per-field `critical` back to `high`.
 		if (this.shouldEscalate(cumulativeRisk)) {
 			metadata.cumulativeRiskEscalated = true;
-			metadata.overallRiskLevel = "high";
+			this.raiseOverallRisk(metadata, "high");
 		}
 
 		metadata.totalLatencyMs = performance.now() - startTime;
@@ -478,6 +480,12 @@ export class ToolResultSanitizer {
 			}
 		}
 
+		// Propagate this field's (possibly escalated) risk into the overall
+		// result risk. Raising per field lets a single `critical` field surface
+		// as `critical` overall — cumulative escalation alone only reaches `high`.
+		// No-op for benign fields (risk stays at the "low" default).
+		this.raiseOverallRisk(metadata, riskLevel);
+
 		// Record detection metadata, sourced from the detector (not from mutation
 		// side-effects), so every detected pattern is reported — including
 		// medium-severity matches and matches found only on normalised text.
@@ -538,6 +546,7 @@ export class ToolResultSanitizer {
 		metadata.fieldsSanitized.push(path);
 		metadata.methodsByField[path] = methods;
 		metadata.patternsRemovedByField[path] = patterns;
+		this.raiseOverallRisk(metadata, result.suggestedRisk);
 		if (context.cumulativeRisk) {
 			context.cumulativeRisk.totalFieldsProcessed++;
 			this.updateCumulativeRisk(context.cumulativeRisk, result.suggestedRisk, patterns);
@@ -612,6 +621,17 @@ export class ToolResultSanitizer {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Raise `metadata.overallRiskLevel` to `level` if `level` is higher —
+	 * never lowers it. Keeps the overall result risk as the max of every
+	 * per-field risk and any cumulative escalation.
+	 */
+	private raiseOverallRisk(metadata: SanitizationMetadata, level: RiskLevel): void {
+		if (RISK_ORDER.indexOf(level) > RISK_ORDER.indexOf(metadata.overallRiskLevel)) {
+			metadata.overallRiskLevel = level;
+		}
 	}
 
 	/**

@@ -433,9 +433,8 @@ export class PromptDefense {
 		this.toolResultSanitizer = createToolResultSanitizer({
 			riskyFields: this.config.riskyFields,
 			traversal: this.config.traversal,
-			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
+			defaultRiskLevel: options.defaultRiskLevel ?? "low",
 			useTier1Classification: options.enableTier1 ?? true,
-			blockHighRisk: options.blockHighRisk ?? false,
 			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
