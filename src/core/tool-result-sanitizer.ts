@@ -230,9 +230,17 @@ export class ToolResultSanitizer {
 			return this.sanitizeArray(value, context, metadata, depth, detect);
 		}
 
-		// Handle objects
+		// Handle objects. Only PLAIN objects are traversed/rebuilt — they round-trip
+		// faithfully through Object.entries. Non-plain objects (Date, Map, Set,
+		// Buffer, RegExp, class instances) have no enumerable string fields either
+		// tier scans, and a rebuild would corrupt them (e.g. `new Date()` -> `{}`).
+		// Detect-and-gate returns the original value, so pass them through unchanged.
 		if (typeof value === "object") {
-			return this.sanitizeObject(value as Record<string, SanitizableValue>, context, metadata, depth, detect);
+			const proto = Object.getPrototypeOf(value);
+			if (proto === Object.prototype || proto === null) {
+				return this.sanitizeObject(value as Record<string, SanitizableValue>, context, metadata, depth, detect);
+			}
+			return value;
 		}
 
 		// Primitives (non-string) pass through
