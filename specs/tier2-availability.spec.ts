@@ -12,6 +12,13 @@ afterEach(() => {
 });
 
 describe('H2 — Tier 2 availability (peer-dep / model load failure)', () => {
+  it('omits tier2Available when Tier 2 is disabled (docstring: absent, not undefined)', async () => {
+    const defense = createPromptDefense({ enableTier2: false });
+    const result = await defense.defendToolResult({ content: 'benign text long enough to classify' }, 'docs_get');
+    // Consumers may use `'tier2Available' in result` as a "did Tier 2 load" probe.
+    expect('tier2Available' in result).toBe(false);
+  }, 30000);
+
   it('fails open by default: degraded flag + skipReason, still gates on Tier 1', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const defense = createPromptDefense({

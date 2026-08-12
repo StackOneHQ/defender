@@ -1217,7 +1217,7 @@ export class PromptDefense {
 			tier2AuxScore,
 			tier2MultiheadBlocked,
 			tier2SkipReason,
-			tier2Available,
+			...(tier2Available !== undefined ? { tier2Available } : {}),
 			maxSentence,
 			fieldsDropped,
 			// Conditionally include the `tier3` key so consumers can use
