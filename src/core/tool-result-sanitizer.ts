@@ -174,8 +174,14 @@ export class ToolResultSanitizer {
 			riskyFieldNames: [],
 		};
 
-		// Sanitize the value
-		const sanitized = this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
+		// Sanitize the value. A top-level string IS the entire tool result, so run
+		// Tier 1 detection on it directly — sanitizeValue's recursion only scans
+		// strings under risky object fields, so a bare-string result would
+		// otherwise skip Tier 1 entirely (a real gap when Tier 2 is off/unavailable).
+		const sanitized =
+			typeof value === "string"
+				? this.sanitizeStringField(value, context, metadata, true)
+				: this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
 
 		// Check if cumulative risk requires escalation (fragmented attack across
 		// many fields). Raise (max) rather than overwrite so it can't downgrade a
@@ -563,6 +569,9 @@ export class ToolResultSanitizer {
 		if (!this.config.useTier1Classification || key.length < 3) return;
 		const cap = this.config.maxFieldAnalysisLength;
 		const analysisKey = key.length > cap ? key.slice(0, cap) : key;
+		// Flag reduced coverage (surfaced as coverageDegraded), matching the value
+		// path — an injection hidden past the cap in a key is unscanned.
+		if (key.length > cap) metadata.analysisTruncated = true;
 		const result = this.patternDetector.analyze(analysisKey);
 		if (!result.hasDetections || result.matches.length === 0) return;
 
