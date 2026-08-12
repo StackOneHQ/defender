@@ -290,6 +290,16 @@ describe('PromptDefense', () => {
       expect(typeof result.coldLoad).toBe('boolean');
     }, 60000);
 
+    it.skipIf(!!process.env.CI)('reports coldLoad true on the first call, false after warmup', async () => {
+      // Regression: coldLoad was sampled after prepareChunks warmed the model, so
+      // it was always false. It must reflect whether THIS call loaded the model.
+      const defense = createPromptDefense({});
+      const first = await defense.defendToolResult({ content: 'first call with enough text to classify' }, 'docs_get');
+      const second = await defense.defendToolResult({ content: 'second call with enough text to classify' }, 'docs_get');
+      expect(first.coldLoad).toBe(true);
+      expect(second.coldLoad).toBe(false);
+    }, 60000);
+
     it.skipIf(!!process.env.CI)('omits Tier 2 telemetry when Tier 2 scores nothing', async () => {
       // All strings skipped (too short to classify) → no batched inference ran,
       // so phaseTimings/tier2Stats/coldLoad must be absent (present only on a

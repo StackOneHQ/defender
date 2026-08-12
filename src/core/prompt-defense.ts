@@ -791,6 +791,11 @@ export class PromptDefense {
 				// the narrowing from the surrounding `if (this.tier2Classifier)`.
 				const tier2 = this.tier2Classifier;
 
+				// Sample cold-start state BEFORE prepareChunks — it calls warmup() and
+				// loads the model, after which isReady() is always true, so sampling
+				// later (as coldLoad did) would never report a real cold start.
+				const wasCold = !tier2.isReady();
+
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
 				const tPrepStart = performance.now();
@@ -820,8 +825,7 @@ export class PromptDefense {
 					// propagating out of defendToolResult (matches the old
 					// classifyByChunks contract).
 					const tInferStart = performance.now();
-					// Cold start iff the model is not yet loaded when inference begins.
-					coldLoad = !this.tier2Classifier.isReady();
+					coldLoad = wasCold;
 					const padding = { realTokens: 0, paddedTokens: 0 };
 
 					// Dedupe before inference: identical chunk strings score identically
