@@ -13,7 +13,7 @@ import {
 	DEFAULT_RISKY_FIELDS,
 	DEFAULT_TRAVERSAL_CONFIG,
 } from "../config";
-import { containsSuspiciousEncodingDeep } from "../sanitizers/encoding-detector";
+import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import type {
 	CumulativeRiskTracker,
 	DataBoundary,
@@ -494,19 +494,29 @@ export class ToolResultSanitizer {
 				}
 			}
 
-			// Suspicious encoding is a detection-only risk signal (never redacted).
-			// ROT13/binary/Morse/HTML-entity/ROT47 and chained encodings don't trip
-			// the Tier 1 keyword patterns, so escalate risk here so the gate can act.
-			// Uses the deep multi-level check so doubly-encoded payloads — where the
-			// outer layer decodes to another encoded blob with no visible keywords —
-			// are still caught, bounded by the deep check's iteration/amplification guard.
+			// Suspicious encoding is EVIDENCE-DRIVEN. An encoded blob (base64/ROT13/
+			// Morse/hex/HTML-entity/etc., including chained encodings) hides content
+			// from the Tier 1 scan above, so decode it and re-run the REAL pattern
+			// detector on the decoded text. Escalate only if the DECODED content trips
+			// an actual attack pattern — never on generic keywords. This is what makes
+			// a benign base64 body (e.g. a Gmail message that merely contains the word
+			// "ignore") NOT a false positive, while a base64-wrapped injection still
+			// escalates, with its real patterns reported in `detections`.
 			let escalatedFromEncoding = false;
-			if (riskLevel !== "high" && riskLevel !== "critical") {
-				if (containsSuspiciousEncodingDeep(analysisValue)) {
-					riskLevel = "high";
-					escalatedFromEncoding = true;
-					if (context.cumulativeRisk) {
-						this.updateCumulativeRisk(context.cumulativeRisk, riskLevel, []);
+			if (this.config.useTier1Classification) {
+				const { text: decoded, levels } = decodeAllLevels(analysisValue);
+				if (levels > 0 && decoded !== analysisValue) {
+					const encResult = this.patternDetector.analyze(decoded);
+					if (encResult.hasDetections && encResult.matches.length > 0) {
+						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
+						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
+						escalatedFromEncoding = true;
+						if (encResult.suggestedRisk === "critical") riskLevel = "critical";
+						else if (encResult.suggestedRisk === "high" && riskLevel !== "critical") riskLevel = "high";
+						else if (encResult.suggestedRisk === "medium" && riskLevel === "low") riskLevel = "medium";
+						if (context.cumulativeRisk) {
+							this.updateCumulativeRisk(context.cumulativeRisk, encResult.suggestedRisk, encPatterns);
+						}
 					}
 				}
 			}
