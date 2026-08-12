@@ -842,6 +842,10 @@ export class PromptDefense {
 			// "Tier 2 unavailable" — distinct from benign per-string skips — so
 			// surface `tier2Available: false` for monitoring and honor
 			// requireTier2 (handleTier2Unavailable throws when it is set).
+			// Sample cold-start state BEFORE warmup loads the model — otherwise
+			// isReady() is always true by the time we check and coldLoad (set below)
+			// never reports a real cold start.
+			const wasCold = !this.tier2Classifier.isReady();
 			let tier2Ready = true;
 			try {
 				await this.tier2Classifier.warmup();
@@ -878,11 +882,6 @@ export class PromptDefense {
 				// Capture a non-null local so the map callback below doesn't lose
 				// the narrowing from the surrounding `if (this.tier2Classifier)`.
 				const tier2 = this.tier2Classifier;
-
-				// Sample cold-start state BEFORE prepareChunks — it calls warmup() and
-				// loads the model, after which isReady() is always true, so sampling
-				// later (as coldLoad did) would never report a real cold start.
-				const wasCold = !tier2.isReady();
 
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
