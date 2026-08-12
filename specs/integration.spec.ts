@@ -389,6 +389,36 @@ describe('coverage reporting — defender surfaces when it could not fully scan'
   });
 });
 
+// These exercise the real Tier 2 path (model load), so skipped on CI runners.
+describe.skipIf(!!process.env.CI)('skip-reason reporting — defender explains why Tier 2 did not run', () => {
+  it('reports "No strings extracted" when the payload has no strings', async () => {
+    const defense = createPromptDefense({ blockHighRisk: true });
+    const result = await defense.defendToolResult({ count: 42, ok: true }, 'docs_get');
+    expect(result.tier2SkipReason).toBe('No strings extracted from tool result');
+  }, 60000);
+
+  it('reports "No strings found in tier2Fields" when the restricted field is absent', async () => {
+    const defense = createPromptDefense({ tier2Fields: ['nonexistent_field'] });
+    const result = await defense.defendToolResult({ content: 'some real text here to classify' }, 'docs_get');
+    expect(result.tier2SkipReason).toBe('No strings found in tier2Fields');
+  }, 60000);
+
+  it('reports the aggregated per-string reason when all strings are too short', async () => {
+    const defense = createPromptDefense({ blockHighRisk: true });
+    const result = await defense.defendToolResult({ a: 'hi', b: 'yo', c: 'no' }, 'docs_get');
+    expect(result.tier2SkipReason).toContain('All strings skipped by classifier');
+    expect(result.tier2SkipReason).toContain('Text below minTextLength');
+  }, 60000);
+
+  it('flags truncatedAtDepth on a payload nested past the traversal limit', async () => {
+    const defense = createPromptDefense({});
+    let deep: unknown = 'deep string content to analyze';
+    for (let i = 0; i < 150; i++) deep = { nested: deep };
+    const result = await defense.defendToolResult(deep, 'docs_get');
+    expect(result.truncatedAtDepth).toBe(true);
+  }, 60000);
+});
+
 describe('H6 — large arrays are never truncated', () => {
   it('preserves every item in a large array and flags degraded coverage', async () => {
     const defense = createPromptDefense({ enableTier2: false });
