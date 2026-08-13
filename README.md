@@ -210,7 +210,7 @@ const defense = createPromptDefense({
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
-  defaultRiskLevel: 'medium',
+  defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
   enableTier3: false,           // (default: false)
@@ -231,7 +231,7 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 ```typescript
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
-  riskLevel: RiskLevel;                   // Diagnostic: tool base risk + detection escalation (see docs above)
+  riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
   sanitized: unknown;                     // Tool result to forward — ORIGINAL content, optionally boundary-wrapped; never rewritten
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
