@@ -393,7 +393,13 @@ export class ToolResultSanitizer {
 			};
 
 			if (dataKeys.has(key) && Array.isArray(val)) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, entryDetect);
+				result[key] = this.sanitizeArray(
+					val as SanitizableValue[],
+					fieldContext,
+					metadata,
+					depth + 1,
+					entryDetect,
+				);
 			} else {
 				// Recurse into non-data fields so nested dangerous keys are filtered too
 				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
@@ -437,7 +443,13 @@ export class ToolResultSanitizer {
 			// Check if this is the data wrapper
 			const wrappedData = getWrappedData({ [key]: val });
 			if (wrappedData) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, entryDetect);
+				result[key] = this.sanitizeArray(
+					val as SanitizableValue[],
+					fieldContext,
+					metadata,
+					depth + 1,
+					entryDetect,
+				);
 			} else {
 				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
