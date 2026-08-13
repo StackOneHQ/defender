@@ -556,8 +556,8 @@ export class PromptDefense {
 	/**
 	 * Central handling for "Tier 2 enabled but the model/runtime failed to load"
 	 * (e.g. missing optional peer deps). Throws when `requireTier2` is set
-	 * (fail-closed); otherwise warns once per instance and returns so the caller
-	 * can continue Tier-1-only (fail-open).
+	 * (fail-closed); otherwise warns once per process (the warn flag is
+	 * module-scoped) and returns so the caller can continue Tier-1-only (fail-open).
 	 */
 	private handleTier2Unavailable(err: unknown): void {
 		const msg = err instanceof Error ? err.message : String(err);

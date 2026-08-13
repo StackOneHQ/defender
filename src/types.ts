@@ -287,11 +287,11 @@ export interface SanitizationResult<T = unknown> {
  * Metadata about sanitization for logging/observability
  */
 export interface SanitizationMetadata {
-	/** Fields that were sanitized */
+	/** Fields where Tier 1 detected a threat (detect-and-gate: content is not modified) */
 	fieldsSanitized: string[];
-	/** Methods applied per field */
+	/** Detection methods that fired per field (nothing is applied/rewritten) */
 	methodsByField: Record<string, SanitizationMethod[]>;
-	/** Patterns removed per field */
+	/** Patterns detected per field (detected, not removed — content is preserved) */
 	patternsRemovedByField: Record<string, string[]>;
 	/** Final risk level for the entire result */
 	overallRiskLevel: RiskLevel;
