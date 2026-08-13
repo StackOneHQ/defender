@@ -69,15 +69,13 @@ describe('SFE preprocessor', () => {
     });
 
     it('handles a very wide payload without overflowing (ENG-1779)', async () => {
-      // 200k leaf fields: the old `out.push(...extractFields(...))` spread
-      // exceeded the JS argument-count limit and threw ("Maximum call stack
-      // size exceeded"). The despread loop must handle any width.
+      // Old `out.push(...)` spread overflowed the argument-count limit and threw;
+      // the loop version must handle any width.
       const wide: Record<string, string> = {};
       for (let i = 0; i < 200_000; i++) wide[`f${i}`] = `value ${i}`;
 
       const result = await sfePreprocess({ data: wide }, { predictor: mockPredictor() });
 
-      // No throw, and every field survives (mock drops none of these).
       expect(Object.keys((result.filtered as any).data)).toHaveLength(200_000);
     }, 30000);
 
