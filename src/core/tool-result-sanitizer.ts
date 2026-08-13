@@ -273,9 +273,7 @@ export class ToolResultSanitizer {
 		// behavior returned only the first 100 items plus a notice), and the
 		// reduced detection coverage is flagged via `analysisTruncated`. Tier 2
 		// still scans every string via its own walk.
-		const isLarge = this.config.traversal.skipLargeArrays && arr.length > this.config.traversal.largeArrayThreshold;
-		const scanLimit = isLarge ? Math.min(100, arr.length) : arr.length;
-		if (isLarge && scanLimit < arr.length) metadata.analysisTruncated = true;
+		const scanLimit = this.detectionScanLimit(arr.length, metadata);
 
 		return arr.map((item, index) => {
 			const itemContext = {
@@ -284,6 +282,20 @@ export class ToolResultSanitizer {
 			};
 			return this.sanitizeValue(item, itemContext, metadata, depth + 1, detect && index < scanLimit);
 		});
+	}
+
+	/**
+	 * Detection scan limit for a container of `size` entries. Bounds Tier 1
+	 * DETECTION cost on very wide arrays/objects: entries past the limit are still
+	 * traversed (structure, prototype-pollution stripping, Tier 2's own walk) —
+	 * only their per-entry Tier 1 analysis is skipped. Flags `analysisTruncated`
+	 * when it caps so the coverage loss is surfaced.
+	 */
+	private detectionScanLimit(size: number, metadata: SanitizationMetadata): number {
+		const isLarge = this.config.traversal.skipLargeArrays && size > this.config.traversal.largeArrayThreshold;
+		const limit = isLarge ? Math.min(100, size) : size;
+		if (isLarge && limit < size) metadata.analysisTruncated = true;
+		return limit;
 	}
 
 	/**
@@ -309,12 +321,17 @@ export class ToolResultSanitizer {
 			return this.sanitizeWrappedResponse(obj, context, metadata, depth, detect);
 		}
 
-		// Regular object - process each field
+		// Regular object - process each field. Wide objects bound Tier 1 detection
+		// past `scanLimit` (see `detectionScanLimit`); entries are still traversed.
 		const result: Record<string, SanitizableValue> = {};
+		const entries = Object.entries(obj);
+		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && index < scanLimit;
 			// Prototype-pollution key stripping is a STRUCTURAL protection — always
-			// applied, even when detection is skipped (detect=false).
+			// applied, even when detection is skipped.
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
@@ -322,7 +339,7 @@ export class ToolResultSanitizer {
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			// Detect injection hidden in the key itself (never rewritten).
-			if (detect) this.detectInKey(key, fieldPath, context, metadata);
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -331,11 +348,11 @@ export class ToolResultSanitizer {
 
 			// Check if this is a risky field that needs sanitization
 			if (this.isFieldRisky(key, context.toolName) && typeof val === "string") {
-				if (detect) metadata.riskyFieldNames.push(key);
-				result[key] = this.sanitizeStringField(val, fieldContext, metadata, detect);
+				if (entryDetect) metadata.riskyFieldNames.push(key);
+				result[key] = this.sanitizeStringField(val, fieldContext, metadata, entryDetect);
 			} else {
 				// Recurse into non-risky fields
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, detect);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
@@ -354,8 +371,12 @@ export class ToolResultSanitizer {
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
 		const dataKeys = new Set(["data", "results", "items", "records"]);
+		const entries = Object.entries(obj);
+		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && index < scanLimit;
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
@@ -364,7 +385,7 @@ export class ToolResultSanitizer {
 
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			// Detect injection hidden in the key itself (never rewritten).
-			if (detect) this.detectInKey(key, fieldPath, context, metadata);
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -372,10 +393,10 @@ export class ToolResultSanitizer {
 			};
 
 			if (dataKeys.has(key) && Array.isArray(val)) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, detect);
+				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, entryDetect);
 			} else {
 				// Recurse into non-data fields so nested dangerous keys are filtered too
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, detect);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
@@ -393,8 +414,12 @@ export class ToolResultSanitizer {
 		detect: boolean = true,
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
+		const entries = Object.entries(obj);
+		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && index < scanLimit;
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
@@ -402,7 +427,7 @@ export class ToolResultSanitizer {
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
 			// Detect injection hidden in the key itself (never rewritten).
-			if (detect) this.detectInKey(key, fieldPath, context, metadata);
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -412,9 +437,9 @@ export class ToolResultSanitizer {
 			// Check if this is the data wrapper
 			const wrappedData = getWrappedData({ [key]: val });
 			if (wrappedData) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, detect);
+				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1, entryDetect);
 			} else {
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, detect);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
