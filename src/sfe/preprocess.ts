@@ -193,10 +193,8 @@ function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", dep
 		return [];
 	}
 	const out: Field[] = [];
-	// Push child fields one at a time, not `out.push(...childFields)`: a wide
-	// payload (e.g. a 200k-field response) makes the spread exceed the JS
-	// argument-count limit and throw (reported as "Maximum call stack size
-	// exceeded"). A loop has no such cap.
+	// Push one at a time, not `out.push(...children)`: a wide payload overflows
+	// the JS argument-count limit and throws. A loop has no such cap.
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
