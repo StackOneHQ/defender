@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { normalizeUnicode } from "../sanitizers/normalizer";
 import type { Tier2Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
 import { type BatchTokenStats, getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
@@ -715,15 +716,17 @@ export class Tier2Classifier {
 	 */
 	/**
 	 * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload).
-	 * Strips spoofed boundary markers, then collapses decorative runs — 4+ repeats
-	 * of the same non-word char (box-drawing `─`, `===`, `---`, `###`) down to 3.
-	 * Decorative chars like `─` (U+2500) tokenize one-token-per-char, so a rule
-	 * line becomes ~85% one repeated token; under mean pooling the pooled vector
-	 * lands off-distribution and the head returns an arbitrary (often high) score.
+	 * NFKC-folds unicode (fullwidth / math-styled variants → ASCII) so obfuscated
+	 * attacks tokenize as real words instead of `[UNK]`; then strips spoofed
+	 * boundary markers and collapses decorative runs — 4+ repeats of the same
+	 * non-word char (box-drawing `─`, `===`, `---`, `###`) down to 3. Decorative
+	 * chars like `─` (U+2500) tokenize one-token-per-char, so a rule line becomes
+	 * ~85% one repeated token; under mean pooling the pooled vector lands
+	 * off-distribution and the head returns an arbitrary (often high) score.
 	 * No meaning lives in the 40th consecutive `─`. (ENG: Class-B chunking FP.)
 	 */
 	private normalizeForClassification(text: string): string {
-		return stripBoundaryPatterns(text).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
+		return stripBoundaryPatterns(normalizeUnicode(text)).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
 	}
 
 	private splitIntoSentences(text: string): string[] {
