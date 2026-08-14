@@ -127,6 +127,16 @@ export interface Tier2ClassifierConfig {
 	 * callers should not set this.
 	 */
 	temperatureT?: number;
+	/**
+	 * Token-degeneracy (OOD) guard threshold (default 2/3). A chunk is dropped
+	 * from Tier 2 scoring (its mean-pooled score is arbitrary off-distribution)
+	 * only when its most-frequent content token covers >= this share AND it uses
+	 * few distinct tokens — repeated rule/box chars, base64/hex. The distinct-
+	 * token floor keeps the share test from being padded around (an attack buried
+	 * under many repeated tokens is NOT damped). Tier 1 still catches literal and
+	 * (via decode) encoded attacks. Set > 1 to disable.
+	 */
+	degeneracyMaxTokenShare: number;
 }
 
 /**
@@ -137,6 +147,7 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
 	mediumRiskThreshold: 0.5,
 	minTextLength: 10,
 	maxTextLength: 10000,
+	degeneracyMaxTokenShare: 2 / 3,
 };
 
 /**
@@ -183,7 +194,11 @@ export class Tier2Classifier {
 		// dropping calibration back to T=1.
 		const definedConfig = Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined));
 		this.config = { ...merged, ...definedConfig };
-		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath, this.config.temperatureT);
+		this.onnxClassifier = new OnnxClassifier(
+			this.config.onnxModelPath,
+			this.config.temperatureT,
+			this.config.degeneracyMaxTokenShare,
+		);
 	}
 
 	/**

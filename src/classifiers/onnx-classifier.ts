@@ -140,7 +140,44 @@ export class OnnxClassifier {
 	 */
 	private temperatureT = 1.0;
 
-	constructor(modelPath?: string, temperatureT?: number) {
+	/**
+	 * Token-degeneracy (OOD) guard threshold. A tokenized input whose single
+	 * most-frequent content token (excluding [CLS]/[SEP]) covers >= this share
+	 * of its content tokens is off-distribution — repeated box-drawing/rule
+	 * runs, base64/hex — where the mean-pooled score is unreliable (a bare rule
+	 * outscores a real injection). Such rows are damped to a benign 0 rather
+	 * than trusted. Set > 1 to disable. See `isDegenerate`.
+	 */
+	private degeneracyMaxTokenShare = 2 / 3;
+
+	/**
+	 * Cached [UNK] token id, resolved lazily from the loaded tokenizer.
+	 * `undefined` = not yet probed; `null` = tokenizer has no [UNK] concept
+	 * (e.g. byte-fallback). Used by the degeneracy guard to refuse to damp
+	 * [UNK]-dominant rows.
+	 */
+	private unkTokenId: bigint | null | undefined = undefined;
+
+	/**
+	 * Below this many content tokens, token-share is too coarse to mean anything
+	 * (a 1-2 token row is trivially "dominated"). Matches the shortest decorative
+	 * run that still false-fires post-normalization (`─`×3 -> 3 content tokens).
+	 */
+	private static readonly DEGENERACY_MIN_CONTENT_TOKENS = 3;
+
+	/**
+	 * Damp only when the row draws on at most this many DISTINCT content tokens.
+	 * The share test alone is gameable: padding an attack with N copies of any
+	 * repeated token (`---` runs, or even the word "the") pushes maxTokenShare
+	 * past 2/3 and would damp the whole row to 0 — an attacker-reachable Tier-2
+	 * bypass. But padding can only ADD vocabulary; it can't remove the attack's
+	 * own. Genuine decoration uses 1-2 distinct tokens; a prompt injection needs
+	 * far more to express itself. This floor is structural, not tuned — it's a
+	 * property of what the two kinds of input are, so it can't be padded around.
+	 */
+	private static readonly DEGENERACY_MAX_DISTINCT_TOKENS = 4;
+
+	constructor(modelPath?: string, temperatureT?: number, degeneracyMaxTokenShare?: number) {
 		this.modelPath = modelPath ?? getDefaultModelPath();
 		if (temperatureT !== undefined) {
 			// T must be a positive finite number — calibration with T <= 0 is
@@ -152,6 +189,82 @@ export class OnnxClassifier {
 			}
 			this.temperatureT = temperatureT;
 		}
+		if (degeneracyMaxTokenShare !== undefined && Number.isFinite(degeneracyMaxTokenShare)) {
+			this.degeneracyMaxTokenShare = degeneracyMaxTokenShare;
+		}
+	}
+
+	/**
+	 * Token-degeneracy (OOD) test over a tokenized row. Damps only when ALL of
+	 * these hold over the content tokens (excluding [CLS]/[SEP]):
+	 *   1. the single most-frequent token covers >= `degeneracyMaxTokenShare`,
+	 *   2. the row draws on <= `DEGENERACY_MAX_DISTINCT_TOKENS` distinct tokens, and
+	 *   3. the dominant token is NOT [UNK].
+	 * Factor 2 blocks a padding attack (see `DEGENERACY_MAX_DISTINCT_TOKENS`).
+	 * Factor 3 blocks a homoglyph attack: fullwidth / zero-width / other OOV
+	 * characters all collapse to repeated [UNK], which satisfies 1 and 2 but is
+	 * the signature of encoding evasion — MORE suspicious than average, not less.
+	 * Damping it would suppress the attack (and Tier 1 is often silent on the raw
+	 * OOV form), so [UNK]-dominant rows are left to score. Reuses the ids the
+	 * model would run on — no extra tokenization pass.
+	 */
+	private isDegenerate(inputIds: BigInt64Array): boolean {
+		const threshold = this.degeneracyMaxTokenShare;
+		if (!(threshold > 0 && threshold <= 1)) return false; // disabled
+		const hasSpecials = inputIds.length >= 2;
+		const start = hasSpecials ? 1 : 0;
+		const end = hasSpecials ? inputIds.length - 1 : inputIds.length;
+		const n = end - start;
+		if (n < OnnxClassifier.DEGENERACY_MIN_CONTENT_TOKENS) return false;
+		const counts = new Map<bigint, number>();
+		let maxFreq = 0;
+		let dominantId = 0n;
+		for (let i = start; i < end; i++) {
+			const id = inputIds[i];
+			const c = (counts.get(id) ?? 0) + 1;
+			counts.set(id, c);
+			if (c > maxFreq) {
+				maxFreq = c;
+				dominantId = id;
+			}
+		}
+		if (maxFreq / n < threshold || counts.size > OnnxClassifier.DEGENERACY_MAX_DISTINCT_TOKENS) {
+			return false;
+		}
+		const unk = this.getUnkTokenId();
+		return unk === null || dominantId !== unk;
+	}
+
+	/**
+	 * Resolve the tokenizer's [UNK] id, cached. Prefers the tokenizer's declared
+	 * id; falls back to probing two private-use codepoints (both OOV, so both map
+	 * to [UNK]). Returns null when no single [UNK] id exists (e.g. byte-fallback
+	 * tokenizers) — the degeneracy guard then skips its factor-3 check.
+	 */
+	private getUnkTokenId(): bigint | null {
+		if (this.unkTokenId !== undefined) return this.unkTokenId;
+		this.unkTokenId = null;
+		if (!this.tokenizer) return null;
+		const declared = (this.tokenizer as unknown as { unk_token_id?: number }).unk_token_id;
+		if (typeof declared === "number" && Number.isFinite(declared)) {
+			this.unkTokenId = BigInt(declared);
+			return this.unkTokenId;
+		}
+		try {
+			const encoded = this.tokenizer("", { padding: false, truncation: false, return_tensor: false });
+			const ids: bigint[] = Array.isArray(encoded.input_ids)
+				? (encoded.input_ids as bigint[][]).flat()
+				: (encoded.input_ids as { tolist: () => bigint[][] }).tolist().flat();
+			const content = ids.length >= 2 ? ids.slice(1, -1) : ids;
+			// Both PUA chars are OOV: a WordPiece tokenizer maps each to the same
+			// single [UNK] id. If they don't agree, there is no usable [UNK] id.
+			if (content.length >= 1 && content.every((x) => x === content[0])) {
+				this.unkTokenId = content[0];
+			}
+		} catch {
+			// leave null — guard falls back to the two-factor rule
+		}
+		return this.unkTokenId;
 	}
 
 	/** Current temperature scaling factor (1.0 = no calibration). */
@@ -281,6 +394,12 @@ export class OnnxClassifier {
 
 		const { inputIds, attentionMask } = this.tokenize(text);
 
+		// Fix 3: token-degeneracy guard — skip inference on off-distribution
+		// input; its mean-pooled score is arbitrary. Damp to a benign 0.
+		if (this.isDegenerate(inputIds)) {
+			return { main: 0, aux: null };
+		}
+
 		if (!this.OrtTensor) {
 			throw new Error("OrtTensor not loaded");
 		}
@@ -400,6 +519,14 @@ export class OnnxClassifier {
 				idxs.forEach((origIdx, k) => {
 					pairs[origIdx] = chunkPairs[k];
 				});
+			}
+		}
+
+		// Fix 3: token-degeneracy guard — damp off-distribution rows to a benign
+		// 0 so they drop out of any upstream max. Reuses the already-tokenized ids.
+		for (let i = 0; i < tokenized.length; i++) {
+			if (this.isDegenerate(tokenized[i].inputIds)) {
+				pairs[i] = { main: 0, aux: null };
 			}
 		}
 
