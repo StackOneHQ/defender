@@ -217,7 +217,7 @@ export class Tier2Classifier {
 		// corrupt per-sentence scores because the tokenizer counts them as
 		// part of the sentence. Also strips spoofed boundary patterns an
 		// attacker might inject to confuse downstream LLM trust.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
@@ -300,7 +300,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sentence
 		// splitting so tag tokens don't corrupt per-sentence scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
@@ -401,7 +401,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return {
@@ -543,7 +543,7 @@ export class Tier2Classifier {
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
@@ -698,6 +698,19 @@ export class Tier2Classifier {
 	 * Split text into sentences for granular analysis.
 	 * Uses multiple strategies to handle various text formats.
 	 */
+	/**
+	 * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload).
+	 * Strips spoofed boundary markers, then collapses decorative runs — 4+ repeats
+	 * of the same non-word char (box-drawing `─`, `===`, `---`, `###`) down to 3.
+	 * Decorative chars like `─` (U+2500) tokenize one-token-per-char, so a rule
+	 * line becomes ~85% one repeated token; under mean pooling the pooled vector
+	 * lands off-distribution and the head returns an arbitrary (often high) score.
+	 * No meaning lives in the 40th consecutive `─`. (ENG: Class-B chunking FP.)
+	 */
+	private normalizeForClassification(text: string): string {
+		return stripBoundaryPatterns(text).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
+	}
+
 	private splitIntoSentences(text: string): string[] {
 		const sentences: string[] = [];
 
