@@ -237,7 +237,7 @@ interface DefenseResult {
   sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (== original when sanitizeContent:false); best-effort, still gate on `allowed`
   original: unknown;                      // The untouched content, optionally boundary-wrapped; never rewritten
   detections: string[];                   // Pattern names detected by Tier 1
-  fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
+  fieldsSanitized: string[];              // Fields whose content the cleaner changed in `sanitized` (empty when sanitizeContent:false or no Tier 2); for detections read `detections`/`patternsByField`
   patternsByField: Record<string, string[]>; // Patterns per field
 
   // Tier 2 signals
@@ -286,7 +286,7 @@ const results = await defense.defendToolResults([
 
 for (const result of results) {
   if (!result.allowed) {
-    console.log(`Blocked: ${result.fieldsSanitized.join(', ')}`);
+    console.log(`Blocked: ${result.detections.join(', ')}`);
   }
 }
 ```
