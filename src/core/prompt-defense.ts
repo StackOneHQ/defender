@@ -19,9 +19,6 @@ import { generateDataBoundary } from "../utils/boundary";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
-/** Replacement text when a whole field is dropped (single-sentence or all sentences high). */
-const CONTENT_BLOCKED_TEXT = "[CONTENT BLOCKED FOR SECURITY]";
-
 /**
  * How defender decides which tiers run on each call.
  *
@@ -1247,14 +1244,17 @@ export class PromptDefense {
 		// Return-both: `original` is the detect-only payload; `sanitized` is the
 		// sentence-cleaned copy of its high-risk fields (unless sanitizeContent is off).
 		const original = sanitized.sanitized;
-		const cleaned =
-			this.sanitizeContent && this.tier2Classifier && highRiskValues.size > 0
-				? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier, {
-						highRiskThreshold: this.config.tier2.highRiskThreshold,
-						boundary,
-						blockText: CONTENT_BLOCKED_TEXT,
-					})
-				: original;
+		const cleanContent =
+			this.sanitizeContent &&
+			this.tier2Classifier &&
+			(riskLevel === "high" || riskLevel === "critical") &&
+			highRiskValues.size > 0;
+		const cleaned = cleanContent
+			? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
+					highRiskThreshold: this.config.tier2.highRiskThreshold,
+					boundary,
+				})
+			: original;
 
 		return {
 			allowed,

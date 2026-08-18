@@ -16,17 +16,17 @@ export interface SentenceCleanOptions {
 	highRiskThreshold: number;
 	/** Wrap the cleaned field with these markers when set (mirrors the sanitizer). */
 	boundary?: DataBoundary;
-	/** Replacement when a field is a single sentence or every sentence is dropped. */
-	blockText: string;
 }
 
 async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCleanOptions): Promise<string> {
 	const sentences = tier2.splitIntoSentences(raw);
-	// A single-sentence field can't be partially cleaned — block the whole field.
-	if (sentences.length <= 1) return opts.blockText;
+	// A single sentence can't be isolated to a bad part, and benign opaque tokens read
+	// as one sentence — leave it untouched; the verdict/`allowed` still gates it.
+	if (sentences.length <= 1) return raw;
 	const scores = await tier2.classifyChunksBatch(sentences);
 	const kept = sentences.filter((_, i) => (scores[i] ?? 0) < opts.highRiskThreshold);
-	if (kept.length === 0) return opts.blockText;
+	// Every sentence flagged — drop them all rather than blocking the field wholesale.
+	if (kept.length === 0) return "";
 	// Strip role markers from survivors as defense-in-depth against a sub-threshold marker.
 	return stripRoleMarkers(kept.join(" ")).trim();
 }
