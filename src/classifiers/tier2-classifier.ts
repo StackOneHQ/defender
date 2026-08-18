@@ -729,7 +729,8 @@ export class Tier2Classifier {
 		return stripBoundaryPatterns(normalizeUnicode(text)).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
 	}
 
-	private splitIntoSentences(text: string): string[] {
+	/** Split text into sentences (all of them, including short ones). Public for the sentence-cleaner. */
+	splitIntoSentences(text: string): string[] {
 		const sentences: string[] = [];
 
 		// Split by common sentence delimiters

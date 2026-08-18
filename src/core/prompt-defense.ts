@@ -14,8 +14,13 @@ import {
 import { getDefaultTier3Provider } from "../classifiers/tier3-orchestrator";
 import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
-import type { PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
+import type { DataBoundary, PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
+import { generateDataBoundary } from "../utils/boundary";
+import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
+
+/** Replacement text when a whole field is dropped (single-sentence or all sentences high). */
+const CONTENT_BLOCKED_TEXT = "[CONTENT BLOCKED FOR SECURITY]";
 
 /**
  * How defender decides which tiers run on each call.
@@ -45,12 +50,23 @@ export interface DefenseResult {
 	/** Overall risk level (max of Tier 1 and Tier 2) */
 	riskLevel: RiskLevel;
 	/**
-	 * The tool result to forward to the LLM. Detect-and-gate: this is the
-	 * ORIGINAL content, optionally wrapped in `[UD-…]` boundary markers when
-	 * `annotateBoundary` is enabled — it is never rewritten or redacted. Use
-	 * `allowed` to decide whether to forward it.
+	 * The tool result to forward to the LLM. By default (`sanitizeContent: true`)
+	 * this is a **sentence-level cleaned** copy: within any field that scored
+	 * high/critical, sentences that themselves score above the high threshold are
+	 * dropped (or the whole field is blocked if it is a single sentence), role
+	 * markers are stripped from survivors, and the result is `[UD-…]`
+	 * boundary-wrapped when `annotateBoundary` is enabled. Best-effort only —
+	 * cleaning is capped by detection, so treat it as untrusted and still gate on
+	 * `allowed`. Set `sanitizeContent: false` for detect-and-gate (no rewriting),
+	 * in which case this equals `original`.
 	 */
 	sanitized: unknown;
+	/**
+	 * The ORIGINAL tool result, never rewritten (optionally boundary-wrapped when
+	 * `annotateBoundary` is enabled). Always present so callers can recover the
+	 * untouched content regardless of `sanitizeContent`.
+	 */
+	original: unknown;
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
 	/** Fields where a Tier 1 threat was detected (e.g. ['subject', 'body']). Content is not modified. */
@@ -270,6 +286,13 @@ export interface PromptDefenseOptions {
 	 */
 	annotateBoundary?: boolean;
 	/**
+	 * When true (default), `result.sanitized` is a sentence-level cleaned copy of
+	 * the tool result (high-scoring sentences dropped within high-risk fields);
+	 * `result.original` always holds the untouched content. Set false for pure
+	 * detect-and-gate — `sanitized` then equals `original`.
+	 */
+	sanitizeContent?: boolean;
+	/**
 	 * Only run Tier 2 on strings extracted from these field names.
 	 * Strings under any other field key are skipped.
 	 * If omitted, Tier 2 runs on all strings in the tool result.
@@ -399,6 +422,8 @@ export class PromptDefense {
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
 	private tier2Fields: string[] | undefined;
+	private sanitizeContent: boolean = true;
+	private annotateBoundary: boolean = false;
 	private sfeEnabled: boolean = false;
 	private sfeThreshold: number = 0.5;
 	private sfeCustomPredictor: SfePredictor | undefined = undefined;
@@ -443,6 +468,8 @@ export class PromptDefense {
 			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
+		this.sanitizeContent = options.sanitizeContent ?? true;
+		this.annotateBoundary = options.annotateBoundary ?? false;
 
 		this.patternDetector = createPatternDetector();
 
@@ -712,6 +739,7 @@ export class PromptDefense {
 			allowed,
 			riskLevel,
 			sanitized: sanitized.sanitized,
+			original: sanitized.sanitized,
 			detections,
 			fieldsSanitized,
 			patternsByField: patternsRemovedByField,
@@ -795,10 +823,16 @@ export class PromptDefense {
 			}
 		}
 
+		// Own the boundary here (when enabled) so the sentence-cleaner can wrap
+		// its cleaned fields with the same markers the sanitizer used.
+		const boundary: DataBoundary | undefined = this.annotateBoundary ? generateDataBoundary() : undefined;
+		// Leaf string values that Tier 2 scored high — the fields the cleaner rewrites.
+		const highRiskValues = new Set<string>();
+
 		// Tier 1: pattern-based sanitization on the original value — SFE
 		// filtering is classifier-only and must not affect the returned payload.
 		const tTier1Start = performance.now();
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
 		const tier1Ms = performance.now() - tTier1Start;
 
 		// Collect Tier 1 metadata
@@ -1012,6 +1046,7 @@ export class PromptDefense {
 								}
 							}
 							perStringScores.push(sMax);
+							if (sMax >= this.config.tier2.highRiskThreshold) highRiskValues.add(strings[i]);
 							if (tier2Score === undefined || sMax > tier2Score) {
 								tier2Score = sMax;
 								maxSentence = sMaxChunk;
@@ -1208,10 +1243,24 @@ export class PromptDefense {
 		// max-chunk main score for forensics — never use it to make decisions;
 		// it diverges from `tier2Score` on multi-string payloads and under
 		// multi-head aux veto.
+
+		// Return-both: `original` is the detect-only payload; `sanitized` is the
+		// sentence-cleaned copy of its high-risk fields (unless sanitizeContent is off).
+		const original = sanitized.sanitized;
+		const cleaned =
+			this.sanitizeContent && this.tier2Classifier && highRiskValues.size > 0
+				? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier, {
+						highRiskThreshold: this.config.tier2.highRiskThreshold,
+						boundary,
+						blockText: CONTENT_BLOCKED_TEXT,
+					})
+				: original;
+
 		return {
 			allowed,
 			riskLevel,
-			sanitized: sanitized.sanitized,
+			sanitized: cleaned,
+			original,
 			detections,
 			fieldsSanitized,
 			patternsByField: patternsRemovedByField,

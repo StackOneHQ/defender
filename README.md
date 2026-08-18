@@ -26,7 +26,7 @@
 
 Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and gates prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
-Defender **does not rewrite your data**. It returns the original tool-result content together with an allow/block verdict (and optional boundary annotation); your code decides whether to forward it. This "detect-and-gate" model keeps benign data intact and avoids the false confidence of regex-based content redaction.
+Defender returns **both** copies of the tool result: `result.original` is the content untouched, and `result.sanitized` is a **sentence-level cleaned** copy (high-scoring sentences dropped within high-risk fields) — plus an allow/block verdict. Cleaning is best-effort (capped by detection), so still gate on `result.allowed`. Set `sanitizeContent: false` for pure **detect-and-gate**: `sanitized` then equals `original` (no rewriting) and you rely on `allowed`.
 
 ## Installation
 
@@ -189,12 +189,13 @@ Risk escalation from detections:
 
 ### Migrating to 0.8 (detect-and-gate)
 
-0.8 stops rewriting tool-result content. `result.sanitized` now returns the **original** value (optionally boundary-wrapped) instead of a redacted/role-stripped copy; the block signal is `result.allowed` alone.
+0.8 replaces the old phrase-level regex redaction with **sentence-level** cleaning and adds a `result.original` field (return-both). By default `result.sanitized` is a cleaned copy (high-scoring sentences dropped within high-risk fields); `result.original` is the untouched value.
 
-- **If you gate on `result.allowed`** (block when `false`, otherwise forward the result) — no change needed. `sanitized` is still the value to forward when `allowed`.
-- **If you relied on `sanitized` being scrubbed** (passing it through even for risky-but-allowed content) — note that content is no longer redacted. For gray-band content (detected but below the block threshold), either enable **`annotateBoundary: true`** so untrusted content is wrapped as data, and/or tighten `blockHighRisk`/thresholds so genuinely risky content is **blocked** rather than forwarded.
+- **If you gate on `result.allowed`** (block when `false`, otherwise forward the result) — no change needed. `sanitized` is still the value to forward when `allowed` (now sentence-cleaned rather than phrase-redacted).
+- **If you want the raw content**, use `result.original`. For pure detect-and-gate (no rewriting), set **`sanitizeContent: false`** — then `sanitized` equals `original`.
+- Sentence cleaning is **best-effort** (capped by detection). Treat `sanitized` as untrusted; enable **`annotateBoundary: true`** to wrap it as data, and/or tighten `blockHighRisk`/thresholds for genuinely risky content.
 
-Detection, scoring, and the `allowed` decision are otherwise unchanged.
+Detection, scoring, and the `allowed` decision are unchanged.
 
 ## API
 
@@ -210,6 +211,7 @@ const defense = createPromptDefense({
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
+  sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized == original) (default: true)
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
@@ -232,7 +234,8 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
   riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
-  sanitized: unknown;                     // Tool result to forward — ORIGINAL content, optionally boundary-wrapped; never rewritten
+  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (== original when sanitizeContent:false); best-effort, still gate on `allowed`
+  original: unknown;                      // The untouched content, optionally boundary-wrapped; never rewritten
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
   patternsByField: Record<string, string[]>; // Patterns per field
