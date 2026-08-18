@@ -27,6 +27,9 @@ async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCle
 	const kept = sentences.filter((_, i) => (scores[i] ?? 0) < opts.highRiskThreshold);
 	// Every sentence flagged — drop them all rather than blocking the field wholesale.
 	if (kept.length === 0) return "";
+	// Nothing dropped — return the field verbatim, never a reconstruction (a
+	// rebuilt join can differ from the original and report a spurious change).
+	if (kept.length === sentences.length) return raw;
 	// Strip role markers from survivors as defense-in-depth against a sub-threshold marker.
 	return stripRoleMarkers(kept.join(" ")).trim();
 }
