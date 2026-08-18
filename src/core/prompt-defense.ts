@@ -66,7 +66,11 @@ export interface DefenseResult {
 	original: unknown;
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
-	/** Fields where a Tier 1 threat was detected (e.g. ['subject', 'body']). Content is not modified. */
+	/**
+	 * Fields whose content the cleaner actually changed in `sanitized` (e.g.
+	 * ['summary']). Empty under `sanitizeContent: false` or without Tier 2. For
+	 * where a threat was *detected*, read `detections` / `patternsByField`.
+	 */
 	fieldsSanitized: string[];
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
@@ -717,12 +721,8 @@ export class PromptDefense {
 		// Tier 1 risk level is intentionally NOT used for the block decision —
 		// in tier3_only mode the LLM is authoritative.
 		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
-		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
+		const { patternsRemovedByField } = sanitized.metadata;
 		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
-		const activeMethods = new Set(["role_stripping", "pattern_removal", "encoding_detection"]);
-		const fieldsSanitized = Object.entries(methodsByField)
-			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
-			.map(([field]) => field);
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
 		const riskLevel: RiskLevel = blocked ? "high" : "low";
@@ -738,7 +738,7 @@ export class PromptDefense {
 			sanitized: sanitized.sanitized,
 			original: sanitized.sanitized,
 			detections,
-			fieldsSanitized,
+			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
@@ -835,9 +835,11 @@ export class PromptDefense {
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
 		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
-		// Fields where threat-related sanitization occurred
+		// Fields where Tier 1 detected a threat (detect-only — Tier 1 no longer
+		// rewrites content). Used as a verdict signal below; the returned
+		// `fieldsSanitized` reports the fields the Tier 2 cleaner actually changed.
 		const activeMethods = new Set(["role_stripping", "pattern_removal", "encoding_detection"]);
-		const fieldsSanitized = Object.entries(methodsByField)
+		const tier1FlaggedFields = Object.entries(methodsByField)
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
@@ -1215,7 +1217,7 @@ export class PromptDefense {
 		const tier3OverrodeToBlock = tier3OverrideBlock === true;
 		const hasThreats =
 			detections.length > 0 ||
-			fieldsSanitized.length > 0 ||
+			tier1FlaggedFields.length > 0 ||
 			(tier2HasThreat && !tier3OverrodeToAllow) ||
 			tier3OverrodeToBlock;
 
@@ -1249,20 +1251,20 @@ export class PromptDefense {
 			this.tier2Classifier &&
 			(riskLevel === "high" || riskLevel === "critical") &&
 			highRiskValues.size > 0;
-		const cleaned = cleanContent
+		const cleanResult = cleanContent
 			? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
 					highRiskThreshold: this.config.tier2.highRiskThreshold,
 					boundary,
 				})
-			: original;
+			: { content: original, changedFields: [] as string[] };
 
 		return {
 			allowed,
 			riskLevel,
-			sanitized: cleaned,
+			sanitized: cleanResult.content,
 			original,
 			detections,
-			fieldsSanitized,
+			fieldsSanitized: cleanResult.changedFields,
 			patternsByField: patternsRemovedByField,
 			tier2Score: tier2EffectiveScore,
 			tier2RawScore,

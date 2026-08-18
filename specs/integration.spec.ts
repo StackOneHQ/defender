@@ -533,7 +533,9 @@ describe('PromptDefense', () => {
       expect(result.riskLevel).not.toBe('low');
       expect(result.allowed).toBe(false);
       expect(result.latencyMs).toBeGreaterThanOrEqual(0);
-      expect(result.fieldsSanitized).toContain('name');
+      // Tier-1 detection is reported via patternsByField (fieldsSanitized now
+      // lists only fields the Tier-2 cleaner actually rewrote).
+      expect(Object.keys(result.patternsByField)).toContain('name');
     });
 
     // ONNX model load is too slow for CI shared runners, so Tier 2 (and its
@@ -598,8 +600,7 @@ describe('PromptDefense', () => {
       expect(result.detections.length).toBeGreaterThan(0);
       expect(result.riskLevel).not.toBe('low');
       expect(result.allowed).toBe(false);
-      expect(result.fieldsSanitized).toContain('content');
-      expect(Object.keys(result.patternsByField).length).toBeGreaterThan(0);
+      expect(Object.keys(result.patternsByField)).toContain('content');
     });
 
     it('return-both: original is verbatim; sanitizeContent:false gives detect-and-gate', async () => {
@@ -670,9 +671,9 @@ describe('PromptDefense', () => {
       const results = await defense.defendToolResults(items);
 
       expect(results).toHaveLength(3);
-      // First: role marker → blocked
+      // First: role marker → blocked (Tier-1 detection reported via patternsByField)
       expect(results[0].allowed).toBe(false);
-      expect(results[0].fieldsSanitized).toContain('name');
+      expect(Object.keys(results[0].patternsByField)).toContain('name');
       // Second: safe → allowed
       expect(results[1].allowed).toBe(true);
       expect(results[1].detections).toHaveLength(0);

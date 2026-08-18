@@ -31,34 +31,48 @@ async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCle
 	return stripRoleMarkers(kept.join(" ")).trim();
 }
 
+export interface CleanResult {
+	/** The payload with high-risk leaf strings sentence-cleaned. */
+	content: unknown;
+	/** Paths of the leaves whose content actually changed (for `fieldsSanitized`). */
+	changedFields: string[];
+}
+
 /**
  * Clone `content` (already the structurally-protected, optionally boundary-wrapped
  * original) and replace only the leaf strings whose unwrapped value is in
- * `highRiskValues` with a sentence-cleaned version.
+ * `highRiskValues` with a sentence-cleaned version. Reports the paths that
+ * actually changed — `sanitizeContent` off or a single-sentence field (left
+ * as-is) yields no change and no reported path. Paths follow the sanitizer's
+ * convention: `parent.key` for objects, `parent[i]` for arrays.
  */
 export async function cleanHighRiskContent(
 	content: unknown,
 	highRiskValues: Set<string>,
 	tier2: Tier2Classifier,
 	opts: SentenceCleanOptions,
-): Promise<unknown> {
-	if (highRiskValues.size === 0) return content;
+): Promise<CleanResult> {
+	if (highRiskValues.size === 0) return { content, changedFields: [] };
 
-	async function walk(value: unknown): Promise<unknown> {
+	const changedFields: string[] = [];
+
+	async function walk(value: unknown, path: string): Promise<unknown> {
 		if (typeof value === "string") {
 			const raw = opts.boundary ? stripBoundaryPatterns(value) : value;
 			if (!highRiskValues.has(raw)) return value;
 			const cleaned = await cleanField(raw, tier2, opts);
+			if (cleaned !== raw) changedFields.push(path);
 			return opts.boundary ? wrapWithBoundary(cleaned, opts.boundary) : cleaned;
 		}
-		if (Array.isArray(value)) return Promise.all(value.map(walk));
+		if (Array.isArray(value)) return Promise.all(value.map((v, i) => walk(v, `${path}[${i}]`)));
 		if (value && typeof value === "object") {
 			const out: Record<string, unknown> = {};
-			for (const [k, v] of Object.entries(value)) out[k] = await walk(v);
+			for (const [k, v] of Object.entries(value)) out[k] = await walk(v, path ? `${path}.${k}` : k);
 			return out;
 		}
 		return value;
 	}
 
-	return walk(content);
+	const cleanedContent = await walk(content, "");
+	return { content: cleanedContent, changedFields };
 }
