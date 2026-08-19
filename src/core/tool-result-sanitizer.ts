@@ -276,37 +276,43 @@ export class ToolResultSanitizer {
 		// Array/object counting lives in updateSizeMetrics (called on every value
 		// in sanitizeValue, and at the direct call sites below that bypass it).
 
-		// Large arrays: bound Tier 1 DETECTION cost by only detecting on the first
-		// `scanLimit` items. Items past the limit are STILL fully traversed — for
-		// prototype-pollution key stripping, depth/size limits, and boundary
-		// wrapping — they just skip the expensive per-string Tier 1 analysis
-		// (passing detect=false down). Data is never dropped (the previous
-		// behavior returned only the first 100 items plus a notice), and the
-		// reduced detection coverage is flagged via `analysisTruncated`. Tier 2
-		// still scans every string via its own walk.
-		const scanLimit = this.detectionScanLimit(arr.length, metadata);
-
+		// Items are always traversed (structure, key stripping, boundary); Tier 1
+		// detection stops once the call-scoped byte budget is spent. Data is never dropped.
 		return arr.map((item, index) => {
 			const itemContext = {
 				...context,
 				path: `${context.path}[${index}]`,
 			};
-			return this.sanitizeValue(item, itemContext, metadata, depth + 1, detect && index < scanLimit);
+			return this.sanitizeValue(
+				item,
+				itemContext,
+				metadata,
+				depth + 1,
+				detect && this.detectionAllowed(index, arr.length, metadata),
+			);
 		});
 	}
 
 	/**
-	 * Detection scan limit for a container of `size` entries. Bounds Tier 1
-	 * DETECTION cost on very wide arrays/objects: entries past the limit are still
-	 * traversed (structure, prototype-pollution stripping, Tier 2's own walk) —
-	 * only their per-entry Tier 1 analysis is skipped. Flags `analysisTruncated`
-	 * when it caps so the coverage loss is surfaced.
+	 * Whether Tier 1 detection may run for entry `index` of a container of `size`.
+	 * Primary bound is the call-scoped byte budget (`maxSize`). The deprecated
+	 * `skipLargeArrays` per-container cap is honored only when explicitly enabled.
+	 * When detection is skipped the coverage loss is flagged via `analysisTruncated`.
 	 */
-	private detectionScanLimit(size: number, metadata: SanitizationMetadata): number {
-		const isLarge = this.config.traversal.skipLargeArrays && size > this.config.traversal.largeArrayThreshold;
-		const limit = isLarge ? Math.min(100, size) : size;
-		if (isLarge && limit < size) metadata.analysisTruncated = true;
-		return limit;
+	private detectionAllowed(index: number, size: number, metadata: SanitizationMetadata): boolean {
+		if (metadata.sizeMetrics.estimatedBytes >= this.config.traversal.maxSize) {
+			metadata.analysisTruncated = true;
+			return false;
+		}
+		if (
+			this.config.traversal.skipLargeArrays &&
+			size > (this.config.traversal.largeArrayThreshold ?? 1000) &&
+			index >= 100
+		) {
+			metadata.analysisTruncated = true;
+			return false;
+		}
+		return true;
 	}
 
 	/**
@@ -332,15 +338,14 @@ export class ToolResultSanitizer {
 			return this.sanitizeWrappedResponse(obj, context, metadata, depth, detect);
 		}
 
-		// Regular object - process each field. Wide objects bound Tier 1 detection
-		// past `scanLimit` (see `detectionScanLimit`); entries are still traversed.
+		// Regular object - process each field. Tier 1 detection stops once the
+		// call-scoped byte budget is spent (detectionAllowed); entries still traverse.
 		const result: Record<string, SanitizableValue> = {};
 		const entries = Object.entries(obj);
-		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
 		for (let index = 0; index < entries.length; index++) {
 			const [key, val] = entries[index];
-			const entryDetect = detect && index < scanLimit;
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
 			// Prototype-pollution key stripping is a STRUCTURAL protection — always
 			// applied, even when detection is skipped.
 			if (DANGEROUS_KEYS.has(key)) {
@@ -383,11 +388,10 @@ export class ToolResultSanitizer {
 		const result: Record<string, SanitizableValue> = {};
 		const dataKeys = new Set(["data", "results", "items", "records"]);
 		const entries = Object.entries(obj);
-		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
 		for (let index = 0; index < entries.length; index++) {
 			const [key, val] = entries[index];
-			const entryDetect = detect && index < scanLimit;
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
@@ -434,11 +438,10 @@ export class ToolResultSanitizer {
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
 		const entries = Object.entries(obj);
-		const scanLimit = this.detectionScanLimit(entries.length, metadata);
 
 		for (let index = 0; index < entries.length; index++) {
 			const [key, val] = entries[index];
-			const entryDetect = detect && index < scanLimit;
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);

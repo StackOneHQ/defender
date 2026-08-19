@@ -355,12 +355,19 @@ export interface RiskyFieldConfig {
 export interface TraversalConfig {
 	/** Maximum recursion depth */
 	maxDepth: number;
-	/** Maximum total size in bytes */
+	/** Maximum total size in bytes — also the call-scoped Tier 1 detection budget */
 	maxSize: number;
-	/** Skip sanitization for arrays larger than this */
-	largeArrayThreshold: number;
-	/** Whether to skip large arrays entirely */
-	skipLargeArrays: boolean;
+	/**
+	 * @deprecated Superseded by the call-scoped `maxSize` detection budget. When
+	 * `skipLargeArrays` is enabled, containers larger than this still cap Tier 1
+	 * detection at the first 100 entries. Off by default; kept for compatibility.
+	 */
+	largeArrayThreshold?: number;
+	/**
+	 * @deprecated Superseded by the call-scoped `maxSize` detection budget. Opt in
+	 * to the legacy per-container 100-entry detection cap. Default: false.
+	 */
+	skipLargeArrays?: boolean;
 }
 
 /**

@@ -85,9 +85,7 @@ export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {
  */
 export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
 	maxDepth: 10,
-	maxSize: 10 * 1024 * 1024, // 10MB
-	largeArrayThreshold: 1000,
-	skipLargeArrays: true,
+	maxSize: 10 * 1024 * 1024, // 10MB — also the call-scoped Tier 1 detection budget
 };
 
 /**
