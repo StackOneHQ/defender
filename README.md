@@ -191,6 +191,8 @@ Risk escalation from detections:
 
 0.8 replaces the old phrase-level regex redaction with **sentence-level** cleaning and adds a `result.original` field (return-both). By default `result.sanitized` is a cleaned copy (high-scoring sentences dropped within high-risk fields); `result.original` is the untouched value.
 
+> **Fixed (data loss):** 0.7.4 silently truncated any array over 1000 items to the first 100 plus a `"[N more items…]"` sentinel — the rest was dropped from `sanitized`. 0.8 returns **every** item; large arrays only reduce Tier-1 *detection* coverage past the `maxSize` budget (flagged via `coverageDegraded`), never drop data.
+
 - **If you gate on `result.allowed`** (block when `false`, otherwise forward the result) — no change needed. `sanitized` is still the value to forward when `allowed` (now sentence-cleaned rather than phrase-redacted).
 - **If you want the raw content**, use `result.original`. For pure detect-and-gate (no rewriting), set **`sanitizeContent: false`** — then `sanitized` equals `original`.
 - Sentence cleaning is **best-effort** (capped by detection). Treat `sanitized` as untrusted; enable **`annotateBoundary: true`** to wrap it as data, and/or tighten `blockHighRisk`/thresholds for genuinely risky content.
