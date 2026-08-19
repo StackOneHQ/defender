@@ -287,11 +287,11 @@ export interface SanitizationResult<T = unknown> {
  * Metadata about sanitization for logging/observability
  */
 export interface SanitizationMetadata {
-	/** Fields that were sanitized */
+	/** Fields where Tier 1 detected a threat (detect-and-gate: content is not modified) */
 	fieldsSanitized: string[];
-	/** Methods applied per field */
+	/** Detection methods that fired per field (nothing is applied/rewritten) */
 	methodsByField: Record<string, SanitizationMethod[]>;
-	/** Patterns removed per field */
+	/** Patterns detected per field (detected, not removed — content is preserved) */
 	patternsRemovedByField: Record<string, string[]>;
 	/** Final risk level for the entire result */
 	overallRiskLevel: RiskLevel;
@@ -305,6 +305,14 @@ export interface SanitizationMetadata {
 	riskyFieldNames: string[];
 	/** Paths of keys removed due to prototype pollution risk */
 	dangerousKeysRemoved?: string[];
+	/**
+	 * True when Tier 1 *detection* coverage was reduced on this result — either a
+	 * field exceeded `maxFieldAnalysisLength` (only its head was analysed) or a
+	 * large array was only partially scanned (items past the scan limit skip Tier 1
+	 * detection; see `ToolResultSanitizer.sanitizeArray`). Content is always
+	 * returned in full — only detection coverage was capped.
+	 */
+	analysisTruncated?: boolean;
 }
 
 /**
@@ -347,12 +355,19 @@ export interface RiskyFieldConfig {
 export interface TraversalConfig {
 	/** Maximum recursion depth */
 	maxDepth: number;
-	/** Maximum total size in bytes */
+	/** Maximum total size in bytes — also the call-scoped Tier 1 detection budget */
 	maxSize: number;
-	/** Skip sanitization for arrays larger than this */
-	largeArrayThreshold: number;
-	/** Whether to skip large arrays entirely */
-	skipLargeArrays: boolean;
+	/**
+	 * @deprecated Superseded by the call-scoped `maxSize` detection budget. When
+	 * `skipLargeArrays` is enabled, containers larger than this still cap Tier 1
+	 * detection at the first 100 entries. Off by default; kept for compatibility.
+	 */
+	largeArrayThreshold?: number;
+	/**
+	 * @deprecated Superseded by the call-scoped `maxSize` detection budget. Opt in
+	 * to the legacy per-container 100-entry detection cap. Default: false.
+	 */
+	skipLargeArrays?: boolean;
 }
 
 /**

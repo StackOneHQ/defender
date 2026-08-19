@@ -14,7 +14,9 @@ import {
 import { getDefaultTier3Provider } from "../classifiers/tier3-orchestrator";
 import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
-import type { PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
+import type { DataBoundary, PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
+import { generateDataBoundary } from "../utils/boundary";
+import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
 /**
@@ -44,14 +46,34 @@ export interface DefenseResult {
 	allowed: boolean;
 	/** Overall risk level (max of Tier 1 and Tier 2) */
 	riskLevel: RiskLevel;
-	/** The sanitized tool result (patterns removed) */
+	/**
+	 * The tool result to forward to the LLM. By default (`sanitizeContent: true`)
+	 * this is a **sentence-level cleaned** copy: within any field that scored
+	 * high/critical, sentences that themselves score above the high threshold are
+	 * dropped (or the whole field is blocked if it is a single sentence), role
+	 * markers are stripped from survivors, and the result is `[UD-…]`
+	 * boundary-wrapped when `annotateBoundary` is enabled. Best-effort only —
+	 * cleaning is capped by detection, so treat it as untrusted and still gate on
+	 * `allowed`. Set `sanitizeContent: false` for detect-and-gate (no rewriting),
+	 * in which case this equals `original`.
+	 */
 	sanitized: unknown;
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
-	/** Fields that were sanitized (e.g. ['subject', 'body']) */
+	/**
+	 * Fields whose content the cleaner actually changed in `sanitized` (e.g.
+	 * ['summary']). Empty under `sanitizeContent: false` or without Tier 2. For
+	 * where a threat was *detected*, read `detections` / `patternsByField`.
+	 */
 	fieldsSanitized: string[];
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
+	/**
+	 * Count of fields with a Tier-1 pattern detection (the keys of `patternsByField`).
+	 * The threat-count signal to key observability on — `fieldsSanitized.length` no
+	 * longer tracks detections.
+	 */
+	detectedFieldCount: number;
 	/**
 	 * Tier 2 score reported to operators. Designed so the triple
 	 * (`tier2Score`, `riskLevel`, `allowed`) tells one coherent story:
@@ -92,6 +114,14 @@ export interface DefenseResult {
 	tier2MultiheadBlocked?: boolean;
 	/** Reason Tier 2 was skipped (e.g. "No strings extracted") when tier2Score is undefined */
 	tier2SkipReason?: string;
+	/**
+	 * `false` when Tier 2 is enabled but the model/runtime could not load
+	 * (e.g. the optional peer deps aren't installed) — the verdict reflects
+	 * Tier 1 (+ Tier 3) only. Absent when Tier 2 loaded normally or is disabled.
+	 * Monitor for `tier2Available === false` to detect silently-degraded ML
+	 * defense. Set `requireTier2: true` to fail closed instead.
+	 */
+	tier2Available?: boolean;
 	/** The sentence with the highest Tier 2 score */
 	maxSentence?: string;
 	/**
@@ -117,6 +147,15 @@ export interface DefenseResult {
 	 * unchanged. Stack-safety guard; typically never set on real payloads.
 	 */
 	truncatedAtDepth?: boolean;
+	/**
+	 * True when Tier 1 *detection* coverage was reduced on this payload — a field
+	 * exceeded `maxFieldAnalysisLength`, or the call-scoped `maxSize` detection
+	 * budget / a depth limit was hit. Content is still returned in full; only
+	 * detection was capped, and Tier 2 (when enabled) still scanned every string.
+	 * **Absent (not `false`) when coverage was complete** — branch on `=== true`.
+	 * Monitor to catch payloads shaped to hide content past the analysis limits.
+	 */
+	coverageDegraded?: boolean;
 	/** Total processing time in milliseconds */
 	latencyMs: number;
 	/**
@@ -223,6 +262,15 @@ export interface PromptDefenseOptions {
 	enableTier1?: boolean;
 	/** Enable Tier 2 ML classification (default: true — set false to disable) */
 	enableTier2?: boolean;
+	/**
+	 * Require Tier 2 to be operational. When `true` and Tier 2 is enabled but
+	 * the ONNX runtime / model can't load (e.g. the optional peer deps
+	 * `onnxruntime-node` / `@huggingface/transformers` aren't installed),
+	 * `defendToolResult` and `warmupTier2` THROW instead of silently running
+	 * Tier 1 only. Default: false (fail-open: warn once + set
+	 * `result.tier2Available = false` so monitoring can detect degraded mode).
+	 */
+	requireTier2?: boolean;
 	/** Tier 2 classifier configuration */
 	tier2Config?: Partial<Tier2ClassifierConfig>;
 	/** Block high/critical risk content */
@@ -239,6 +287,12 @@ export interface PromptDefenseOptions {
 	 * `@stackone/defender`) to add the matching system-prompt instructions.
 	 */
 	annotateBoundary?: boolean;
+	/**
+	 * When true (default), `result.sanitized` is a sentence-level cleaned copy of
+	 * the tool result (high-scoring sentences dropped within high-risk fields). Set
+	 * false for pure detect-and-gate — `sanitized` is then the content verbatim.
+	 */
+	sanitizeContent?: boolean;
 	/**
 	 * Only run Tier 2 on strings extracted from these field names.
 	 * Strings under any other field key are skipped.
@@ -357,12 +411,20 @@ export interface PromptDefenseOptions {
  * }
  * ```
  */
+
+// Module-scoped so the "Tier 2 failed to load" warning fires once per process,
+// not once per instance — PromptDefense is constructed per-request in some hosts
+// (e.g. connect-sdk), where an instance flag would log at full request volume.
+let tier2UnavailableWarned = false;
+
 export class PromptDefense {
 	private config: PromptDefenseConfig;
 	private toolResultSanitizer: ToolResultSanitizer;
 	private patternDetector: PatternDetector;
 	private tier2Classifier: Tier2Classifier | null = null;
 	private tier2Fields: string[] | undefined;
+	private sanitizeContent: boolean = true;
+	private annotateBoundary: boolean = false;
 	private sfeEnabled: boolean = false;
 	private sfeThreshold: number = 0.5;
 	private sfeCustomPredictor: SfePredictor | undefined = undefined;
@@ -374,6 +436,7 @@ export class PromptDefense {
 	private tier3MissingProviderWarned: boolean = false;
 	private tier3BlockThreshold: number | undefined = undefined;
 	private tier3MissingScoreWarned: boolean = false;
+	private tier2Required: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
 		// Build configuration
@@ -401,12 +464,13 @@ export class PromptDefense {
 		this.toolResultSanitizer = createToolResultSanitizer({
 			riskyFields: this.config.riskyFields,
 			traversal: this.config.traversal,
-			defaultRiskLevel: options.defaultRiskLevel ?? "medium",
+			defaultRiskLevel: options.defaultRiskLevel ?? "low",
 			useTier1Classification: options.enableTier1 ?? true,
-			blockHighRisk: options.blockHighRisk ?? false,
 			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
+		this.sanitizeContent = options.sanitizeContent ?? true;
+		this.annotateBoundary = options.annotateBoundary ?? false;
 
 		this.patternDetector = createPatternDetector();
 
@@ -454,6 +518,7 @@ export class PromptDefense {
 
 		// Initialize Tier 2 classifier if enabled
 		if (options.enableTier2 ?? true) {
+			this.tier2Required = options.requireTier2 ?? false;
 			this.tier2Classifier = createTier2Classifier(options.tier2Config);
 			// Sync the gate's threshold copy with whatever Tier2Classifier resolved.
 			// Tier2Classifier merges hardcoded defaults < model classifier_config.json
@@ -479,7 +544,13 @@ export class PromptDefense {
 	 */
 	async warmupTier2(): Promise<void> {
 		if (this.tier2Classifier) {
-			await this.tier2Classifier.warmup();
+			try {
+				await this.tier2Classifier.warmup();
+			} catch (err) {
+				// Fail-open by default (warn once so degraded mode is visible);
+				// throw only when the caller opted into requireTier2.
+				this.handleTier2Unavailable(err);
+			}
 		}
 		// Also warm the SFE predictor (bundled FastText WASM) if enabled.
 		// Idempotent — subsequent calls reuse the cached predictor. Fail
@@ -508,6 +579,27 @@ export class PromptDefense {
 	 */
 	isTier2Ready(): boolean {
 		return this.tier2Classifier?.isReady() ?? false;
+	}
+
+	/**
+	 * Central handling for "Tier 2 enabled but the model/runtime failed to load"
+	 * (e.g. missing optional peer deps). Throws when `requireTier2` is set
+	 * (fail-closed); otherwise warns once per process (the warn flag is
+	 * module-scoped) and returns so the caller can continue Tier-1-only (fail-open).
+	 */
+	private handleTier2Unavailable(err: unknown): void {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (this.tier2Required) {
+			throw new Error(
+				`[defender] Tier 2 is required (requireTier2: true) but the model/runtime failed to load: ${msg}. Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers'.`,
+			);
+		}
+		if (!tier2UnavailableWarned) {
+			tier2UnavailableWarned = true;
+			console.warn(
+				`[defender] Tier 2 is enabled but the model/runtime failed to load — running WITHOUT ML classification (Tier 1 only). Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers', pass enableTier2:false to silence this, or requireTier2:true to fail closed. Reason: ${msg}`,
+			);
+		}
 	}
 
 	/**
@@ -587,11 +679,11 @@ export class PromptDefense {
 	/**
 	 * tier3_only short-circuit. Builds one joined text from all extracted
 	 * strings and asks the provider for a verdict; that verdict drives the
-	 * entire decision. Tier 1 sanitization is still applied to the returned
-	 * `sanitized` payload (so role markers etc. don't reach the LLM) but
-	 * Tier 1 risk does NOT contribute to the block decision — tier3_only
-	 * means tier3-decides. On provider error we fail open (allowed: true)
-	 * and record a skipReason; the caller's telemetry surfaces the outage.
+	 * entire decision. Tier 1 detection still runs to populate `detections`
+	 * metadata, but content is NOT rewritten (detect-and-gate) and Tier 1 risk
+	 * does NOT contribute to the block decision — tier3_only means tier3-decides.
+	 * On provider error we fail open (allowed: true) and record a skipReason;
+	 * the caller's telemetry surfaces the outage.
 	 */
 	private async runTier3Only(
 		value: unknown,
@@ -624,17 +716,13 @@ export class PromptDefense {
 			}
 		}
 
-		// Always run Tier 1 sanitization so role markers / encoding still get
-		// stripped from the payload before it reaches the LLM. The risk level
-		// from Tier 1 is intentionally NOT used for the block decision here —
+		// Always run Tier 1 detection so `detections` metadata is populated even
+		// in tier3_only mode. Detect-and-gate: content is not rewritten, and the
+		// Tier 1 risk level is intentionally NOT used for the block decision —
 		// in tier3_only mode the LLM is authoritative.
 		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
-		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
+		const { patternsRemovedByField } = sanitized.metadata;
 		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
-		const activeMethods = new Set(["role_stripping", "pattern_removal", "encoding_detection"]);
-		const fieldsSanitized = Object.entries(methodsByField)
-			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
-			.map(([field]) => field);
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
 		const riskLevel: RiskLevel = blocked ? "high" : "low";
@@ -649,11 +737,18 @@ export class PromptDefense {
 			riskLevel,
 			sanitized: sanitized.sanitized,
 			detections,
-			fieldsSanitized,
+			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
+			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
 			truncatedAtDepth: depthFlag.hit || undefined,
+			coverageDegraded:
+				depthFlag.hit ||
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit ||
+				undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}
@@ -725,18 +820,26 @@ export class PromptDefense {
 			}
 		}
 
+		// Own the boundary here (when enabled) so the sentence-cleaner can wrap
+		// its cleaned fields with the same markers the sanitizer used.
+		const boundary: DataBoundary | undefined = this.annotateBoundary ? generateDataBoundary() : undefined;
+		// Leaf string values that Tier 2 scored high — the fields the cleaner rewrites.
+		const highRiskValues = new Set<string>();
+
 		// Tier 1: pattern-based sanitization on the original value — SFE
 		// filtering is classifier-only and must not affect the returned payload.
 		const tTier1Start = performance.now();
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
 		const tier1Ms = performance.now() - tTier1Start;
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
 		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
-		// Fields where threat-related sanitization occurred
+		// Fields where Tier 1 detected a threat (detect-only — Tier 1 no longer
+		// rewrites content). Used as a verdict signal below; the returned
+		// `fieldsSanitized` reports the fields the Tier 2 cleaner actually changed.
 		const activeMethods = new Set(["role_stripping", "pattern_removal", "encoding_detection"]);
-		const fieldsSanitized = Object.entries(methodsByField)
+		const tier1FlaggedFields = Object.entries(methodsByField)
 			.filter(([, methods]) => methods.some((m) => activeMethods.has(m)))
 			.map(([field]) => field);
 
@@ -764,14 +867,36 @@ export class PromptDefense {
 		let phaseTimings: DefenseResult["phaseTimings"];
 		let tier2Stats: DefenseResult["tier2Stats"];
 		let coldLoad: boolean | undefined;
+		let tier2Available: boolean | undefined;
 
 		if (this.tier2Classifier) {
+			// Ensure the model/runtime is loaded before classifying. A load
+			// failure (e.g. the optional peer deps aren't installed) is a hard
+			// "Tier 2 unavailable" — distinct from benign per-string skips — so
+			// surface `tier2Available: false` for monitoring and honor
+			// requireTier2 (handleTier2Unavailable throws when it is set).
+			// Sample cold-start state BEFORE warmup loads the model — otherwise
+			// isReady() is always true by the time we check and coldLoad (set below)
+			// never reports a real cold start.
+			const wasCold = !this.tier2Classifier.isReady();
+			let tier2Ready = true;
+			try {
+				await this.tier2Classifier.warmup();
+			} catch (err) {
+				tier2Ready = false;
+				tier2Available = false;
+				tier2SkipReason = `Tier 2 unavailable (model/runtime failed to load): ${err instanceof Error ? err.message : String(err)}`;
+				this.handleTier2Unavailable(err);
+			}
+
 			// Use explicit tier2Fields if provided; otherwise scan all strings.
 			// Restricting to Tier 1 riskyFieldNames would create a coverage gap: injections
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+			const strings = tier2Ready
+				? extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0)
+				: [];
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
@@ -820,8 +945,7 @@ export class PromptDefense {
 					// propagating out of defendToolResult (matches the old
 					// classifyByChunks contract).
 					const tInferStart = performance.now();
-					// Cold start iff the model is not yet loaded when inference begins.
-					coldLoad = !this.tier2Classifier.isReady();
+					coldLoad = wasCold;
 					const padding = { realTokens: 0, paddedTokens: 0 };
 
 					// Dedupe before inference: identical chunk strings score identically
@@ -921,6 +1045,7 @@ export class PromptDefense {
 								}
 							}
 							perStringScores.push(sMax);
+							if (sMax >= this.config.tier2.highRiskThreshold) highRiskValues.add(strings[i]);
 							if (tier2Score === undefined || sMax > tier2Score) {
 								tier2Score = sMax;
 								maxSentence = sMaxChunk;
@@ -1004,7 +1129,7 @@ export class PromptDefense {
 						};
 					}
 				}
-			} else {
+			} else if (tier2Ready) {
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
 					: "No strings extracted from tool result";
@@ -1092,7 +1217,7 @@ export class PromptDefense {
 		const tier3OverrodeToBlock = tier3OverrideBlock === true;
 		const hasThreats =
 			detections.length > 0 ||
-			fieldsSanitized.length > 0 ||
+			tier1FlaggedFields.length > 0 ||
 			(tier2HasThreat && !tier3OverrodeToAllow) ||
 			tier3OverrodeToBlock;
 
@@ -1117,18 +1242,36 @@ export class PromptDefense {
 		// max-chunk main score for forensics — never use it to make decisions;
 		// it diverges from `tier2Score` on multi-string payloads and under
 		// multi-head aux veto.
+
+		// `sanitized` is a sentence-cleaned copy of the detect-only payload's
+		// high-risk fields (unless sanitizeContent is off).
+		const original = sanitized.sanitized;
+		const cleanContent =
+			this.sanitizeContent &&
+			this.tier2Classifier &&
+			(riskLevel === "high" || riskLevel === "critical") &&
+			highRiskValues.size > 0;
+		const cleanResult = cleanContent
+			? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
+					highRiskThreshold: this.config.tier2.highRiskThreshold,
+					boundary,
+				})
+			: { content: original, changedFields: [] as string[] };
+
 		return {
 			allowed,
 			riskLevel,
-			sanitized: sanitized.sanitized,
+			sanitized: cleanResult.content,
 			detections,
-			fieldsSanitized,
+			fieldsSanitized: cleanResult.changedFields,
 			patternsByField: patternsRemovedByField,
+			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier2Score: tier2EffectiveScore,
 			tier2RawScore,
 			tier2AuxScore,
 			tier2MultiheadBlocked,
 			tier2SkipReason,
+			...(tier2Available !== undefined ? { tier2Available } : {}),
 			maxSentence,
 			fieldsDropped,
 			// Conditionally include the `tier3` key so consumers can use
@@ -1141,6 +1284,12 @@ export class PromptDefense {
 			...(tier2Stats ? { tier2Stats } : {}),
 			...(coldLoad !== undefined ? { coldLoad } : {}),
 			tier1Ms,
+			coverageDegraded:
+				depthFlag.hit ||
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit ||
+				undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

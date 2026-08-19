@@ -193,13 +193,17 @@ function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", dep
 		return [];
 	}
 	const out: Field[] = [];
+	// Push one at a time, not `out.push(...children)`: a wide payload overflows
+	// the JS argument-count limit and throws. A loop has no such cap.
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
-			out.push(...extractFields(v, depthFlag, child, depth + 1, stackDepth + 1));
+			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1)) out.push(f);
 		}
 	} else if (Array.isArray(obj)) {
-		for (const item of obj) out.push(...extractFields(item, depthFlag, path, depth, stackDepth + 1));
+		for (const item of obj) {
+			for (const f of extractFields(item, depthFlag, path, depth, stackDepth + 1)) out.push(f);
+		}
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);

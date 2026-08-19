@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { normalizeUnicode } from "../sanitizers/normalizer";
 import type { Tier2Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
 import { type BatchTokenStats, getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
@@ -127,6 +128,16 @@ export interface Tier2ClassifierConfig {
 	 * callers should not set this.
 	 */
 	temperatureT?: number;
+	/**
+	 * Token-degeneracy (OOD) guard threshold (default 2/3). A chunk is dropped
+	 * from Tier 2 scoring (its mean-pooled score is arbitrary off-distribution)
+	 * only when its most-frequent content token covers >= this share AND it uses
+	 * few distinct tokens — repeated rule/box chars, base64/hex. The distinct-
+	 * token floor keeps the share test from being padded around (an attack buried
+	 * under many repeated tokens is NOT damped). Tier 1 still catches literal and
+	 * (via decode) encoded attacks. Set > 1 to disable.
+	 */
+	degeneracyMaxTokenShare: number;
 }
 
 /**
@@ -137,6 +148,7 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
 	mediumRiskThreshold: 0.5,
 	minTextLength: 10,
 	maxTextLength: 10000,
+	degeneracyMaxTokenShare: 2 / 3,
 };
 
 /**
@@ -183,7 +195,11 @@ export class Tier2Classifier {
 		// dropping calibration back to T=1.
 		const definedConfig = Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined));
 		this.config = { ...merged, ...definedConfig };
-		this.onnxClassifier = new OnnxClassifier(this.config.onnxModelPath, this.config.temperatureT);
+		this.onnxClassifier = new OnnxClassifier(
+			this.config.onnxModelPath,
+			this.config.temperatureT,
+			this.config.degeneracyMaxTokenShare,
+		);
 	}
 
 	/**
@@ -217,7 +233,7 @@ export class Tier2Classifier {
 		// corrupt per-sentence scores because the tokenizer counts them as
 		// part of the sentence. Also strips spoofed boundary patterns an
 		// attacker might inject to confuse downstream LLM trust.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
@@ -234,11 +250,25 @@ export class Tier2Classifier {
 		const analysisText = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
 
 		try {
-			const score = await this.onnxClassifier.classify(analysisText);
-			const confidence = Math.abs(score - 0.5) * 2;
+			const raw = await this.onnxClassifier.classify(analysisText);
+			// A non-finite logit (NaN/Infinity) means the model produced no usable
+			// output. Report it as a SKIP with an explicit reason, not score 0 —
+			// score 0 would yield confidence 1.0 (|0 - 0.5| * 2), making a broken
+			// inference look like a max-confidence benign classification and
+			// misleading any telemetry keyed on `skipped`/`confidence`.
+			if (!Number.isFinite(raw)) {
+				return {
+					score: 0,
+					confidence: 0,
+					skipped: true,
+					skipReason: "Non-finite model output (NaN/Infinity)",
+					latencyMs: performance.now() - startTime,
+				};
+			}
+			const confidence = Math.abs(raw - 0.5) * 2;
 
 			return {
-				score,
+				score: raw,
 				confidence,
 				skipped: false,
 				latencyMs: performance.now() - startTime,
@@ -286,7 +316,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sentence
 		// splitting so tag tokens don't corrupt per-sentence scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
@@ -387,7 +417,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return {
@@ -529,7 +559,7 @@ export class Tier2Classifier {
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = stripBoundaryPatterns(text);
+		text = this.normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
@@ -684,7 +714,23 @@ export class Tier2Classifier {
 	 * Split text into sentences for granular analysis.
 	 * Uses multiple strategies to handle various text formats.
 	 */
-	private splitIntoSentences(text: string): string[] {
+	/**
+	 * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload).
+	 * NFKC-folds unicode (fullwidth / math-styled variants → ASCII) so obfuscated
+	 * attacks tokenize as real words instead of `[UNK]`; then strips spoofed
+	 * boundary markers and collapses decorative runs — 4+ repeats of the same
+	 * non-word char (box-drawing `─`, `===`, `---`, `###`) down to 3. Decorative
+	 * chars like `─` (U+2500) tokenize one-token-per-char, so a rule line becomes
+	 * ~85% one repeated token; under mean pooling the pooled vector lands
+	 * off-distribution and the head returns an arbitrary (often high) score.
+	 * No meaning lives in the 40th consecutive `─`. (ENG: Class-B chunking FP.)
+	 */
+	private normalizeForClassification(text: string): string {
+		return stripBoundaryPatterns(normalizeUnicode(text)).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
+	}
+
+	/** Split text into sentences (all of them, including short ones). Public for the sentence-cleaner. */
+	splitIntoSentences(text: string): string[] {
 		const sentences: string[] = [];
 
 		// Split by common sentence delimiters

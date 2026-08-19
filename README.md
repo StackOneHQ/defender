@@ -24,7 +24,9 @@
 
 ---
 
-Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and neutralizes prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and gates prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
+
+Defender returns `result.sanitized` — a **sentence-level cleaned** copy of the tool result (high-scoring sentences dropped within high-risk fields) — plus an allow/block verdict. Cleaning is best-effort (capped by detection), so still gate on `result.allowed`. Set `sanitizeContent: false` for pure **detect-and-gate**: `sanitized` is then the content verbatim (no rewriting) and you rely on `allowed`.
 
 ## Installation
 
@@ -32,7 +34,17 @@ Indirect prompt injection defense and protection for AI agents using tool calls 
 npm install @stackone/defender
 ```
 
-The ONNX model (~22MB) is bundled in the package — no extra downloads needed.
+The ONNX model (~22MB) is bundled in the package — no model download needed.
+
+### Requirements
+
+Tier 2 (ML classification) is **on by default** and needs two optional peer dependencies at runtime:
+
+```bash
+npm install onnxruntime-node @huggingface/transformers
+```
+
+If they're missing, Defender does **not** silently run unprotected. It logs a warning, sets `result.tier2Available === false` (alert on this to detect degraded ML defense), and falls back to Tier 1 pattern detection. To **fail closed** instead — throw when Tier 2 can't load — pass `requireTier2: true` to `createPromptDefense`. To run Tier-1-only intentionally, pass `enableTier2: false`.
 
 ## Quick Start
 
@@ -68,12 +80,12 @@ if (!result.allowed) {
 
 ### Tier 1 — Pattern Detection (sync, ~1ms)
 
-Regex-based detection and sanitization:
-- **Unicode normalization** — prevents homoglyph attacks (Cyrillic 'а' → ASCII 'a')
-- **Role stripping** — removes `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
-- **Pattern removal** — redacts injection patterns like "ignore previous instructions"
-- **Encoding detection** — detects and handles Base64/URL encoded payloads
-- **Boundary annotation** — opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
+Regex-based detection that scores content and escalates risk — it does **not** rewrite the payload:
+- **Role markers** — detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
+- **Injection patterns** — detects phrases like "ignore previous instructions"
+- **Encoding** — detects Base64/URL/ROT/Morse-encoded payloads as a risk signal
+- **Unicode/leet normalization** — analysis-only (homoglyphs like Cyrillic 'а' → 'a', leetspeak) so obfuscated variants are still detected; the returned content is never normalized
+- **Boundary annotation** — opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it. This is the recommended structural mitigation.
 
 ### Tier 2 — ML Classification (async)
 
@@ -100,7 +112,7 @@ Authoritative LLM-based classification for the cases Tier 2 finds ambiguous. Def
 
 Two modes selectable via `defenderMode`:
 - **`"cascade"`** (default): T1 → T2 → T3, with T3 invoked only when the Tier 2 effective score is in the configured gray band (default `[0.3, 0.85)`). The T3 verdict authoritatively overrides T2 on the escalated chunk: a `"block"` forces a block, an `"allow"` rescues the chunk back to allowed. Outside the band defender skips the round trip.
-- **`"tier3_only"`**: skip T1 + T2 entirely. T1 sanitization (role-marker stripping, etc.) is still applied to the returned payload, but the block/allow decision is the T3 verdict alone.
+- **`"tier3_only"`**: skip T1 + T2 entirely. T1 detection still runs to populate `detections` metadata, but content is not rewritten (detect-and-gate) and the block/allow decision is the T3 verdict alone.
 
 Register a provider once at app startup:
 
@@ -164,16 +176,16 @@ Use `allowed` for blocking decisions:
 - `allowed: true` — safe to pass to the LLM
 - `allowed: false` — content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-`riskLevel` is diagnostic metadata. It starts at `medium` (the default) and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced. Use it for logging and monitoring, not for allow/block logic.
+`riskLevel` is diagnostic metadata. It starts at `low` and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced within a call. Use it for logging and monitoring, not for allow/block logic.
 
 Risk escalation from detections:
 
 | Level | Detection Trigger |
 |-------|-------------------|
 | `low` | No threats detected |
-| `medium` | Suspicious patterns, role markers stripped |
-| `high` | Injection patterns detected, content redacted |
-| `critical` | Severe injection attempt with multiple indicators |
+| `medium` | Suspicious patterns or role markers detected |
+| `high` | Injection patterns or suspicious encoding detected |
+| `critical` | Severe injection attempt with multiple high-severity indicators |
 
 ## API
 
@@ -189,7 +201,8 @@ const defense = createPromptDefense({
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
-  defaultRiskLevel: 'medium',
+  sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized = content verbatim) (default: true)
+  defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
   enableTier3: false,           // (default: false)
@@ -210,11 +223,12 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 ```typescript
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
-  riskLevel: RiskLevel;                   // Diagnostic: tool base risk + detection escalation (see docs above)
-  sanitized: unknown;                     // The sanitized tool result
+  riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
+  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (content verbatim when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
   detections: string[];                   // Pattern names detected by Tier 1
-  fieldsSanitized: string[];              // Fields where threats were found (e.g. ['subject', 'body'])
+  fieldsSanitized: string[];              // Fields whose content the cleaner changed in `sanitized` (empty when sanitizeContent:false or no Tier 2); for detections read `detections`/`patternsByField`
   patternsByField: Record<string, string[]>; // Patterns per field
+  detectedFieldCount: number;             // Count of fields with a Tier-1 detection (keys of patternsByField); threat-count signal (fieldsSanitized.length no longer tracks this)
 
   // Tier 2 signals
   tier2Score?: number;                    // ML score that drove the decision (post-density / post-rule)
@@ -236,6 +250,16 @@ interface DefenseResult {
   truncatedAtDepth?: boolean;
 
   latencyMs: number;                      // Total processing time in milliseconds
+
+  // Cost telemetry
+  tier1Ms?: number;                       // Tier 1 pattern-scan time (absent in tier3_only mode)
+  // The rest are present only when the cascade ran the batched Tier 2 classifier:
+  phaseTimings?: { prepareMs: number; inferMs: number; aggregateMs: number }; // Tier 2 time split
+  tier2Stats?: {                          // Tier 2 batch shape + padding counts
+    stringCount: number; chunkCount: number; uniqueChunkCount: number;
+    realTokens: number; paddedTokens: number; // realTokens / paddedTokens = padding efficiency (1.0 = no waste)
+  };
+  coldLoad?: boolean;                     // True when this call loaded the ONNX model (cold start)
 }
 ```
 
@@ -252,7 +276,7 @@ const results = await defense.defendToolResults([
 
 for (const result of results) {
   if (!result.allowed) {
-    console.log(`Blocked: ${result.fieldsSanitized.join(', ')}`);
+    console.log(`Blocked: ${result.detections.join(', ')}`);
   }
 }
 ```
@@ -326,7 +350,9 @@ const result = await generateText({
 
 ## Risky Field Detection
 
-Defender only scans string fields that are likely to contain user-generated or external content. Per-tool overrides focus scanning on the relevant fields:
+This scoping applies to **Tier 1 (pattern detection) on field values**. Tier 2 (ML) scans **all** string values by default regardless of field name, and Tier 1 also scans object **keys** — so the lists below narrow where Tier 1 looks at field *values*, not what Defender inspects overall.
+
+For Tier 1 value scanning, per-tool overrides focus on the fields most likely to carry user-generated or external content:
 
 | Tool Pattern | Scanned Fields |
 |---|---|
@@ -339,7 +365,7 @@ Defender only scans string fields that are likely to contain user-generated or e
 
 Tools not matching any pattern use the default risky field list: `name`, `description`, `content`, `title`, `notes`, `summary`, `bio`, `body`, `text`, `message`, `comment`, `subject`, plus patterns like `*_description`, `*_body`, etc.
 
-Fields like `id`, `url`, `created_at` are never scanned — they aren't in the risky fields list.
+Fields like `id`, `url`, `created_at` are outside the Tier 1 risky-field list, so Tier 1 pattern detection skips their values — but Tier 2 still scores them (it scans all strings), so an injection there is not invisible to Defender.
 
 ## Development
 

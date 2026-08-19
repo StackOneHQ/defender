@@ -7,9 +7,13 @@
  */
 
 import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
-import { DANGEROUS_KEYS, DEFAULT_RISKY_FIELDS, DEFAULT_TRAVERSAL_CONFIG } from "../config";
-import { containsSuspiciousEncodingDeep } from "../sanitizers/encoding-detector";
-import { createSanitizer, type Sanitizer } from "../sanitizers/sanitizer";
+import {
+	DANGEROUS_KEYS,
+	DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
+	DEFAULT_RISKY_FIELDS,
+	DEFAULT_TRAVERSAL_CONFIG,
+} from "../config";
+import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import type {
 	CumulativeRiskTracker,
 	DataBoundary,
@@ -22,7 +26,7 @@ import type {
 	SanitizationResult,
 	TraversalConfig,
 } from "../types";
-import { generateDataBoundary } from "../utils/boundary";
+import { generateDataBoundary, wrapWithBoundary } from "../utils/boundary";
 import { isRiskyField } from "../utils/field-detection";
 import {
 	createSizeMetrics,
@@ -32,6 +36,9 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
+
+/** Risk levels in ascending order, for max-comparison. */
+const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
 
 /**
  * Configuration for the tool result sanitizer
@@ -45,14 +52,18 @@ export interface ToolResultSanitizerConfig {
 	defaultRiskLevel: RiskLevel;
 	/** Whether to use Tier 1 classification */
 	useTier1Classification: boolean;
-	/** Whether to block high/critical risk entirely */
-	blockHighRisk: boolean;
 	/**
 	 * Wrap sanitized string fields with `[UD-<id>]...[/UD-<id>]` boundary
 	 * markers. Default: false. When disabled, boundary generation is skipped
 	 * entirely (no `generateDataBoundary()` call per tool result).
 	 */
 	annotateBoundary: boolean;
+	/**
+	 * Per-field cap (characters) on the text Tier 1 runs heavy regex / encoding
+	 * detection over. ReDoS guard — content past the cap is not analysed and
+	 * `metadata.analysisTruncated` is set. Default: 50000.
+	 */
+	maxFieldAnalysisLength: number;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
@@ -69,10 +80,10 @@ export interface ToolResultSanitizerConfig {
 export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	riskyFields: DEFAULT_RISKY_FIELDS,
 	traversal: DEFAULT_TRAVERSAL_CONFIG,
-	defaultRiskLevel: "medium",
+	defaultRiskLevel: "low",
 	useTier1Classification: true,
-	blockHighRisk: false,
 	annotateBoundary: false,
+	maxFieldAnalysisLength: DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
@@ -111,12 +122,10 @@ export interface SanitizeToolResultOptions {
  */
 export class ToolResultSanitizer {
 	private config: ToolResultSanitizerConfig;
-	private sanitizer: Sanitizer;
 	private patternDetector: PatternDetector;
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.sanitizer = createSanitizer({ annotateBoundary: this.config.annotateBoundary });
 		this.patternDetector = createPatternDetector();
 	}
 
@@ -165,13 +174,21 @@ export class ToolResultSanitizer {
 			riskyFieldNames: [],
 		};
 
-		// Sanitize the value
-		const sanitized = this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
+		// Sanitize the value. A top-level string IS the entire tool result, so run
+		// Tier 1 detection on it directly — sanitizeValue's recursion only scans
+		// strings under risky object fields, so a bare-string result would
+		// otherwise skip Tier 1 entirely (a real gap when Tier 2 is off/unavailable).
+		const sanitized =
+			typeof value === "string"
+				? this.sanitizeStringField(value, context, metadata, true)
+				: this.sanitizeValue(value as SanitizableValue, context, metadata, 0);
 
-		// Check if cumulative risk requires escalation
+		// Check if cumulative risk requires escalation (fragmented attack across
+		// many fields). Raise (max) rather than overwrite so it can't downgrade a
+		// per-field `critical` back to `high`.
 		if (this.shouldEscalate(cumulativeRisk)) {
 			metadata.cumulativeRiskEscalated = true;
-			metadata.overallRiskLevel = "high";
+			this.raiseOverallRisk(metadata, "high");
 		}
 
 		metadata.totalLatencyMs = performance.now() - startTime;
@@ -192,7 +209,18 @@ export class ToolResultSanitizer {
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
 		depth: number,
+		detect: boolean = true,
 	): SanitizableValue {
+		// Strings inside arrays/nesting reach here (object fields go via sanitizeObject).
+		// Scan risky ones so `{ name: [INJ] }` is covered like `{ name: INJ }`.
+		if (typeof value === "string") {
+			if (this.isFieldRisky(context.fieldName, context.toolName)) {
+				return this.sanitizeStringField(value, context, metadata, detect);
+			}
+			updateSizeMetrics(metadata.sizeMetrics, value);
+			return value;
+		}
+
 		// Track size for traversal limiting
 		updateSizeMetrics(metadata.sizeMetrics, value);
 
@@ -215,12 +243,20 @@ export class ToolResultSanitizer {
 
 		// Handle arrays
 		if (Array.isArray(value)) {
-			return this.sanitizeArray(value, context, metadata, depth);
+			return this.sanitizeArray(value, context, metadata, depth, detect);
 		}
 
-		// Handle objects
+		// Handle objects. Only PLAIN objects are traversed/rebuilt — they round-trip
+		// faithfully through Object.entries. Non-plain objects (Date, Map, Set,
+		// Buffer, RegExp, class instances) have no enumerable string fields either
+		// tier scans, and a rebuild would corrupt them (e.g. `new Date()` -> `{}`).
+		// Detect-and-gate returns the original value, so pass them through unchanged.
 		if (typeof value === "object") {
-			return this.sanitizeObject(value as Record<string, SanitizableValue>, context, metadata, depth);
+			const proto = Object.getPrototypeOf(value);
+			if (proto === Object.prototype || proto === null) {
+				return this.sanitizeObject(value as Record<string, SanitizableValue>, context, metadata, depth, detect);
+			}
+			return value;
 		}
 
 		// Primitives (non-string) pass through
@@ -235,39 +271,51 @@ export class ToolResultSanitizer {
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
 		depth: number,
+		detect: boolean = true,
 	): SanitizableValue[] {
-		metadata.sizeMetrics.arrayCount++;
+		// Array/object counting lives in updateSizeMetrics (called on every value
+		// in sanitizeValue, and at the direct call sites below that bypass it).
 
-		// Check for large arrays
-		if (this.config.traversal.skipLargeArrays && arr.length > this.config.traversal.largeArrayThreshold) {
-			// Sanitize first N items only
-			const sampleSize = Math.min(100, arr.length);
-			const sanitized: SanitizableValue[] = [];
-
-			for (let i = 0; i < sampleSize; i++) {
-				const itemContext = {
-					...context,
-					path: `${context.path}[${i}]`,
-				};
-				sanitized.push(this.sanitizeValue(arr[i], itemContext, metadata, depth + 1));
-			}
-
-			// Add notice about skipped items
-			if (arr.length > sampleSize) {
-				sanitized.push(`[${arr.length - sampleSize} more items - sanitization skipped for performance]`);
-			}
-
-			return sanitized;
-		}
-
-		// Sanitize all items
+		// Items are always traversed (structure, key stripping, boundary); Tier 1
+		// detection stops once the call-scoped byte budget is spent. Data is never dropped.
 		return arr.map((item, index) => {
 			const itemContext = {
 				...context,
 				path: `${context.path}[${index}]`,
 			};
-			return this.sanitizeValue(item, itemContext, metadata, depth + 1);
+			return this.sanitizeValue(
+				item,
+				itemContext,
+				metadata,
+				depth + 1,
+				detect && this.detectionAllowed(index, arr.length, metadata),
+			);
 		});
+	}
+
+	/**
+	 * Whether Tier 1 detection may run for entry `index` of a container of `size`.
+	 * Bound by the call-scoped byte budget (`maxSize`), spent in traversal order — so
+	 * it's a PREFIX: a caller-controlled payload order can push content past it. Tier 2
+	 * still scans every string; stratified sampling of the budget is a tracked follow-up
+	 * (matters for oversized-by-design flows, e.g. connect-sdk `scan_anyway`). The
+	 * deprecated `skipLargeArrays` cap is a fixed first-100 (`largeArrayThreshold` only
+	 * triggers it). Skipped detection is flagged via `analysisTruncated`.
+	 */
+	private detectionAllowed(index: number, size: number, metadata: SanitizationMetadata): boolean {
+		if (metadata.sizeMetrics.estimatedBytes >= this.config.traversal.maxSize) {
+			metadata.analysisTruncated = true;
+			return false;
+		}
+		if (
+			this.config.traversal.skipLargeArrays &&
+			size > (this.config.traversal.largeArrayThreshold ?? 1000) &&
+			index >= 100
+		) {
+			metadata.analysisTruncated = true;
+			return false;
+		}
+		return true;
 	}
 
 	/**
@@ -278,30 +326,39 @@ export class ToolResultSanitizer {
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
 		depth: number,
+		detect: boolean = true,
 	): Record<string, SanitizableValue> {
-		metadata.sizeMetrics.objectCount++;
+		// objectCount is incremented once in updateSizeMetrics (via sanitizeValue).
 
 		// Check for paginated response
 		if (isPaginatedResponse(obj)) {
-			return this.sanitizePaginatedResponse(obj, context, metadata, depth);
+			return this.sanitizePaginatedResponse(obj, context, metadata, depth, detect);
 		}
 
 		// Check for wrapped response
 		const structureType = detectStructureType(obj);
 		if (structureType === "wrapped") {
-			return this.sanitizeWrappedResponse(obj, context, metadata, depth);
+			return this.sanitizeWrappedResponse(obj, context, metadata, depth, detect);
 		}
 
-		// Regular object - process each field
+		// Regular object - process each field. Tier 1 detection stops once the
+		// call-scoped byte budget is spent (detectionAllowed); entries still traverse.
 		const result: Record<string, SanitizableValue> = {};
+		const entries = Object.entries(obj);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
+			// Prototype-pollution key stripping is a STRUCTURAL protection — always
+			// applied, even when detection is skipped.
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
 				continue;
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -310,11 +367,11 @@ export class ToolResultSanitizer {
 
 			// Check if this is a risky field that needs sanitization
 			if (this.isFieldRisky(key, context.toolName) && typeof val === "string") {
-				metadata.riskyFieldNames.push(key);
-				result[key] = this.sanitizeStringField(val, fieldContext, metadata);
+				if (entryDetect) metadata.riskyFieldNames.push(key);
+				result[key] = this.sanitizeStringField(val, fieldContext, metadata, entryDetect);
 			} else {
 				// Recurse into non-risky fields
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
@@ -329,28 +386,43 @@ export class ToolResultSanitizer {
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
 		depth: number,
+		detect: boolean = true,
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
 		const dataKeys = new Set(["data", "results", "items", "records"]);
+		const entries = Object.entries(obj);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
 				continue;
 			}
 
+			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
-				path: context.path ? `${context.path}.${key}` : key,
+				path: fieldPath,
 				fieldName: key,
 			};
 
 			if (dataKeys.has(key) && Array.isArray(val)) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1);
+				// Direct sanitizeArray bypasses sanitizeValue, so count the container here.
+				updateSizeMetrics(metadata.sizeMetrics, val as SanitizableValue[]);
+				result[key] = this.sanitizeArray(
+					val as SanitizableValue[],
+					fieldContext,
+					metadata,
+					depth + 1,
+					entryDetect,
+				);
 			} else {
 				// Recurse into non-data fields so nested dangerous keys are filtered too
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
@@ -365,16 +437,22 @@ export class ToolResultSanitizer {
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
 		depth: number,
+		detect: boolean = true,
 	): Record<string, SanitizableValue> {
 		const result: Record<string, SanitizableValue> = {};
+		const entries = Object.entries(obj);
 
-		for (const [key, val] of Object.entries(obj)) {
+		for (let index = 0; index < entries.length; index++) {
+			const [key, val] = entries[index];
+			const entryDetect = detect && this.detectionAllowed(index, entries.length, metadata);
 			if (DANGEROUS_KEYS.has(key)) {
 				const keyPath = context.path ? `${context.path}.${key}` : key;
 				(metadata.dangerousKeysRemoved ??= []).push(keyPath);
 				continue;
 			}
 			const fieldPath = context.path ? `${context.path}.${key}` : key;
+			// Detect injection hidden in the key itself (never rewritten).
+			if (entryDetect) this.detectInKey(key, fieldPath, context, metadata);
 			const fieldContext = {
 				...context,
 				path: fieldPath,
@@ -384,9 +462,17 @@ export class ToolResultSanitizer {
 			// Check if this is the data wrapper
 			const wrappedData = getWrappedData({ [key]: val });
 			if (wrappedData) {
-				result[key] = this.sanitizeArray(val as SanitizableValue[], fieldContext, metadata, depth + 1);
+				// Direct sanitizeArray bypasses sanitizeValue, so count the container here.
+				updateSizeMetrics(metadata.sizeMetrics, val as SanitizableValue[]);
+				result[key] = this.sanitizeArray(
+					val as SanitizableValue[],
+					fieldContext,
+					metadata,
+					depth + 1,
+					entryDetect,
+				);
 			} else {
-				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1);
+				result[key] = this.sanitizeValue(val, fieldContext, metadata, depth + 1, entryDetect);
 			}
 		}
 
@@ -396,107 +482,130 @@ export class ToolResultSanitizer {
 	/**
 	 * Sanitize a string field
 	 */
-	private sanitizeStringField(value: string, context: SanitizationContext, metadata: SanitizationMetadata): string {
-		metadata.sizeMetrics.stringCount++;
+	private sanitizeStringField(
+		value: string,
+		context: SanitizationContext,
+		metadata: SanitizationMetadata,
+		detect: boolean = true,
+	): string {
+		// Count risky-field content toward the size budget. Previously these
+		// strings bypassed updateSizeMetrics entirely (they're handled here, not
+		// via sanitizeValue), so the maxSize cap never applied to the fields that
+		// carry the DoS/latency risk. Always runs (structural accounting).
+		updateSizeMetrics(metadata.sizeMetrics, value);
 
-		// Determine risk level for this field
-		let riskLevel = context.riskLevel;
+		// Tier 1 detection. Skipped (detect=false) for tail items of very large
+		// arrays — those still get structural handling (the size accounting above
+		// and boundary wrapping below) but not the expensive per-string analysis.
+		if (detect) {
+			// Determine risk level for this field
+			let riskLevel = context.riskLevel;
 
-		// Every risky string field counts toward the cumulative-risk
-		// denominator, not just ones that matched a pattern. Otherwise the
-		// fraction check becomes degenerate — matched/matched = 100% trivially
-		// passes, which defeats the fraction threshold for list responses
-		// where most items are benign.
-		if (context.cumulativeRisk) {
-			context.cumulativeRisk.totalFieldsProcessed++;
-		}
+			// Cap the text Tier 1 runs heavy regex / encoding detection over. Beyond
+			// the cap only the head is analysed and `analysisTruncated` is flagged —
+			// bounds worst-case regex cost on hostile inputs (ReDoS guard).
+			const cap = this.config.maxFieldAnalysisLength;
+			const analysisValue = value.length > cap ? value.slice(0, cap) : value;
+			if (value.length > cap) metadata.analysisTruncated = true;
 
-		// Use Tier 1 classification if enabled
-		let tier1Patterns: string[] = [];
-		if (this.config.useTier1Classification) {
-			const classificationResult = this.patternDetector.analyze(value);
+			// Every risky string field counts toward the cumulative-risk
+			// denominator, not just ones that matched a pattern. Otherwise the
+			// fraction check becomes degenerate — matched/matched = 100% trivially
+			// passes, which defeats the fraction threshold for list responses
+			// where most items are benign.
+			if (context.cumulativeRisk) {
+				context.cumulativeRisk.totalFieldsProcessed++;
+			}
 
-			if (classificationResult.hasDetections) {
-				tier1Patterns = classificationResult.matches.map((m) => m.pattern);
+			// Tier 1 detection (detect-and-gate: analyze only, never rewrite the
+			// field). Records detected patterns and escalates the field's risk
+			// level; the block/allow decision is made upstream from that risk level.
+			let tier1Patterns: string[] = [];
+			if (this.config.useTier1Classification) {
+				const classificationResult = this.patternDetector.analyze(analysisValue);
 
-				// Escalate risk based on classification
-				if (classificationResult.suggestedRisk === "critical") {
-					riskLevel = "critical";
-				} else if (classificationResult.suggestedRisk === "high" && riskLevel !== "critical") {
-					riskLevel = "high";
-				} else if (classificationResult.suggestedRisk === "medium" && riskLevel === "low") {
-					riskLevel = "medium";
+				if (classificationResult.hasDetections) {
+					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
+
+					// Escalate risk based on classification
+					if (classificationResult.suggestedRisk === "critical") {
+						riskLevel = "critical";
+					} else if (classificationResult.suggestedRisk === "high" && riskLevel !== "critical") {
+						riskLevel = "high";
+					} else if (classificationResult.suggestedRisk === "medium" && riskLevel === "low") {
+						riskLevel = "medium";
+					}
+
+					// Update cumulative risk tracker — only for real regex pattern matches,
+					// not structural-only detections (high_entropy, excessive_length, etc.).
+					// Structural anomalies fire on legitimate content like UUID-appended field
+					// values in list responses and would cause false cumulative escalations.
+					// Pass suggestedRisk rather than the field's post-escalation riskLevel so that
+					// a low-severity match doesn't inflate mediumRiskCount via the context default.
+					if (context.cumulativeRisk && classificationResult.matches.length > 0) {
+						this.updateCumulativeRisk(
+							context.cumulativeRisk,
+							classificationResult.suggestedRisk,
+							tier1Patterns,
+						);
+					}
 				}
+			}
 
-				// Update cumulative risk tracker — only for real regex pattern matches,
-				// not structural-only detections (high_entropy, excessive_length, etc.).
-				// Structural anomalies fire on legitimate content like UUID-appended field
-				// values in list responses and would cause false cumulative escalations.
-				// Pass suggestedRisk rather than the field's post-escalation riskLevel so that
-				// a low-severity match doesn't inflate mediumRiskCount via the context default.
-				if (context.cumulativeRisk && classificationResult.matches.length > 0) {
-					this.updateCumulativeRisk(
-						context.cumulativeRisk,
-						classificationResult.suggestedRisk,
-						tier1Patterns,
-					);
+			// Suspicious encoding is EVIDENCE-DRIVEN. An encoded blob (base64/ROT13/
+			// Morse/hex/HTML-entity/etc., including chained encodings) hides content
+			// from the Tier 1 scan above, so decode it and re-run the REAL pattern
+			// detector on the decoded text. Escalate only if the DECODED content trips
+			// an actual attack pattern — never on generic keywords. This is what makes
+			// a benign base64 body (e.g. a Gmail message that merely contains the word
+			// "ignore") NOT a false positive, while a base64-wrapped injection still
+			// escalates, with its real patterns reported in `detections`.
+			let escalatedFromEncoding = false;
+			if (this.config.useTier1Classification) {
+				const { text: decoded, levels } = decodeAllLevels(analysisValue);
+				if (levels > 0 && decoded !== analysisValue) {
+					const encResult = this.patternDetector.analyze(decoded);
+					if (encResult.hasDetections && encResult.matches.length > 0) {
+						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
+						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
+						escalatedFromEncoding = true;
+						if (encResult.suggestedRisk === "critical") riskLevel = "critical";
+						else if (encResult.suggestedRisk === "high" && riskLevel !== "critical") riskLevel = "high";
+						else if (encResult.suggestedRisk === "medium" && riskLevel === "low") riskLevel = "medium";
+						if (context.cumulativeRisk) {
+							this.updateCumulativeRisk(context.cumulativeRisk, encResult.suggestedRisk, encPatterns);
+						}
+					}
+				}
+			}
+
+			// Propagate this field's (possibly escalated) risk into the overall
+			// result risk. Raising per field lets a single `critical` field surface
+			// as `critical` overall — cumulative escalation alone only reaches `high`.
+			// No-op for benign fields (risk stays at the "low" default).
+			this.raiseOverallRisk(metadata, riskLevel);
+
+			// Record detection metadata, sourced from the detector (not from mutation
+			// side-effects), so every detected pattern is reported — including
+			// medium-severity matches and matches found only on normalised text.
+			if (tier1Patterns.length > 0 || escalatedFromEncoding) {
+				metadata.fieldsSanitized.push(context.path);
+				const methods: SanitizationMethod[] = [];
+				if (tier1Patterns.length > 0) methods.push("pattern_removal");
+				if (escalatedFromEncoding) methods.push("encoding_detection");
+				metadata.methodsByField[context.path] = methods;
+				if (tier1Patterns.length > 0) {
+					metadata.patternsRemovedByField[context.path] = tier1Patterns;
 				}
 			}
 		}
 
-		// Escalate risk when suspicious encoding is detected (ROT13, binary, Morse,
-		// HTML entities, ROT47, plus chained encodings like btoa(btoa(payload))).
-		// These encodings don't trigger Tier 1 patterns (no fast-filter keywords), so
-		// without this check, risk stays at the default "medium" and encoding detection
-		// in the sanitizer (Step 4, high-risk only) never runs.
-		// Uses the deep multi-level check so doubly-encoded payloads — where the outer
-		// layer decodes to another encoded blob with no visible keywords — are still
-		// caught. The deep check loops up to maxIterations (default 5) with an
-		// amplification guard, so cost stays bounded.
-		let escalatedFromEncoding = false;
-		if (riskLevel !== "high" && riskLevel !== "critical") {
-			if (containsSuspiciousEncodingDeep(value)) {
-				riskLevel = "high";
-				escalatedFromEncoding = true;
-				if (context.cumulativeRisk) {
-					this.updateCumulativeRisk(context.cumulativeRisk, riskLevel, []);
-				}
-			}
-		}
-
-		// Block if high or critical and blocking is enabled
-		if (this.config.blockHighRisk && (riskLevel === "high" || riskLevel === "critical")) {
-			metadata.fieldsSanitized.push(context.path);
-			// Record what triggered the block so DefenseResult.fieldsSanitized (which only
-			// counts active methods) and hasThreats see this as a real threat — otherwise
-			// an encoding-only escalation would keep `allowed: true` despite the redaction.
-			const methods: SanitizationMethod[] = [];
-			if (tier1Patterns.length > 0) methods.push("pattern_removal");
-			if (escalatedFromEncoding) methods.push("encoding_detection");
-			metadata.methodsByField[context.path] = methods;
-			if (tier1Patterns.length > 0) {
-				metadata.patternsRemovedByField[context.path] = tier1Patterns;
-			}
-			return "[CONTENT BLOCKED FOR SECURITY]";
-		}
-
-		// Apply sanitization
-		const result = this.sanitizer.sanitize(value, {
-			riskLevel,
-			boundary: context.boundary,
-			fieldName: context.fieldName,
-		});
-
-		// Update metadata
-		if (result.methodsApplied.length > 0) {
-			metadata.fieldsSanitized.push(context.path);
-			metadata.methodsByField[context.path] = result.methodsApplied;
-			if (result.patternsRemoved.length > 0) {
-				metadata.patternsRemovedByField[context.path] = result.patternsRemoved;
-			}
-		}
-
-		return result.sanitized;
+		// Detect-and-gate: return the ORIGINAL content, never rewritten. Wrap it
+		// in boundary markers when annotation is enabled (structural
+		// data/instruction separation). Blocking is expressed upstream via
+		// `allowed: false` derived from the escalated risk level — not by
+		// mutating the field here.
+		return context.boundary ? wrapWithBoundary(value, context.boundary) : value;
 	}
 
 	// ==========================================================================
@@ -508,6 +617,43 @@ export class ToolResultSanitizer {
 	 */
 	private isFieldRisky(fieldName: string, toolName: string): boolean {
 		return isRiskyField(fieldName, this.config.riskyFields, toolName);
+	}
+
+	/**
+	 * Detect-only scan of an object KEY. Keys are never rewritten — that would
+	 * change the object's shape — but an injection hidden in a key (e.g. an API
+	 * that returns attacker-controlled text as map keys) must still be detected
+	 * so it contributes to the risk/allow decision. Records detected patterns in
+	 * metadata under `"<path> (key)"` and escalates cumulative risk like a
+	 * detected value field. No-op for short/benign keys (the detector's fast
+	 * filter short-circuits, so this is cheap on identifier-shaped keys).
+	 */
+	private detectInKey(
+		key: string,
+		keyPath: string,
+		context: SanitizationContext,
+		metadata: SanitizationMetadata,
+	): void {
+		if (!this.config.useTier1Classification || key.length < 3) return;
+		const cap = this.config.maxFieldAnalysisLength;
+		const analysisKey = key.length > cap ? key.slice(0, cap) : key;
+		// Flag reduced coverage (surfaced as coverageDegraded), matching the value
+		// path — an injection hidden past the cap in a key is unscanned.
+		if (key.length > cap) metadata.analysisTruncated = true;
+		const result = this.patternDetector.analyze(analysisKey);
+		if (!result.hasDetections || result.matches.length === 0) return;
+
+		const patterns = [...new Set(result.matches.map((m) => m.pattern))];
+		const path = `${keyPath} (key)`;
+		const methods: SanitizationMethod[] = ["pattern_removal"];
+		metadata.fieldsSanitized.push(path);
+		metadata.methodsByField[path] = methods;
+		metadata.patternsRemovedByField[path] = patterns;
+		this.raiseOverallRisk(metadata, result.suggestedRisk);
+		if (context.cumulativeRisk) {
+			context.cumulativeRisk.totalFieldsProcessed++;
+			this.updateCumulativeRisk(context.cumulativeRisk, result.suggestedRisk, patterns);
+		}
 	}
 
 	/**
@@ -578,6 +724,17 @@ export class ToolResultSanitizer {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Raise `metadata.overallRiskLevel` to `level` if `level` is higher —
+	 * never lowers it. Keeps the overall result risk as the max of every
+	 * per-field risk and any cumulative escalation.
+	 */
+	private raiseOverallRisk(metadata: SanitizationMetadata, level: RiskLevel): void {
+		if (RISK_ORDER.indexOf(level) > RISK_ORDER.indexOf(metadata.overallRiskLevel)) {
+			metadata.overallRiskLevel = level;
+		}
 	}
 
 	/**

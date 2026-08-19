@@ -27,25 +27,6 @@ export function generateDataBoundary(length: number = 16): DataBoundary {
 }
 
 /**
- * Generate an XML-style boundary (longer but more explicit)
- *
- * @param length - Length of the random ID (default: 16)
- * @returns DataBoundary with XML-style tags
- *
- * @example
- * const boundary = generateXMLBoundary();
- * // { id: 'abc123', startTag: '<user-data-abc123>', endTag: '</user-data-abc123>' }
- */
-export function generateXMLBoundary(length: number = 16): DataBoundary {
-	const id = nanoid(length);
-	return {
-		id,
-		startTag: `<user-data-${id}>`,
-		endTag: `</user-data-${id}>`,
-	};
-}
-
-/**
  * Wrap content with boundary tags
  *
  * @param content - The content to wrap
