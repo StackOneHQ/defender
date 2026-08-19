@@ -295,9 +295,12 @@ export class ToolResultSanitizer {
 
 	/**
 	 * Whether Tier 1 detection may run for entry `index` of a container of `size`.
-	 * Primary bound is the call-scoped byte budget (`maxSize`). The deprecated
-	 * `skipLargeArrays` per-container cap is honored only when explicitly enabled.
-	 * When detection is skipped the coverage loss is flagged via `analysisTruncated`.
+	 * Bound by the call-scoped byte budget (`maxSize`), spent in traversal order — so
+	 * it's a PREFIX: a caller-controlled payload order can push content past it. Tier 2
+	 * still scans every string; stratified sampling of the budget is a tracked follow-up
+	 * (matters for oversized-by-design flows, e.g. connect-sdk `scan_anyway`). The
+	 * deprecated `skipLargeArrays` cap is a fixed first-100 (`largeArrayThreshold` only
+	 * triggers it). Skipped detection is flagged via `analysisTruncated`.
 	 */
 	private detectionAllowed(index: number, size: number, metadata: SanitizationMetadata): boolean {
 		if (metadata.sizeMetrics.estimatedBytes >= this.config.traversal.maxSize) {

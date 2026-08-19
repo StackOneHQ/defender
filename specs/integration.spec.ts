@@ -462,6 +462,9 @@ describe("H6 — large arrays are never truncated", () => {
 
 		expect(out.data).toHaveLength(51); // no data loss
 		expect(result.metadata.analysisTruncated).toBe(true); // budget spent → coverage capped
+		// The budget is spent in traversal order (a prefix): the trailing injection is
+		// past the budget, so Tier 1 does NOT catch it. Pinned so the property is explicit.
+		expect(Object.keys(result.metadata.patternsRemovedByField).some((k) => k.startsWith("data[50]"))).toBe(false);
 	});
 
 	it("still honors the deprecated skipLargeArrays opt-in (legacy per-container cap)", () => {
@@ -478,21 +481,22 @@ describe("H6 — large arrays are never truncated", () => {
 		expect(result.metadata.analysisTruncated).toBe(true); // legacy cap skips items past 100
 	});
 
-	it("still applies structural protections (dangerous-key stripping) to tail items past the scan limit", async () => {
-		const defense = createPromptDefense({ enableTier2: false });
+	it("still applies structural protections (dangerous-key stripping) when detection is capped", async () => {
+		// Force a real cap so item 1400 is genuinely past the detection limit: enable
+		// the deprecated per-container cap (100). Structural key stripping must still
+		// apply to the un-scanned tail.
+		const defense = createPromptDefense({ enableTier2: false, config: { traversal: { skipLargeArrays: true } } });
 		const items: Array<Record<string, unknown>> = Array.from({ length: 1500 }, (_, i) => ({ id: String(i) }));
-		// Inject an own `__proto__` key into a TAIL item. Key stripping is structural
-		// (always applied), independent of the Tier 1 detection budget.
 		items[1400] = JSON.parse('{"id":"1400","__proto__":{"isAdmin":true}}');
 
 		const result = await defense.defendToolResult({ data: items, next: "cur" }, "documents_list_files");
 		const out = result.sanitized as { data: Array<Record<string, unknown>> };
 
 		expect(out.data).toHaveLength(1500);
-		// Detection is skipped for tail items, but structural protection is not:
-		// the dangerous key is still stripped even past the scan limit.
+		expect(result.coverageDegraded).toBe(true); // detection was capped past item 100
+		// Detection is skipped for the tail item, but structural protection is not:
+		// the dangerous key is still stripped even past the cap.
 		expect(Object.hasOwn(out.data[1400], "__proto__")).toBe(false);
-		expect(result.sanitized).toBeDefined();
 	});
 });
 
