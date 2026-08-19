@@ -194,6 +194,7 @@ Risk escalation from detections:
 - **If you gate on `result.allowed`** (block when `false`, otherwise forward the result) — no change needed. `sanitized` is still the value to forward when `allowed` (now sentence-cleaned rather than phrase-redacted).
 - **If you want the raw content**, use `result.original`. For pure detect-and-gate (no rewriting), set **`sanitizeContent: false`** — then `sanitized` equals `original`.
 - Sentence cleaning is **best-effort** (capped by detection). Treat `sanitized` as untrusted; enable **`annotateBoundary: true`** to wrap it as data, and/or tighten `blockHighRisk`/thresholds for genuinely risky content.
+- **Large payloads:** Tier 1 detection is bounded by the call-scoped `maxSize` budget (10MB). Content past the budget is **returned unanalysed** (never dropped) and flagged via `result.coverageDegraded` — so with **Tier 2 off**, unanalysed content can reach the model. Tier 2 (when enabled) still scans every string. `skipLargeArrays`/`largeArrayThreshold` are deprecated opt-ins for the old per-container cap.
 
 Detection, scoring, and the `allowed` decision are unchanged.
 

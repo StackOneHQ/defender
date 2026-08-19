@@ -154,11 +154,12 @@ export interface DefenseResult {
 	 */
 	truncatedAtDepth?: boolean;
 	/**
-	 * True when Tier 1 *detection* coverage was reduced on this payload — a
-	 * field exceeded `maxFieldAnalysisLength`, a large array was only partially
-	 * scanned, or a traversal depth/size limit was hit. Content is still
-	 * returned in full; only detection was capped. Monitor to catch payloads
-	 * shaped to hide content past the analysis limits.
+	 * True when Tier 1 *detection* coverage was reduced on this payload — a field
+	 * exceeded `maxFieldAnalysisLength`, or the call-scoped `maxSize` detection
+	 * budget / a depth limit was hit. Content is still returned in full; only
+	 * detection was capped, and Tier 2 (when enabled) still scanned every string.
+	 * **Absent (not `false`) when coverage was complete** — branch on `=== true`.
+	 * Monitor to catch payloads shaped to hide content past the analysis limits.
 	 */
 	coverageDegraded?: boolean;
 	/** Total processing time in milliseconds */
