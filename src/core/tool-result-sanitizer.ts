@@ -263,7 +263,8 @@ export class ToolResultSanitizer {
 		depth: number,
 		detect: boolean = true,
 	): SanitizableValue[] {
-		metadata.sizeMetrics.arrayCount++;
+		// Array/object counting lives in updateSizeMetrics (called on every value
+		// in sanitizeValue, and at the direct call sites below that bypass it).
 
 		// Large arrays: bound Tier 1 DETECTION cost by only detecting on the first
 		// `scanLimit` items. Items past the limit are STILL fully traversed — for
@@ -308,7 +309,7 @@ export class ToolResultSanitizer {
 		depth: number,
 		detect: boolean = true,
 	): Record<string, SanitizableValue> {
-		metadata.sizeMetrics.objectCount++;
+		// objectCount is incremented once in updateSizeMetrics (via sanitizeValue).
 
 		// Check for paginated response
 		if (isPaginatedResponse(obj)) {
@@ -393,6 +394,8 @@ export class ToolResultSanitizer {
 			};
 
 			if (dataKeys.has(key) && Array.isArray(val)) {
+				// Direct sanitizeArray bypasses sanitizeValue, so count the container here.
+				updateSizeMetrics(metadata.sizeMetrics, val as SanitizableValue[]);
 				result[key] = this.sanitizeArray(
 					val as SanitizableValue[],
 					fieldContext,
@@ -443,6 +446,8 @@ export class ToolResultSanitizer {
 			// Check if this is the data wrapper
 			const wrappedData = getWrappedData({ [key]: val });
 			if (wrappedData) {
+				// Direct sanitizeArray bypasses sanitizeValue, so count the container here.
+				updateSizeMetrics(metadata.sizeMetrics, val as SanitizableValue[]);
 				result[key] = this.sanitizeArray(
 					val as SanitizableValue[],
 					fieldContext,
