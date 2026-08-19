@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/StackOneHQ/defender/compare/defender-v0.7.4...defender-v0.8.0) (2026-08-19)
+
+
+### Features
+
+* **ENG-1084:** detect-and-gate + review hardening (v0.8.0) ([#85](https://github.com/StackOneHQ/defender/issues/85)) ([45d7233](https://github.com/StackOneHQ/defender/commit/45d72330113b03869ee2b489310eb082d3f2bf98))
+
 ## [0.7.4](https://github.com/StackOneHQ/defender/compare/defender-v0.7.3...defender-v0.7.4) (2026-08-11)
 
 
