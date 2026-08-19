@@ -234,11 +234,12 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
   riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
-  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (== original when sanitizeContent:false); best-effort, still gate on `allowed`
+  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (== original when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
   original: unknown;                      // The untouched content, optionally boundary-wrapped; never rewritten
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields whose content the cleaner changed in `sanitized` (empty when sanitizeContent:false or no Tier 2); for detections read `detections`/`patternsByField`
   patternsByField: Record<string, string[]>; // Patterns per field
+  detectedFieldCount: number;             // Count of fields with a Tier-1 detection (keys of patternsByField); threat-count signal (fieldsSanitized.length no longer tracks this)
 
   // Tier 2 signals
   tier2Score?: number;                    // ML score that drove the decision (post-density / post-rule)
