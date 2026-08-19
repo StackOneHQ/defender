@@ -1,9 +1,11 @@
 /**
  * Sentence-level cleaning for the return-both `sanitized` copy.
  *
- * Within a high-risk field, drop the sentences that themselves score high and
- * keep the rest. Best-effort only (capped by detection) — callers still gate on
- * `allowed`. Runs after Tier 2 so per-sentence scores are available.
+ * Within a high-risk field, replace each contiguous run of high-scoring
+ * sentences with a marker and keep the rest, so a mid-content cut stays visible
+ * to consumers that read only `sanitized`. Best-effort only (capped by
+ * detection) — callers still gate on `allowed`. Runs after Tier 2 so
+ * per-sentence scores are available.
  */
 
 import type { Tier2Classifier } from "../classifiers/tier2-classifier";
@@ -18,20 +20,37 @@ export interface SentenceCleanOptions {
 	boundary?: DataBoundary;
 }
 
+/** Inline marker left where a contiguous high-risk run was dropped. */
+export const CONTENT_SANITISED_MARKER = "[CONTENT SANITISED]";
+
 async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCleanOptions): Promise<string> {
 	const sentences = tier2.splitIntoSentences(raw);
 	// A single sentence can't be isolated to a bad part, and benign opaque tokens read
 	// as one sentence — leave it untouched; the verdict/`allowed` still gates it.
 	if (sentences.length <= 1) return raw;
 	const scores = await tier2.classifyChunksBatch(sentences);
-	const kept = sentences.filter((_, i) => (scores[i] ?? 0) < opts.highRiskThreshold);
-	// Every sentence flagged — drop them all rather than blocking the field wholesale.
-	if (kept.length === 0) return "";
+	const isHighRisk = (i: number) => (scores[i] ?? 0) >= opts.highRiskThreshold;
 	// Nothing dropped — return the field verbatim, never a reconstruction (a
 	// rebuilt join can differ from the original and report a spurious change).
-	if (kept.length === sentences.length) return raw;
-	// Strip role markers from survivors as defense-in-depth against a sub-threshold marker.
-	return stripRoleMarkers(kept.join(" ")).trim();
+	if (!sentences.some((_, i) => isHighRisk(i))) return raw;
+	// Collapse each contiguous high-risk run into one marker, keeping surviving
+	// sentences in place. All-high field → just the marker.
+	const parts: string[] = [];
+	let inRun = false;
+	sentences.forEach((sentence, i) => {
+		if (isHighRisk(i)) {
+			if (!inRun) parts.push(CONTENT_SANITISED_MARKER);
+			inRun = true;
+			return;
+		}
+		// Strip role markers from survivors as defense-in-depth against a sub-threshold marker.
+		parts.push(stripRoleMarkers(sentence).trim());
+		inRun = false;
+	});
+	return parts
+		.filter((p) => p.length > 0)
+		.join(" ")
+		.trim();
 }
 
 export interface CleanResult {

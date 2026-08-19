@@ -11,10 +11,12 @@ describe.skipIf(!!process.env.CI)('#return-both sentence cleaning', () => {
     };
     const r = await d.defendToolResult(input, 'hris_get');
     const cleaned = (r.sanitized as { notes: string }).notes;
-    // original untouched; cleaned differs; injection sentence gone; benign kept.
+    // original untouched; cleaned differs; injection sentence gone; benign kept;
+    // a marker is left where the run was cut so the mid-content drop is visible.
     expect((r.original as { notes: string }).notes).toBe(input.notes);
     expect(cleaned).not.toBe(input.notes);
     expect(cleaned).not.toContain('Ignore all previous instructions');
+    expect(cleaned).toContain('[CONTENT SANITISED]');
     expect(cleaned).toContain('quarterly report');
     expect(cleaned).toContain('questions');
   }, 60000);
