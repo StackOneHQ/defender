@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/StackOneHQ/defender/compare/defender-v0.8.0...defender-v0.8.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* trigger build ([#89](https://github.com/StackOneHQ/defender/issues/89)) ([0dc8726](https://github.com/StackOneHQ/defender/commit/0dc8726ab5a7c48273f51b327a0ea83b7ec3c3eb))
+
 ## [0.8.0](https://github.com/StackOneHQ/defender/compare/defender-v0.7.4...defender-v0.8.0) (2026-08-19)
 
 
