@@ -26,7 +26,7 @@
 
 Indirect prompt injection defense and protection for AI agents using tool calls (via MCP, CLI or direct function calling). Detects and gates prompt injection attacks hidden in tool results (emails, documents, PRs, etc.) before they reach your LLM.
 
-Defender returns **both** copies of the tool result: `result.original` is the content untouched, and `result.sanitized` is a **sentence-level cleaned** copy (high-scoring sentences dropped within high-risk fields) — plus an allow/block verdict. Cleaning is best-effort (capped by detection), so still gate on `result.allowed`. Set `sanitizeContent: false` for pure **detect-and-gate**: `sanitized` then equals `original` (no rewriting) and you rely on `allowed`.
+Defender returns `result.sanitized` — a **sentence-level cleaned** copy of the tool result (high-scoring sentences dropped within high-risk fields) — plus an allow/block verdict. Cleaning is best-effort (capped by detection), so still gate on `result.allowed`. Set `sanitizeContent: false` for pure **detect-and-gate**: `sanitized` is then the content verbatim (no rewriting) and you rely on `allowed`.
 
 ## Installation
 
@@ -201,7 +201,7 @@ const defense = createPromptDefense({
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
-  sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized == original) (default: true)
+  sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized = content verbatim) (default: true)
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
@@ -224,8 +224,7 @@ The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
   riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
-  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (== original when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
-  original: unknown;                      // The untouched content, optionally boundary-wrapped; never rewritten
+  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (content verbatim when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields whose content the cleaner changed in `sanitized` (empty when sanitizeContent:false or no Tier 2); for detections read `detections`/`patternsByField`
   patternsByField: Record<string, string[]>; // Patterns per field

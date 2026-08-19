@@ -58,12 +58,6 @@ export interface DefenseResult {
 	 * in which case this equals `original`.
 	 */
 	sanitized: unknown;
-	/**
-	 * The ORIGINAL tool result, never rewritten (optionally boundary-wrapped when
-	 * `annotateBoundary` is enabled). Always present so callers can recover the
-	 * untouched content regardless of `sanitizeContent`.
-	 */
-	original: unknown;
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
 	/**
@@ -295,9 +289,8 @@ export interface PromptDefenseOptions {
 	annotateBoundary?: boolean;
 	/**
 	 * When true (default), `result.sanitized` is a sentence-level cleaned copy of
-	 * the tool result (high-scoring sentences dropped within high-risk fields);
-	 * `result.original` always holds the untouched content. Set false for pure
-	 * detect-and-gate — `sanitized` then equals `original`.
+	 * the tool result (high-scoring sentences dropped within high-risk fields). Set
+	 * false for pure detect-and-gate — `sanitized` is then the content verbatim.
 	 */
 	sanitizeContent?: boolean;
 	/**
@@ -743,7 +736,6 @@ export class PromptDefense {
 			allowed,
 			riskLevel,
 			sanitized: sanitized.sanitized,
-			original: sanitized.sanitized,
 			detections,
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
@@ -1251,8 +1243,8 @@ export class PromptDefense {
 		// it diverges from `tier2Score` on multi-string payloads and under
 		// multi-head aux veto.
 
-		// Return-both: `original` is the detect-only payload; `sanitized` is the
-		// sentence-cleaned copy of its high-risk fields (unless sanitizeContent is off).
+		// `sanitized` is a sentence-cleaned copy of the detect-only payload's
+		// high-risk fields (unless sanitizeContent is off).
 		const original = sanitized.sanitized;
 		const cleanContent =
 			this.sanitizeContent &&
@@ -1270,7 +1262,6 @@ export class PromptDefense {
 			allowed,
 			riskLevel,
 			sanitized: cleanResult.content,
-			original,
 			detections,
 			fieldsSanitized: cleanResult.changedFields,
 			patternsByField: patternsRemovedByField,
