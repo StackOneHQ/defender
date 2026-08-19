@@ -211,6 +211,16 @@ export class ToolResultSanitizer {
 		depth: number,
 		detect: boolean = true,
 	): SanitizableValue {
+		// Strings inside arrays/nesting reach here (object fields go via sanitizeObject).
+		// Scan risky ones so `{ name: [INJ] }` is covered like `{ name: INJ }`.
+		if (typeof value === "string") {
+			if (this.isFieldRisky(context.fieldName, context.toolName)) {
+				return this.sanitizeStringField(value, context, metadata, detect);
+			}
+			updateSizeMetrics(metadata.sizeMetrics, value);
+			return value;
+		}
+
 		// Track size for traversal limiting
 		updateSizeMetrics(metadata.sizeMetrics, value);
 

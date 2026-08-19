@@ -75,6 +75,12 @@ export interface DefenseResult {
 	/** Which patterns were found in which field (e.g. { subject: ['role_marker'], body: ['instruction_override'] }) */
 	patternsByField: Record<string, string[]>;
 	/**
+	 * Count of fields with a Tier-1 pattern detection (the keys of `patternsByField`).
+	 * The threat-count signal to key observability on — `fieldsSanitized.length` no
+	 * longer tracks detections.
+	 */
+	detectedFieldCount: number;
+	/**
 	 * Tier 2 score reported to operators. Designed so the triple
 	 * (`tier2Score`, `riskLevel`, `allowed`) tells one coherent story:
 	 *
@@ -740,6 +746,7 @@ export class PromptDefense {
 			detections,
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
+			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
 			truncatedAtDepth: depthFlag.hit || undefined,
@@ -1266,6 +1273,7 @@ export class PromptDefense {
 			detections,
 			fieldsSanitized: cleanResult.changedFields,
 			patternsByField: patternsRemovedByField,
+			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier2Score: tier2EffectiveScore,
 			tier2RawScore,
 			tier2AuxScore,
