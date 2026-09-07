@@ -369,10 +369,30 @@ Fields like `id`, `url`, `created_at` are outside the Tier 1 risky-field list, s
 
 ## Development
 
+### Local Development
+
+This repo uses [pnpm](https://pnpm.io). The pnpm version is pinned in `package.json` under `packageManager` (Corepack picks it up automatically), and the Node.js version is pinned under `devEngines.runtime` in `package.json` (not `.npmrc`).
+
+pnpm itself needs an existing Node.js to run (unless you installed it via the [standalone installer](https://pnpm.io/installation#using-a-standalone-script)). Once running, pnpm downloads the pinned Node.js version on demand and uses it for `pnpm run` scripts regardless of which Node.js is on your system.
+
+```bash
+corepack enable                   # picks up pnpm@<version> from packageManager
+pnpm install --frozen-lockfile    # downloads the pinned Node.js on first run
+pnpm node --version               # should print the version from devEngines.runtime
+```
+
+Use the pnpm version from `packageManager`. Older pnpm releases ran the strict `engines` check *before* downloading the pinned Node.js ([pnpm/pnpm#10033](https://github.com/pnpm/pnpm/issues/10033)), so an unpinned pnpm can fail with `ERR_PNPM_UNSUPPORTED_ENGINE` instead of fetching the right Node.js.
+
+### Building
+
+```bash
+pnpm build
+```
+
 ### Testing
 
 ```bash
-npm test
+pnpm test
 ```
 
 ## License

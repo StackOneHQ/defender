@@ -22,10 +22,10 @@
     },
     "scripts": {
         "clean": "rimraf dist",
-        "prebuild": "npm run clean",
-        "build": "tsdown --env.NODE_ENV=production --minify && npm run copy-models",
-        "prebuild:dev": "npm run clean",
-        "build:dev": "tsdown --env.NODE_ENV=development && npm run copy-models",
+        "prebuild": "pnpm clean",
+        "build": "tsdown --env.NODE_ENV=production --minify && pnpm copy-models",
+        "prebuild:dev": "pnpm clean",
+        "build:dev": "tsdown --env.NODE_ENV=development && pnpm copy-models",
         "copy-models": "node scripts/copy-models.cjs",
         "code:format": "biome format ./src",
         "code:format:fix": "biome format --write ./src",
@@ -33,13 +33,13 @@
         "code:lint:fix": "biome lint --write ./src",
         "code:check": "biome check ./src",
         "code:check:fix": "biome check --write ./src",
-        "lint": "npm run code:check",
-        "lint:fix": "npm run code:check:fix",
+        "lint": "pnpm code:check",
+        "lint:fix": "pnpm code:check:fix",
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
         "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
-        "prepublishOnly": "npm run build",
-        "publish-release": "npm publish --access=public"
+        "prepublishOnly": "pnpm build",
+        "publish-release": "pnpm publish --access=public --no-git-checks"
     },
     "keywords": [
         "prompt-injection",
@@ -50,6 +50,17 @@
     ],
     "author": "StackOne",
     "license": "Apache-2.0",
+    "packageManager": "pnpm@11.1.1",
+    "engines": {
+        "node": ">=22"
+    },
+    "devEngines": {
+        "runtime": {
+            "name": "node",
+            "version": "22.20.0",
+            "onFail": "download"
+        }
+    },
     "dependencies": {
         "nanoid": "3.3.18"
     },
