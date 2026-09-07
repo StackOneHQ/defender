@@ -1,0 +1,31 @@
+# Fail fast if the active Node.js doesn't satisfy engines.node
+engineStrict: true
+
+# Pin exact versions in package.json on `pnpm add` (e.g. "1.0.0", never
+# "^1.0.0"), keeping dependency versions deterministic across the repo.
+saveExact: true
+
+# Supply-chain hardening: only install versions published >= 7 days ago
+minimumReleaseAge: 10080
+# Trusted first-party packages are exempt so internal fixes land immediately
+minimumReleaseAgeExclude:
+  - '@stackone/*'
+
+# Formerly package.json "pnpm.overrides" — none existed at migration time.
+# overrides:
+#   '<pkg>': '<version>'
+
+# Build-script policy (formerly "pnpm.onlyBuiltDependencies").
+# pnpm 11 requires an EXPLICIT allow/deny per package with install scripts,
+# or CI fails with ERR_PNPM_IGNORED_BUILDS. Prefer false where the package
+# ships prebuilt binaries — verify build+test still pass.
+allowBuilds:
+  # Ships prebuilt CPU binaries for darwin/linux/win32 under bin/napi-v3.
+  # Its postinstall only downloads the (huge) CUDA execution-provider libs on
+  # linux/x64, which we don't use.
+  onnxruntime-node: false
+  # postinstall only prints a version-scheme warning.
+  protobufjs: false
+  # Prebuilt binaries come via optional @img/sharp-* deps; the install script
+  # is just a check with a compile-from-source fallback.
+  sharp: false
