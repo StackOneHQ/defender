@@ -50,6 +50,30 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(result.riskLevel).toBe("high");
 	});
 
+	it("builds record-oriented `field: value` input, not a flat value stream (ENG-2455)", async () => {
+		const provider = makeProvider("allow");
+		setDefaultTier3Provider(provider);
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+		});
+
+		await defense.defendToolResult(
+			{ data: [{ permissionLevel: "create", name: "Base 1" }] },
+			"airtable_list_bases",
+		);
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		// Values keep their field context (fixes the bare-`create`-read-as-directive FP)...
+		expect(input).toContain("permissionLevel: create");
+		expect(input).toContain("name: Base 1");
+		// ...and `create` never appears as a bare directive-looking line on its own.
+		expect(input).not.toMatch(/^create$/m);
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics

@@ -253,6 +253,47 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 }
 
 /**
+ * Serialize a tool result as record-oriented `field: value` blocks for the Tier 3
+ * reviewer (ENG-2455). The flat value stream `extractStrings` produces drops field
+ * context, so bare values (e.g. `create`, a tag name) get misread as directives and
+ * false-positive-blocked. Each record — a top-level array item, else the whole value —
+ * is emitted as `field: value` lines (nested objects → dotted keys, arrays → indexed
+ * keys), blank line between records, so values keep their field. Tier-3 input only;
+ * Tier 1/Tier 2 keep using `extractStrings`.
+ */
+function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
+	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
+		if (v === null || v === undefined) return;
+		if (Array.isArray(v)) {
+			v.forEach((item, i) => {
+				serialize(item, `${prefix}[${i}]`, lines, depth + 1);
+			});
+		} else if (typeof v === "object") {
+			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+				serialize(val, prefix ? `${prefix}.${k}` : k, lines, depth + 1);
+			}
+		} else {
+			const s = typeof v === "string" ? v : String(v);
+			lines.push(prefix ? `${prefix}: ${s}` : s);
+		}
+	}
+
+	const records = Array.isArray(value) ? value : [value];
+	const blocks: string[] = [];
+	for (const record of records) {
+		const lines: string[] = [];
+		serialize(record, "", lines, 0);
+		const block = lines.join("\n").trim();
+		if (block.length > 0) blocks.push(block);
+	}
+	return blocks.join("\n\n");
+}
+
+/**
  * Options for PromptDefense initialization
  */
 export interface PromptDefenseOptions {
@@ -692,8 +733,9 @@ export class PromptDefense {
 		depthFlag: { hit: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
-		const strings = extractStrings(value, undefined, depthFlag).filter((s) => s.length > 0);
-		const joined = strings.join("\n");
+		// ENG-2455: build the Tier 3 reviewer input as record-oriented `field: value`
+		// blocks, not a flat value stream, so bare values keep their field context.
+		const joined = formatRecordsForTier3(value, depthFlag);
 		// Cap input size before the provider call — bounds tokens/cost/latency
 		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
