@@ -255,11 +255,17 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 /**
  * Serialize a tool result as record-oriented `field: value` blocks for the Tier 3
  * reviewer (ENG-2455). The flat value stream `extractStrings` produces drops field
- * context, so bare values (e.g. `create`, a tag name) get misread as directives and
- * false-positive-blocked. Each record — a top-level array item, else the whole value —
- * is emitted as `field: value` lines (nested objects → dotted keys, arrays → indexed
- * keys), blank line between records, so values keep their field. Tier-3 input only;
- * Tier 1/Tier 2 keep using `extractStrings`.
+ * context, so bare string values (e.g. `create`, a tag name) get misread as directives
+ * and false-positive-blocked. Each record — a top-level array item, else the whole value
+ * — emits a `field: value` line per **string** leaf (nested objects → dotted keys, arrays
+ * → indexed keys), blank line between records, so string values keep their field.
+ *
+ * Only string leaves are serialized, matching `extractStrings`: numbers/booleans can't
+ * carry an injection, and emitting them would flood the `tier3MaxTextLength` budget with
+ * id/timestamp/count/flag noise on paginated lists — the size cap in `runTier3Only` would
+ * then slice real content (a late injection) out of the reviewer input entirely.
+ *
+ * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
@@ -267,18 +273,16 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 			depthFlag.hit = true;
 			return;
 		}
-		if (v === null || v === undefined) return;
 		if (Array.isArray(v)) {
 			v.forEach((item, i) => {
 				serialize(item, `${prefix}[${i}]`, lines, depth + 1);
 			});
-		} else if (typeof v === "object") {
+		} else if (v && typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
 				serialize(val, prefix ? `${prefix}.${k}` : k, lines, depth + 1);
 			}
-		} else {
-			const s = typeof v === "string" ? v : String(v);
-			lines.push(prefix ? `${prefix}: ${s}` : s);
+		} else if (typeof v === "string") {
+			lines.push(prefix ? `${prefix}: ${v}` : v);
 		}
 	}
 
