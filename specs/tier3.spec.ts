@@ -135,6 +135,24 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input).toContain("tags[1]: vip");
 	});
 
+	it("indexes primitives in a top-level array so bare values aren't directive-looking lines (Copilot review)", async () => {
+		const provider = makeProvider("allow");
+		setDefaultTier3Provider(provider);
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+		});
+
+		await defense.defendToolResult(["system_email_notification_failure", "urgent"], "zendesk_list_tags");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("[0]: system_email_notification_failure"); // indexed, not bare
+		expect(input).not.toMatch(/^system_email_notification_failure$/m);
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics

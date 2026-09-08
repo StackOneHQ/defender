@@ -254,7 +254,7 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 
 /**
  * Serialize a tool result as record-oriented `field: value` blocks for the Tier 3
- * reviewer (ENG-2455). The flat value stream `extractStrings` produces drops field
+ * reviewer (ENG-2455). The flat value stream that `extractStrings` produces drops field
  * context, so bare string values (e.g. `create`, a tag name) get misread as directives
  * and false-positive-blocked. Each record — a top-level array item, else the whole value
  * — emits a `field: value` line per **string** leaf (nested objects → dotted keys, arrays
@@ -287,10 +287,16 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 	}
 
 	const records = Array.isArray(value) ? value : [value];
+	const topIsArray = Array.isArray(value);
 	const blocks: string[] = [];
-	for (const record of records) {
+	for (let i = 0; i < records.length; i++) {
+		const record = records[i];
 		const lines: string[] = [];
-		serialize(record, "", lines, 0);
+		// Objects become a per-record `field: value` block. A primitive item in a top-level
+		// array keeps its index (`[i]: value`) so it isn't emitted as a bare, directive-
+		// looking line — the FP shape this change targets (e.g. a bare array of tag names).
+		const rootPrefix = topIsArray && (record === null || typeof record !== "object") ? `[${i}]` : "";
+		serialize(record, rootPrefix, lines, 0);
 		const block = lines.join("\n").trim();
 		if (block.length > 0) blocks.push(block);
 	}
