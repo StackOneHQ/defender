@@ -255,34 +255,42 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 /**
  * Serialize a tool result as record-oriented `field: value` blocks for the Tier 3
  * reviewer (ENG-2455). The flat value stream that `extractStrings` produces drops field
- * context, so bare string values (e.g. `create`, a tag name) get misread as directives
- * and false-positive-blocked. Each record — a top-level array item, else the whole value
- * — emits a `field: value` line per **string** leaf (nested objects → dotted keys, arrays
- * → indexed keys), blank line between records, so string values keep their field.
+ * context, so bare values (e.g. `create`, a tag name) get misread as directives and
+ * false-positive-blocked. Each record — a top-level array item, else the whole value —
+ * emits a `field: value` line per scalar leaf (nested objects → dotted keys, arrays →
+ * indexed keys), blank line between records, so values keep their field.
  *
- * Only string leaves are serialized, matching `extractStrings`: numbers/booleans can't
- * carry an injection, and emitting them would flood the `tier3MaxTextLength` budget with
- * id/timestamp/count/flag noise on paginated lists — the size cap in `runTier3Only` would
- * then slice real content (a late injection) out of the reviewer input entirely.
+ * Numbers/booleans ARE serialized (not just strings): on tabular list responses their
+ * presence — `count:`, `isError:`, ids — is the signal that reads the record as benign
+ * data rather than a bare directive list; dropping them regresses the FP fix (measured).
+ * The provider is skipped only when there is NO string leaf at all — a pure number/flag
+ * payload has nothing to review and can't carry an injection.
  *
- * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
+ * Known limitation: a very large list whose scalar volume exceeds `tier3MaxTextLength`
+ * is still prefix-sliced by `runTier3Only`, which can drop late records — a pre-existing
+ * cap-coverage gap tracked separately (needs a per-record/round-robin budget, not a
+ * scalar strip). Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
+	let hasString = false;
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
 			return;
 		}
+		if (v === null || v === undefined) return;
 		if (Array.isArray(v)) {
 			v.forEach((item, i) => {
 				serialize(item, `${prefix}[${i}]`, lines, depth + 1);
 			});
-		} else if (v && typeof v === "object") {
+		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
 				serialize(val, prefix ? `${prefix}.${k}` : k, lines, depth + 1);
 			}
-		} else if (typeof v === "string") {
-			lines.push(prefix ? `${prefix}: ${v}` : v);
+		} else {
+			if (typeof v === "string") hasString = true;
+			const s = String(v);
+			lines.push(prefix ? `${prefix}: ${s}` : s);
 		}
 	}
 
@@ -300,7 +308,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 		const block = lines.join("\n").trim();
 		if (block.length > 0) blocks.push(block);
 	}
-	return blocks.join("\n\n");
+	// No string leaf anywhere → nothing to review (numbers/booleans can't carry an
+	// injection) → return "" so runTier3Only skips the provider call.
+	return hasString ? blocks.join("\n\n") : "";
 }
 
 /**
