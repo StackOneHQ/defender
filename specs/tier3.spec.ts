@@ -85,7 +85,8 @@ describe("PromptDefense tier3_only mode", () => {
 			blockHighRisk: true,
 		});
 
-		const result = await defense.defendToolResult({ status: 200, success: true, count: 5 }, "api_get");
+		// A bare scalar has no string leaf and no keys — unambiguously nothing to review.
+		const result = await defense.defendToolResult(42, "api_get");
 
 		expect(provider.classify).not.toHaveBeenCalled(); // "" input → skip, no billed call
 		expect(result.allowed).toBe(true); // fail-open on skip
