@@ -253,23 +253,12 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 }
 
 /**
- * Serialize a tool result as record-oriented `field: value` blocks for the Tier 3
- * reviewer (ENG-2455). The flat value stream that `extractStrings` produces drops field
- * context, so bare values (e.g. `create`, a tag name) get misread as directives and
- * false-positive-blocked. Each record — a top-level array item, else the whole value —
- * emits a `field: value` line per scalar leaf (nested objects → dotted keys, arrays →
- * indexed keys), blank line between records, so values keep their field.
- *
- * Numbers/booleans ARE serialized (not just strings): on tabular list responses their
- * presence — `count:`, `isError:`, ids — is the signal that reads the record as benign
- * data rather than a bare directive list; dropping them regresses the FP fix (measured).
- * The provider is skipped only when there is NO string leaf at all — a pure number/flag
- * payload has nothing to review and can't carry an injection.
- *
- * Known limitation: a very large list whose scalar volume exceeds `tier3MaxTextLength`
- * is still prefix-sliced by `runTier3Only`, which can drop late records — a pre-existing
- * cap-coverage gap tracked separately (needs a per-record/round-robin budget, not a
- * scalar strip). Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
+ * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
+ * a flat value stream drops field names, so bare values (`create`, a tag name) read as
+ * directives and false-positive-block. Keep scalars including numbers/booleans — on list
+ * responses their presence is the signal that reads a record as benign data, and stripping
+ * them regresses the FP fix (measured). Skip the provider when no string leaf exists.
+ * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
 	let hasString = false;
@@ -300,16 +289,13 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 	for (let i = 0; i < records.length; i++) {
 		const record = records[i];
 		const lines: string[] = [];
-		// Objects become a per-record `field: value` block. A primitive item in a top-level
-		// array keeps its index (`[i]: value`) so it isn't emitted as a bare, directive-
-		// looking line — the FP shape this change targets (e.g. a bare array of tag names).
+		// Index primitive items in a top-level array so they aren't bare directive-looking lines.
 		const rootPrefix = topIsArray && (record === null || typeof record !== "object") ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0);
 		const block = lines.join("\n").trim();
 		if (block.length > 0) blocks.push(block);
 	}
-	// No string leaf anywhere → nothing to review (numbers/booleans can't carry an
-	// injection) → return "" so runTier3Only skips the provider call.
+	// No string leaf → nothing to review → skip the provider (empty input).
 	return hasString ? blocks.join("\n\n") : "";
 }
 
@@ -753,8 +739,7 @@ export class PromptDefense {
 		depthFlag: { hit: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
-		// ENG-2455: build the Tier 3 reviewer input as record-oriented `field: value`
-		// blocks, not a flat value stream, so bare values keep their field context.
+		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
 		const joined = formatRecordsForTier3(value, depthFlag);
 		// Cap input size before the provider call — bounds tokens/cost/latency
 		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
