@@ -278,7 +278,10 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 			});
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-				serialize(val, prefix ? `${prefix}.${k}` : k, lines, depth + 1);
+				// Flatten newlines in keys so a `\n` in a (user-controlled) key can't forge
+				// an extra line or a record boundary in the `field: value` structure.
+				const key = k.replace(/[\r\n]+/g, " ");
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1);
 			}
 		} else {
 			if (typeof v === "string") hasString = true;
