@@ -258,6 +258,8 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
  * directives and false-positive-block. Keep scalars including numbers/booleans — on list
  * responses their presence is the signal that reads a record as benign data, and stripping
  * them regresses the FP fix (measured). Skip the provider when no string leaf exists.
+ * Serialization stops after `maxChars` (the caller's cap) and binary blobs are summarized,
+ * so a large numeric array/Buffer costs O(cap), not O(payload).
  *
  * Multi-line string values are prefixed per line and object keys flatten newlines, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
@@ -266,20 +268,40 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
  * stays a bare line; blank lines separate only top-level records, not nested fields.
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
-function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
+function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
 	let hasString = false;
+	// Approximate emitted length. The caller slices the result to maxChars anyway, so once
+	// we have that much there's nothing left to review — stop, and a huge numeric array or
+	// Buffer costs O(cap) instead of being fully serialized then discarded. The count omits
+	// separators (undercounts), so we only ever over-emit and the caller's slice still makes
+	// the exact cut — output is byte-identical to the un-budgeted version for any payload
+	// that fits under the cap.
+	let used = 0;
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
+		if (used >= maxChars) return;
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
 			return;
 		}
 		if (v === null || v === undefined) return;
+		if (ArrayBuffer.isView(v)) {
+			// Binary blob (Buffer/TypedArray/DataView): summarize, never one line per byte —
+			// bytes carry no injection and would flood the cap with noise.
+			const line = prefix
+				? `${prefix}: <binary ${(v as ArrayBufferView).byteLength} bytes>`
+				: `<binary ${(v as ArrayBufferView).byteLength} bytes>`;
+			lines.push(line);
+			used += line.length;
+			return;
+		}
 		if (Array.isArray(v)) {
-			v.forEach((item, i) => {
-				serialize(item, `${prefix}[${i}]`, lines, depth + 1);
-			});
+			for (let i = 0; i < v.length; i++) {
+				if (used >= maxChars) break;
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1);
+			}
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+				if (used >= maxChars) break;
 				// Flatten newlines in keys so a `\n` in a (user-controlled) key can't forge
 				// an extra line or a record boundary in the `field: value` structure.
 				const key = k.replace(/[\r\n]+/g, " ");
@@ -290,7 +312,10 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 			if (typeof v === "string" && s.length > 0) hasString = true;
 			if (!prefix) {
 				// Top-level scalar — no field to attach (see the docstring exceptions).
-				if (s.length > 0) lines.push(s);
+				if (s.length > 0) {
+					lines.push(s);
+					used += s.length;
+				}
 				return;
 			}
 			// Per-line prefix (option C, e3-validated: recall 0.995 vs 0.79 for collapse).
@@ -298,7 +323,10 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 			// multi-line value can't emit a bare directive line or forge a `\n\n` record
 			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
 			for (const line of s.split(/\r?\n/)) {
-				if (line.length > 0) lines.push(`${prefix}: ${line}`);
+				if (used >= maxChars) break;
+				if (line.length === 0) continue;
+				lines.push(`${prefix}: ${line}`);
+				used += prefix.length + line.length + 2;
 			}
 		}
 	}
@@ -307,6 +335,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 	const topIsArray = Array.isArray(value);
 	const blocks: string[] = [];
 	for (let i = 0; i < records.length; i++) {
+		if (used >= maxChars) break;
 		const record = records[i];
 		const lines: string[] = [];
 		// Index primitive items in a top-level array so they aren't bare directive-looking lines.
@@ -759,7 +788,8 @@ export class PromptDefense {
 		startTime: number,
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
-		const joined = formatRecordsForTier3(value, depthFlag);
+		// The cap is passed in so a huge payload isn't fully serialized just to be sliced.
+		const joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
 		// Cap input size before the provider call — bounds tokens/cost/latency
 		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;

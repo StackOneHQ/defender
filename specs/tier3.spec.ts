@@ -190,6 +190,45 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(result.allowed).toBe(true);
 	});
 
+	it("bounds serialization cost on a large numeric array — input is capped, not built in full", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider, maxTextLength: 500 },
+		});
+
+		// 50k numeric leaves would serialize to ~600KB unbounded; the budget stops at the cap.
+		const bigArray = Array.from({ length: 50000 }, (_, i) => i);
+		await defense.defendToolResult({ note: "review me", data: bigArray }, "api_get");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input.length).toBeLessThanOrEqual(500); // capped
+		expect(input).toContain("note: review me"); // the reviewable string survives (emitted first)
+		expect(input).not.toContain("data[49999]"); // the tail never got built
+	});
+
+	it("summarizes a binary blob instead of emitting one line per byte", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		await defense.defendToolResult({ label: "ok", blob: Buffer.from([1, 2, 3, 4]) }, "files_get");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("blob: <binary 4 bytes>"); // summarized
+		expect(input).not.toContain("blob[0]"); // not per-byte
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics
