@@ -258,6 +258,10 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
  * directives and false-positive-block. Keep scalars including numbers/booleans — on list
  * responses their presence is the signal that reads a record as benign data, and stripping
  * them regresses the FP fix (measured). Skip the provider when no string leaf exists.
+ *
+ * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the
+ * FP shape): a top-level scalar (e.g. a bare string tool result) has no field to attach
+ * and stays a bare line; blank lines separate only top-level records, not nested fields.
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {

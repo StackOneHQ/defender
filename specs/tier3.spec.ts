@@ -111,7 +111,7 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input).toContain("tags[1]: vip");
 	});
 
-	it("indexes primitives in a top-level array so bare values aren't directive-looking lines (Copilot review)", async () => {
+	it("indexes primitives in a top-level array so bare values aren't directive-looking lines", async () => {
 		const provider = makeProvider("allow");
 		setDefaultTier3Provider(provider);
 		const defense = createPromptDefense({
