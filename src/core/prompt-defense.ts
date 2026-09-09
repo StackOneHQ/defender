@@ -292,8 +292,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 		// Index primitive items in a top-level array so they aren't bare directive-looking lines.
 		const rootPrefix = topIsArray && (record === null || typeof record !== "object") ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0);
-		const block = lines.join("\n").trim();
-		if (block.length > 0) blocks.push(block);
+		if (lines.length > 0) blocks.push(lines.join("\n"));
 	}
 	// No string leaf → nothing to review → skip the provider (empty input).
 	return hasString ? blocks.join("\n\n") : "";
