@@ -264,8 +264,9 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
  * Multi-line string values are prefixed per line and object keys flatten newlines, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
  * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the FP
- * shape): a top-level scalar (e.g. a bare string tool result) has no field to attach and
- * stays a bare line; blank lines separate only top-level records, not nested fields.
+ * shape): a top-level string scalar (a bare string tool result) has no field to attach and
+ * stays a bare line — a bare number/boolean has no string to review, so it's skipped
+ * entirely; blank lines separate only top-level records, not nested fields.
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
