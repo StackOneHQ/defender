@@ -235,6 +235,26 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input).not.toContain("blob[0]"); // not per-byte
 	});
 
+	it("indexes non-object top-level array elements (nested arrays, binary) so records keep identity", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		await defense.defendToolResult([["a"], Buffer.from([1, 2, 3]), "note"], "matrix_get");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("[0][0]: a"); // nested array keeps the top-level index, no collision
+		expect(input).toContain("[1]: <binary 3 bytes>"); // binary element indexed, not a bare line
+		expect(input).toContain("[2]: note");
+		expect(input).not.toMatch(/^<binary/m);
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics

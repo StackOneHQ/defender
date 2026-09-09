@@ -345,8 +345,12 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		if (used >= maxChars) break;
 		const record = records[i];
 		const lines: string[] = [];
-		// Index primitive items in a top-level array so they aren't bare directive-looking lines.
-		const rootPrefix = topIsArray && (record === null || typeof record !== "object") ? `[${i}]` : "";
+		// Index a top-level array element unless it's a keyed object (whose field names already
+		// carry context). Primitives, nested arrays and binary views get `[i]` so they keep
+		// record identity and don't collide or emit bare lines.
+		const isKeyedObject =
+			record !== null && typeof record === "object" && !Array.isArray(record) && !ArrayBuffer.isView(record);
+		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0);
 		if (lines.length > 0) blocks.push(lines.join("\n"));
 	}
