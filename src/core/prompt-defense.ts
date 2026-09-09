@@ -259,9 +259,11 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
  * responses their presence is the signal that reads a record as benign data, and stripping
  * them regresses the FP fix (measured). Skip the provider when no string leaf exists.
  *
- * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the
- * FP shape): a top-level scalar (e.g. a bare string tool result) has no field to attach
- * and stays a bare line; blank lines separate only top-level records, not nested fields.
+ * Multi-line string values are prefixed per line and object keys flatten newlines, so no
+ * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
+ * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the FP
+ * shape): a top-level scalar (e.g. a bare string tool result) has no field to attach and
+ * stays a bare line; blank lines separate only top-level records, not nested fields.
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): string {
@@ -284,9 +286,20 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }): str
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1);
 			}
 		} else {
-			if (typeof v === "string") hasString = true;
 			const s = String(v);
-			lines.push(prefix ? `${prefix}: ${s}` : s);
+			if (typeof v === "string" && s.length > 0) hasString = true;
+			if (!prefix) {
+				// Top-level scalar — no field to attach (see the docstring exceptions).
+				if (s.length > 0) lines.push(s);
+				return;
+			}
+			// Per-line prefix (option C, e3-validated: recall 0.995 vs 0.79 for collapse).
+			// Every physical line keeps its field, and empty lines are dropped, so a
+			// multi-line value can't emit a bare directive line or forge a `\n\n` record
+			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
+			for (const line of s.split(/\r?\n/)) {
+				if (line.length > 0) lines.push(`${prefix}: ${line}`);
+			}
 		}
 	}
 
