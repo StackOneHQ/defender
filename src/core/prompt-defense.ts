@@ -252,16 +252,22 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 	return strings;
 }
 
+// Characters that render as a line break. Normalized in keys and used to split values so a
+// newline / CR / U+2028 / U+2029 / NEL in (user-controlled) content can't forge a bare
+// line or a `\n\n` record boundary in the Tier-3 `field: value` output.
+const TIER3_LINE_BREAKS = /[\r\n\u2028\u2029\u0085]/;
+const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
+
 /**
  * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
  * a flat value stream drops field names, so bare values (`create`, a tag name) read as
  * directives and false-positive-block. Keep scalars including numbers/booleans — on list
  * responses their presence is the signal that reads a record as benign data, and stripping
- * them regresses the FP fix (measured). Skip the provider when no string leaf exists.
- * Serialization stops after `maxChars` (the caller's cap) and binary blobs are summarized,
- * so a large numeric array/Buffer costs O(cap), not O(payload).
+ * them regresses the FP fix (measured). Skip the provider when no non-empty string leaf
+ * exists. Serialization stops after `maxChars` (the caller's cap) and binary blobs are
+ * summarized, so a large numeric array/Buffer costs O(cap), not O(payload).
  *
- * Multi-line string values are prefixed per line and object keys flatten newlines, so no
+ * Multi-line string values are prefixed per line and object keys flatten line breaks, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
  * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the FP
  * shape): a top-level string scalar (a bare string tool result) has no field to attach and
@@ -303,9 +309,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
 				if (used >= maxChars) break;
-				// Flatten newlines in keys so a `\n` in a (user-controlled) key can't forge
-				// an extra line or a record boundary in the `field: value` structure.
-				const key = k.replace(/[\r\n]+/g, " ");
+				// Flatten line breaks in keys so a newline / U+2028 / etc. in a (user-controlled) key
+				// can't forge an extra line or a record boundary in the `field: value` structure.
+				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1);
 			}
 		} else {
@@ -323,7 +329,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// Every physical line keeps its field, and empty lines are dropped, so a
 			// multi-line value can't emit a bare directive line or forge a `\n\n` record
 			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
-			for (const line of s.split(/\r?\n/)) {
+			for (const line of s.split(TIER3_LINE_BREAKS)) {
 				if (used >= maxChars) break;
 				if (line.length === 0) continue;
 				lines.push(`${prefix}: ${line}`);
