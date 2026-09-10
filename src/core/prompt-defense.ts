@@ -334,10 +334,25 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// command-list rhythm), not numeric values — so `key: [N numbers]` keeps the
 			// framing while a big embedding no longer floods the budget and starves later
 			// string leaves (the crowd-out regression). Strings/objects are never collapsed.
-			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
-				const kind = v.every((x) => typeof x === "number") ? "numbers" : "values";
-				fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`);
-				return;
+			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD) {
+				// One pass decides both "all non-string scalars?" (collapse-safe) and the label,
+				// short-circuiting on the first non-scalar. A safe collapse must confirm every
+				// element (a late string can't be dropped), so this stays O(array) — the general
+				// traversal bound is the ENG-2530 follow-up.
+				let allScalar = true;
+				let allNumber = true;
+				for (const x of v) {
+					if (!isNonStringScalar(x)) {
+						allScalar = false;
+						break;
+					}
+					if (typeof x !== "number") allNumber = false;
+				}
+				if (allScalar) {
+					const kind = allNumber ? "numbers" : "values";
+					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`);
+					return;
+				}
 			}
 			for (let i = 0; i < v.length; i++) {
 				if (used >= cap) break;
