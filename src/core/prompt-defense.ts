@@ -258,14 +258,25 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 const TIER3_LINE_BREAKS = /[\r\n\u2028\u2029\u0085]/;
 const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
 
+// A large array of only these leaves is collapsed to `key: [N numbers]` (see
+// formatRecordsForTier3): the individual values carry no injection and enumerating them
+// would flood the Tier-3 budget and starve string leaves. Strings and objects are never
+// collapsed (reviewable content / carry field context).
+const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
+function isNonStringScalar(v: unknown): boolean {
+	return v === null || v === undefined || typeof v === "number" || typeof v === "boolean";
+}
+
 /**
  * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
  * a flat value stream drops field names, so bare values (`create`, a tag name) read as
- * directives and false-positive-block. Keep scalars including numbers/booleans — on list
- * responses their presence is the signal that reads a record as benign data, and stripping
- * them regresses the FP fix (measured). Skip the provider when no non-empty string leaf
- * exists. Serialization stops after `maxChars` (the caller's cap) and binary blobs are
- * summarized, so a large numeric array/Buffer costs O(cap), not O(payload).
+ * directives and false-positive-block. The `key:` framing on every leaf — not the values
+ * themselves — is what stops that (e3-measured: the field structure breaks the command-list
+ * rhythm; stripping keys/scalars regresses the FP). So scalar fields are kept, but a large
+ * array of non-string scalars is collapsed to `key: [N numbers]` — structure kept, volume
+ * dropped — so a big embedding can't flood the budget and starve string leaves. Skip the
+ * provider when no non-empty string leaf exists. Serialization stops after `maxChars` (the
+ * caller's cap) and binary blobs are summarized, so cost is O(cap), not O(payload).
  *
  * Multi-line string values are prefixed per line and object keys flatten line breaks, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
@@ -302,6 +313,17 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			return;
 		}
 		if (Array.isArray(v)) {
+			// Collapse a large array of only non-string scalars to a structural summary. e3
+			// measured that the FP fix comes from field-key STRUCTURE (`key:` breaks the
+			// command-list rhythm), not numeric values — so `key: [N numbers]` keeps the
+			// framing while a big embedding no longer floods the budget and starves later
+			// string leaves (the crowd-out regression). Strings/objects are never collapsed.
+			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
+				const line = prefix ? `${prefix}: [${v.length} numbers]` : `[${v.length} numbers]`;
+				lines.push(line);
+				used += line.length;
+				return;
+			}
 			for (let i = 0; i < v.length; i++) {
 				if (used >= maxChars) break;
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1);
