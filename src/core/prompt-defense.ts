@@ -429,7 +429,11 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		// carry context). Primitives, nested arrays and binary views get `[i]` so they keep
 		// record identity and don't collide or emit bare lines.
 		const isKeyedObject =
-			record !== null && typeof record === "object" && !Array.isArray(record) && !ArrayBuffer.isView(record);
+			record !== null &&
+			typeof record === "object" &&
+			!Array.isArray(record) &&
+			!ArrayBuffer.isView(record) &&
+			!(record instanceof ArrayBuffer);
 		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0, false);
 		if (lines.length > 0) blocks.push(lines.join("\n"));
