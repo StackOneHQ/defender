@@ -267,6 +267,12 @@ function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || typeof v === "number" || typeof v === "boolean";
 }
 
+// Round-robin truncation floor: the smallest per-record share worth emitting (enough for a
+// field key + some value). Below this the slice can't carry field context. A list longer than
+// maxChars / this many records can't give every record a share — those tail records are
+// dropped (striding is the follow-up). e3-tunable — a volume/coverage knob, not FP-sensitive.
+const TIER3_MIN_PER_RECORD_CHARS = 64;
+
 /**
  * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
  * a flat value stream drops field names, so bare values (`create`, a tag name) read as
@@ -280,6 +286,8 @@ function isNonStringScalar(v: unknown): boolean {
  *
  * Multi-line string values are prefixed per line and object keys flatten line breaks, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
+ * The budget is split round-robin across top-level records (each gets an equal share, long
+ * values cut to fit) so an injection in a late record is still reviewed rather than sliced off.
  * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the FP
  * shape): a top-level string scalar (a bare string tool result) has no field to attach and
  * stays a bare line — a bare number/boolean has no string to review, so it's skipped
@@ -288,15 +296,15 @@ function isNonStringScalar(v: unknown): boolean {
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
 	let hasString = false;
-	// Approximate emitted length. The caller slices the result to maxChars anyway, so once
-	// we have that much there's nothing left to review — stop, and a huge numeric array or
-	// Buffer costs O(cap) instead of being fully serialized then discarded. The count omits
-	// separators (undercounts), so we only ever over-emit and the caller's slice still makes
-	// the exact cut — output is byte-identical to the un-budgeted version for any payload
-	// that fits under the cap.
+	// `used` is the running (approximate) emitted length; `cap` is the current ceiling. For
+	// round-robin coverage `cap` is reset per record to that record's share of the budget, so
+	// an injection in a late record is still reviewed instead of sliced off. Long values are
+	// cut to fit the share (at whole-line boundaries, or truncated keeping the `key:` prefix,
+	// never leaving a bare fragment). Separators are uncounted (we only over-emit).
 	let used = 0;
+	let cap = maxChars;
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
-		if (used >= maxChars) return;
+		if (used >= cap) return;
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
 			return;
@@ -309,7 +317,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				? `${prefix}: <binary ${(v as ArrayBufferView).byteLength} bytes>`
 				: `<binary ${(v as ArrayBufferView).byteLength} bytes>`;
 			lines.push(line);
-			used += line.length;
+			used += line.length + 2; // +2 covers the join separators, so used >= joined length
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -321,16 +329,16 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
 				const line = prefix ? `${prefix}: [${v.length} numbers]` : `[${v.length} numbers]`;
 				lines.push(line);
-				used += line.length;
+				used += line.length + 2;
 				return;
 			}
 			for (let i = 0; i < v.length; i++) {
-				if (used >= maxChars) break;
+				if (used >= cap) break;
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1);
 			}
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-				if (used >= maxChars) break;
+				if (used >= cap) break;
 				// Flatten line breaks in keys so a newline / U+2028 / etc. in a (user-controlled) key
 				// can't forge an extra line or a record boundary in the `field: value` structure.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
@@ -342,8 +350,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			if (!prefix) {
 				// Top-level scalar — no field to attach (see the docstring exceptions).
 				if (s.length > 0) {
-					lines.push(s);
-					used += s.length;
+					const room = cap - used;
+					lines.push(s.length <= room ? s : s.slice(0, room));
+					used += Math.min(s.length, room) + 2;
 				}
 				return;
 			}
@@ -352,19 +361,38 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// multi-line value can't emit a bare directive line or forge a `\n\n` record
 			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
 			for (const line of s.split(TIER3_LINE_BREAKS)) {
-				if (used >= maxChars) break;
+				if (used >= cap) break;
 				if (line.length === 0) continue;
-				lines.push(`${prefix}: ${line}`);
-				used += prefix.length + line.length + 2;
+				const full = `${prefix}: ${line}`;
+				const room = cap - used;
+				if (full.length <= room) {
+					lines.push(full);
+					used += full.length + 2;
+				} else if (room > prefix.length + 2) {
+					// Truncate the value to this record's remaining share — keeps `key:` context.
+					lines.push(full.slice(0, room));
+					used = cap;
+					break;
+				} else {
+					break; // not enough room left to keep field context
+				}
 			}
 		}
 	}
 
 	const records = Array.isArray(value) ? value : [value];
 	const topIsArray = Array.isArray(value);
+	// Round-robin: give each top-level record an equal share of the budget rather than filling
+	// front-to-back, so an injection in a late record is still reviewed (a plain prefix slice
+	// drops late records entirely) and the reviewed input stays short + representative (e3: a
+	// long front-loaded input induces hallucinated blocks). A record shorter than its share
+	// uses less; a longer one is cut to fit. Lists longer than maxChars/perRecord still lose a
+	// tail (striding is the follow-up).
+	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
 	const blocks: string[] = [];
 	for (let i = 0; i < records.length; i++) {
 		if (used >= maxChars) break;
+		cap = Math.min(used + perRecord, maxChars);
 		const record = records[i];
 		const lines: string[] = [];
 		// Index a top-level array element unless it's a keyed object (whose field names already
