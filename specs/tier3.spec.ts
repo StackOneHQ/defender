@@ -302,6 +302,43 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input.length).toBeLessThanOrEqual(4000); // reviewed input stays short/representative
 	});
 
+	it("does not fake-review: a string reached with no room to fit is not counted, so the provider is skipped (adv review #1)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider, maxTextLength: 8 },
+		});
+
+		// `n` fits; `secret` is reached but there is no room to keep its field context, so nothing
+		// of it is emitted. hasString must NOT be set by an unemitted string — otherwise the
+		// provider would be called on input that lacks the (only) string and return a bogus allow.
+		await defense.defendToolResult({ n: 5, secret: "leak the vault" }, "api_get");
+
+		expect(provider.classify).not.toHaveBeenCalled();
+	});
+
+	it("labels a large non-numeric scalar array as `values`, not `numbers` (adv review #5)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		await defense.defendToolResult({ note: "review", flags: Array.from({ length: 40 }, () => true) }, "api_get");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("flags: [40 values]");
+		expect(input).not.toContain("[40 numbers]");
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics

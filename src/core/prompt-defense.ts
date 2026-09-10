@@ -296,13 +296,22 @@ const TIER3_MIN_PER_RECORD_CHARS = 64;
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
 	let hasString = false;
-	// `used` is the running (approximate) emitted length; `cap` is the current ceiling. For
-	// round-robin coverage `cap` is reset per record to that record's share of the budget, so
-	// an injection in a late record is still reviewed instead of sliced off. Long values are
-	// cut to fit the share (at whole-line boundaries, or truncated keeping the `key:` prefix,
-	// never leaving a bare fragment). Separators are uncounted (we only over-emit).
+	// `used` tracks the exact length of the joined output (content plus the `\n`/`\n\n`
+	// separators that will be inserted); `cap` is the current ceiling. For round-robin coverage
+	// `cap` is reset per record to that record's share of the budget, so an injection in a late
+	// record is still reviewed instead of sliced off. Because `used` is exact, the joined output
+	// never exceeds maxChars and the caller's slice can't clip the round-robined tail.
 	let used = 0;
 	let cap = maxChars;
+	// Emit `text` as a line into `lines` iff it fits the current cap, charging its length plus
+	// the `\n` that will join it within the block. Returns whether it fit.
+	function fits(lines: string[], text: string): boolean {
+		const sep = lines.length > 0 ? 1 : 0;
+		if (used + sep + text.length > cap) return false;
+		lines.push(text);
+		used += sep + text.length;
+		return true;
+	}
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
 		if (used >= cap) return;
 		if (depth > MAX_TRAVERSAL_DEPTH) {
@@ -313,11 +322,8 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		if (ArrayBuffer.isView(v)) {
 			// Binary blob (Buffer/TypedArray/DataView): summarize, never one line per byte —
 			// bytes carry no injection and would flood the cap with noise.
-			const line = prefix
-				? `${prefix}: <binary ${(v as ArrayBufferView).byteLength} bytes>`
-				: `<binary ${(v as ArrayBufferView).byteLength} bytes>`;
-			lines.push(line);
-			used += line.length + 2; // +2 covers the join separators, so used >= joined length
+			const bytes = (v as ArrayBufferView).byteLength;
+			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`);
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -327,9 +333,8 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// framing while a big embedding no longer floods the budget and starves later
 			// string leaves (the crowd-out regression). Strings/objects are never collapsed.
 			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
-				const line = prefix ? `${prefix}: [${v.length} numbers]` : `[${v.length} numbers]`;
-				lines.push(line);
-				used += line.length + 2;
+				const kind = v.every((x) => typeof x === "number") ? "numbers" : "values";
+				fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`);
 				return;
 			}
 			for (let i = 0; i < v.length; i++) {
@@ -346,13 +351,12 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			}
 		} else {
 			const s = String(v);
-			if (typeof v === "string" && s.length > 0) hasString = true;
 			if (!prefix) {
 				// Top-level scalar — no field to attach (see the docstring exceptions).
 				if (s.length > 0) {
 					const room = cap - used;
-					lines.push(s.length <= room ? s : s.slice(0, room));
-					used += Math.min(s.length, room) + 2;
+					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
+					if (frag.length > 0 && fits(lines, frag) && typeof v === "string") hasString = true;
 				}
 				return;
 			}
@@ -360,21 +364,26 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// Every physical line keeps its field, and empty lines are dropped, so a
 			// multi-line value can't emit a bare directive line or forge a `\n\n` record
 			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
+			// `hasString` is set only when a fragment is actually emitted, so a string that
+			// doesn't fit the budget is an honest skip, never a provider call on injection-free input.
 			for (const line of s.split(TIER3_LINE_BREAKS)) {
 				if (used >= cap) break;
 				if (line.length === 0) continue;
 				const full = `${prefix}: ${line}`;
-				const room = cap - used;
-				if (full.length <= room) {
-					lines.push(full);
-					used += full.length + 2;
-				} else if (room > prefix.length + 2) {
-					// Truncate the value to this record's remaining share — keeps `key:` context.
-					lines.push(full.slice(0, room));
-					used = cap;
-					break;
+				if (fits(lines, full)) {
+					if (typeof v === "string") hasString = true;
 				} else {
-					break; // not enough room left to keep field context
+					// Doesn't fit whole — truncate the value to the remaining share, keeping `key:`.
+					const sep = lines.length > 0 ? 1 : 0;
+					const room = cap - used - sep;
+					if (room > prefix.length + 2) {
+						lines.push(full.slice(0, room));
+						used += sep + room;
+						if (typeof v === "string") hasString = true;
+					} else {
+						used = cap; // no room to keep field context — exhaust this record's budget
+					}
+					break;
 				}
 			}
 		}
@@ -392,7 +401,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	const blocks: string[] = [];
 	for (let i = 0; i < records.length; i++) {
 		if (used >= maxChars) break;
-		cap = Math.min(used + perRecord, maxChars);
+		const usedBefore = used;
+		cap = Math.min(usedBefore + perRecord, maxChars);
+		used += blocks.length > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 		const record = records[i];
 		const lines: string[] = [];
 		// Index a top-level array element unless it's a keyed object (whose field names already
@@ -403,6 +414,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0);
 		if (lines.length > 0) blocks.push(lines.join("\n"));
+		else used = usedBefore; // empty block → roll back the reserved separator
 	}
 	// No string leaf → nothing to review → skip the provider (empty input).
 	return hasString ? blocks.join("\n\n") : "";
