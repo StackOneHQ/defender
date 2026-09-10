@@ -252,71 +252,46 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 	return strings;
 }
 
-// Characters that render as a line break. Normalized in keys and used to split values so a
-// newline / CR / U+2028 / U+2029 / NEL in (user-controlled) content can't forge a bare
-// line or a `\n\n` record boundary in the Tier-3 `field: value` output.
+// Line breaks (incl. U+2028/U+2029/NEL): flattened in keys, split in values, so neither can
+// forge a bare line or a `\n\n` record boundary.
 const TIER3_LINE_BREAKS = /[\r\n\u2028\u2029\u0085]/;
 const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
 
-// A large array of only these leaves is collapsed to `key: [N numbers]` (see
-// formatRecordsForTier3): the individual values carry no injection and enumerating them
-// would flood the Tier-3 budget and starve string leaves. Strings and objects are never
-// collapsed (reviewable content / carry field context).
+// A large array of only non-string scalars collapses to `key: [N …]`: the values carry no
+// injection and enumerating them would flood the budget and starve string leaves.
 const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
 function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || typeof v === "number" || typeof v === "boolean";
 }
 
-// Round-robin truncation floor: the smallest per-record share worth emitting (enough for a
-// field key + some value). Below this the slice can't carry field context. A list longer than
-// maxChars / this many records can't give every record a share — those tail records are
-// dropped (striding is the follow-up). e3-tunable — a volume/coverage knob, not FP-sensitive.
+// Smallest per-record share worth emitting; lists longer than maxChars/this drop a tail (ENG-2530).
 const TIER3_MIN_PER_RECORD_CHARS = 64;
 
-// Within a record, non-string scalars (numbers/booleans and the `[N …]`/`<binary>` summaries)
-// may use at most this fraction of the record's share; the rest is reserved for string leaves,
-// so many scalar fields can't crowd the only reviewable string out of review (a fail-open).
-// e3-tunable — per e3's finding the FP signal is field-key structure, not scalar volume, so
-// capping excess scalar volume (while keeping the keys) doesn't weaken the FP fix.
+// Per record, non-string scalars use at most this fraction of the share; the rest is reserved
+// for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
 
 /**
- * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
- * a flat value stream drops field names, so bare values (`create`, a tag name) read as
- * directives and false-positive-block. The `key:` framing on every leaf — not the values
- * themselves — is what stops that (e3-measured: the field structure breaks the command-list
- * rhythm; stripping keys/scalars regresses the FP). So scalar fields are kept, but a large
- * array of non-string scalars is collapsed to `key: [N numbers]` — structure kept, volume
- * dropped — so a big embedding can't flood the budget and starve string leaves. Non-string
- * scalars are additionally capped per record (`TIER3_SCALAR_BUDGET_FRACTION`) so a wall of
- * numeric fields can't crowd out a later string leaf either. Skip the provider when no
- * non-empty string leaf is emitted (nothing was extracted to review). Serialization stops
- * after `maxChars` (the caller's cap) and binary blobs are summarized, so cost is O(cap).
- *
- * Multi-line string values are prefixed per line and object keys flatten line breaks, so no
- * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
- * The budget is split round-robin across top-level records (each gets an equal share, long
- * values cut to fit) so an injection in a late record is still reviewed rather than sliced off.
- * Exceptions to the `field: value` shape (intentional — don't "fix" them back into the FP
- * shape): a top-level string scalar (a bare string tool result) has no field to attach and
- * stays a bare line — a bare number/boolean has no string to review, so it's skipped
- * entirely; blank lines separate only top-level records, not nested fields.
+ * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
+ * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
+ * name) read as directives and false-positive-block; the per-leaf `key:` framing prevents that
+ * (e3: the signal is the field structure, not the values). Large non-string-scalar arrays
+ * collapse to `key: [N …]` and per-record scalar volume is capped, so numbers can't flood the
+ * budget and starve string leaves; the budget is split round-robin across records so a late
+ * record's injection is still reviewed. Values are cut to fit (whole lines / keeping `key:`),
+ * so the join stays within `maxChars`. Skip the provider when no string leaf is emitted.
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
+ *
+ * Bare-line exception (intentional): a top-level scalar string has no field, so it stays bare.
  */
 function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
 	let hasString = false;
-	// `used` tracks the exact length of the joined output (content plus the `\n`/`\n\n`
-	// separators that will be inserted); `cap` is the current ceiling. For round-robin coverage
-	// `cap` is reset per record to that record's share of the budget, so an injection in a late
-	// record is still reviewed instead of sliced off. Because `used` is exact, the joined output
-	// never exceeds maxChars and the caller's slice can't clip the round-robined tail.
+	// `used` = exact joined length (content + separators), so the join never exceeds maxChars;
+	// `cap` (per-record share) and `nonStringCap` (its scalar sub-budget) are reset per record.
 	let used = 0;
 	let cap = maxChars;
-	// Non-string scalars are capped at `nonStringCap` (a fraction of the record's share) so they
-	// can't starve string leaves; strings use the full `cap`. Both are reset per record.
 	let nonStringCap = maxChars;
-	// Emit `text` as a line into `lines` iff it fits `limit`, charging its length plus the `\n`
-	// that will join it within the block. Returns whether it fit.
+	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
 		if (used + sep + text.length > limit) return false;
@@ -324,8 +299,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		used += sep + text.length;
 		return true;
 	}
-	// `keyed` is true when this value sits under a field/index (so it has context, even if the
-	// key is empty); it's false only for a top-level scalar record. It decides bare-vs-`field:`.
+	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
 		if (used >= cap) return;
 		if (depth > MAX_TRAVERSAL_DEPTH) {
@@ -334,23 +308,16 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		}
 		if (v === null || v === undefined) return;
 		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
-			// Binary blob (Buffer/TypedArray/DataView/ArrayBuffer): summarize, never one line per
-			// byte — bytes carry no injection and would flood the cap with noise.
+			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
 			const bytes = (v as { byteLength: number }).byteLength;
 			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, nonStringCap);
 			return;
 		}
 		if (Array.isArray(v)) {
-			// Collapse a large array of only non-string scalars to a structural summary. e3
-			// measured that the FP fix comes from field-key STRUCTURE (`key:` breaks the
-			// command-list rhythm), not numeric values — so `key: [N numbers]` keeps the
-			// framing while a big embedding no longer floods the budget and starves later
-			// string leaves (the crowd-out regression). Strings/objects are never collapsed.
+			// Collapse a large all-non-string-scalar array to `key: [N …]` (structure kept, volume
+			// dropped). One pass confirms all-scalar (a late string can't be dropped) and picks the
+			// label; O(array) is the ENG-2530 traversal-bound follow-up.
 			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD) {
-				// One pass decides both "all non-string scalars?" (collapse-safe) and the label,
-				// short-circuiting on the first non-scalar. A safe collapse must confirm every
-				// element (a late string can't be dropped), so this stays O(array) — the general
-				// traversal bound is the ENG-2530 follow-up.
 				let allScalar = true;
 				let allNumber = true;
 				for (const x of v) {
@@ -373,21 +340,18 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
 				if (used >= cap) break;
-				// Flatten line breaks in keys so a newline / U+2028 / etc. in a (user-controlled) key
-				// can't forge an extra line or a record boundary in the `field: value` structure.
+				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
 			}
 		} else {
 			const s = String(v);
 			const isStr = typeof v === "string";
-			// Strings may use the full record budget; non-string scalars only their reserved slice,
-			// so a wall of numeric fields can't crowd out a later string leaf (the fail-open).
+			// Strings get the full cap; non-string scalars only their reserved slice (anti-crowd-out).
 			const limit = isStr ? cap : nonStringCap;
 			if (!prefix && !keyed) {
-				// Top-level scalar record — no field to attach (see the docstring exceptions). An
-				// empty-key field (`keyed` true, prefix "") instead falls through to `: value` below,
-				// so it can't emit a bare directive-looking line.
+				// Top-level scalar record — bare (see docstring). An empty-key field is `keyed`, so it
+				// takes the `: value` path below instead of going bare.
 				if (s.length > 0) {
 					const room = limit - used;
 					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
@@ -395,12 +359,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				}
 				return;
 			}
-			// Per-line prefix (option C, e3-validated: recall 0.995 vs 0.79 for collapse).
-			// Every physical line keeps its field, and empty lines are dropped, so a
-			// multi-line value can't emit a bare directive line or forge a `\n\n` record
-			// boundary — the FP/forge shape ENG-2455 targets, closed by construction.
-			// `hasString` is set only when a fragment is actually emitted, so a string that
-			// doesn't fit the budget is an honest skip, never a provider call on injection-free input.
+			// Per-line `field:` prefix (e3: recall 0.995 vs 0.79 for collapse) so a multi-line value
+			// can't emit a bare line or forge a boundary. hasString only on actual emit — a string
+			// that doesn't fit is an honest skip, not a provider call on injection-free input.
 			for (const line of s.split(TIER3_LINE_BREAKS)) {
 				if (used >= limit) break;
 				if (line.length === 0) continue;
@@ -408,7 +369,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				if (fits(lines, full, limit)) {
 					if (isStr) hasString = true;
 				} else if (isStr) {
-					// String doesn't fit whole — truncate to the remaining share, keeping `key:`.
+					// String: truncate to the remaining share, keeping `key:`; else exhaust the record.
 					const sep = lines.length > 0 ? 1 : 0;
 					const room = cap - used - sep;
 					if (room > prefix.length + 2) {
@@ -416,13 +377,11 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 						used += sep + room;
 						hasString = true;
 					} else {
-						used = cap; // no room to keep field context — exhaust this record's budget
+						used = cap;
 					}
 					break;
 				} else {
-					// Non-string scalar past its reserved sub-budget: skip it but keep traversing,
-					// so a later string leaf in the same record is still reached and reviewed.
-					break;
+					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
 				}
 			}
 		}
@@ -430,12 +389,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 
 	const records = Array.isArray(value) ? value : [value];
 	const topIsArray = Array.isArray(value);
-	// Round-robin: give each top-level record an equal share of the budget rather than filling
-	// front-to-back, so an injection in a late record is still reviewed (a plain prefix slice
-	// drops late records entirely) and the reviewed input stays short + representative (e3: a
-	// long front-loaded input induces hallucinated blocks). A record shorter than its share
-	// uses less; a longer one is cut to fit. Lists longer than maxChars/perRecord still lose a
-	// tail (striding is the follow-up).
+	// Round-robin: each top-level record gets an equal share of the budget, so a late record's
+	// injection isn't sliced off and the input stays short (e3: long front-loaded input induces
+	// hallucinated blocks). Lists longer than maxChars/perRecord drop a tail (ENG-2530).
 	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
 	const blocks: string[] = [];
 	for (let i = 0; i < records.length; i++) {
@@ -446,9 +402,8 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		used += blocks.length > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 		const record = records[i];
 		const lines: string[] = [];
-		// Index a top-level array element unless it's a keyed object (whose field names already
-		// carry context). Primitives, nested arrays and binary views get `[i]` so they keep
-		// record identity and don't collide or emit bare lines.
+		// Index a top-level array element unless it's a keyed object (its keys already give context);
+		// primitives, nested arrays and binary get `[i]` to keep record identity / avoid bare lines.
 		const isKeyedObject =
 			record !== null &&
 			typeof record === "object" &&
@@ -905,10 +860,8 @@ export class PromptDefense {
 		startTime: number,
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
-		// The cap is passed in so a huge payload isn't fully serialized just to be sliced.
 		const joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
-		// Cap input size before the provider call — bounds tokens/cost/latency
-		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
+		// Safety net; the serializer already keeps the join within the cap.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
 
 		let verdict: Tier3Verdict | undefined;
