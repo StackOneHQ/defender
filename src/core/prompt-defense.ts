@@ -312,17 +312,19 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		used += sep + text.length;
 		return true;
 	}
-	function serialize(v: unknown, prefix: string, lines: string[], depth: number): void {
+	// `keyed` is true when this value sits under a field/index (so it has context, even if the
+	// key is empty); it's false only for a top-level scalar record. It decides bare-vs-`field:`.
+	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
 		if (used >= cap) return;
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
 			return;
 		}
 		if (v === null || v === undefined) return;
-		if (ArrayBuffer.isView(v)) {
-			// Binary blob (Buffer/TypedArray/DataView): summarize, never one line per byte —
-			// bytes carry no injection and would flood the cap with noise.
-			const bytes = (v as ArrayBufferView).byteLength;
+		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+			// Binary blob (Buffer/TypedArray/DataView/ArrayBuffer): summarize, never one line per
+			// byte — bytes carry no injection and would flood the cap with noise.
+			const bytes = (v as { byteLength: number }).byteLength;
 			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`);
 			return;
 		}
@@ -339,7 +341,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			}
 			for (let i = 0; i < v.length; i++) {
 				if (used >= cap) break;
-				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1);
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
@@ -347,12 +349,14 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				// Flatten line breaks in keys so a newline / U+2028 / etc. in a (user-controlled) key
 				// can't forge an extra line or a record boundary in the `field: value` structure.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
-				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1);
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
 			}
 		} else {
 			const s = String(v);
-			if (!prefix) {
-				// Top-level scalar — no field to attach (see the docstring exceptions).
+			if (!prefix && !keyed) {
+				// Top-level scalar record — no field to attach (see the docstring exceptions). An
+				// empty-key field (`keyed` true, prefix "") instead falls through to `: value` below,
+				// so it can't emit a bare directive-looking line.
 				if (s.length > 0) {
 					const room = cap - used;
 					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
@@ -412,7 +416,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		const isKeyedObject =
 			record !== null && typeof record === "object" && !Array.isArray(record) && !ArrayBuffer.isView(record);
 		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
-		serialize(record, rootPrefix, lines, 0);
+		serialize(record, rootPrefix, lines, 0, false);
 		if (lines.length > 0) blocks.push(lines.join("\n"));
 		else used = usedBefore; // empty block → roll back the reserved separator
 	}
