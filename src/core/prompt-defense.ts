@@ -273,6 +273,13 @@ function isNonStringScalar(v: unknown): boolean {
 // dropped (striding is the follow-up). e3-tunable — a volume/coverage knob, not FP-sensitive.
 const TIER3_MIN_PER_RECORD_CHARS = 64;
 
+// Within a record, non-string scalars (numbers/booleans and the `[N …]`/`<binary>` summaries)
+// may use at most this fraction of the record's share; the rest is reserved for string leaves,
+// so many scalar fields can't crowd the only reviewable string out of review (a fail-open).
+// e3-tunable — per e3's finding the FP signal is field-key structure, not scalar volume, so
+// capping excess scalar volume (while keeping the keys) doesn't weaken the FP fix.
+const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
+
 /**
  * Build the Tier 3 reviewer input as record-oriented `field: value` blocks (ENG-2455):
  * a flat value stream drops field names, so bare values (`create`, a tag name) read as
@@ -280,9 +287,11 @@ const TIER3_MIN_PER_RECORD_CHARS = 64;
  * themselves — is what stops that (e3-measured: the field structure breaks the command-list
  * rhythm; stripping keys/scalars regresses the FP). So scalar fields are kept, but a large
  * array of non-string scalars is collapsed to `key: [N numbers]` — structure kept, volume
- * dropped — so a big embedding can't flood the budget and starve string leaves. Skip the
- * provider when no non-empty string leaf exists. Serialization stops after `maxChars` (the
- * caller's cap) and binary blobs are summarized, so cost is O(cap), not O(payload).
+ * dropped — so a big embedding can't flood the budget and starve string leaves. Non-string
+ * scalars are additionally capped per record (`TIER3_SCALAR_BUDGET_FRACTION`) so a wall of
+ * numeric fields can't crowd out a later string leaf either. Skip the provider when no
+ * non-empty string leaf is emitted (nothing was extracted to review). Serialization stops
+ * after `maxChars` (the caller's cap) and binary blobs are summarized, so cost is O(cap).
  *
  * Multi-line string values are prefixed per line and object keys flatten line breaks, so no
  * value or key can emit a bare directive line or forge a `field:`/`\n\n` record boundary.
@@ -303,11 +312,14 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	// never exceeds maxChars and the caller's slice can't clip the round-robined tail.
 	let used = 0;
 	let cap = maxChars;
-	// Emit `text` as a line into `lines` iff it fits the current cap, charging its length plus
-	// the `\n` that will join it within the block. Returns whether it fit.
-	function fits(lines: string[], text: string): boolean {
+	// Non-string scalars are capped at `nonStringCap` (a fraction of the record's share) so they
+	// can't starve string leaves; strings use the full `cap`. Both are reset per record.
+	let nonStringCap = maxChars;
+	// Emit `text` as a line into `lines` iff it fits `limit`, charging its length plus the `\n`
+	// that will join it within the block. Returns whether it fit.
+	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
-		if (used + sep + text.length > cap) return false;
+		if (used + sep + text.length > limit) return false;
 		lines.push(text);
 		used += sep + text.length;
 		return true;
@@ -325,7 +337,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// Binary blob (Buffer/TypedArray/DataView/ArrayBuffer): summarize, never one line per
 			// byte — bytes carry no injection and would flood the cap with noise.
 			const bytes = (v as { byteLength: number }).byteLength;
-			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`);
+			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, nonStringCap);
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -350,7 +362,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				}
 				if (allScalar) {
 					const kind = allNumber ? "numbers" : "values";
-					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`);
+					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, nonStringCap);
 					return;
 				}
 			}
@@ -368,14 +380,18 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			}
 		} else {
 			const s = String(v);
+			const isStr = typeof v === "string";
+			// Strings may use the full record budget; non-string scalars only their reserved slice,
+			// so a wall of numeric fields can't crowd out a later string leaf (the fail-open).
+			const limit = isStr ? cap : nonStringCap;
 			if (!prefix && !keyed) {
 				// Top-level scalar record — no field to attach (see the docstring exceptions). An
 				// empty-key field (`keyed` true, prefix "") instead falls through to `: value` below,
 				// so it can't emit a bare directive-looking line.
 				if (s.length > 0) {
-					const room = cap - used;
+					const room = limit - used;
 					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
-					if (frag.length > 0 && fits(lines, frag) && typeof v === "string") hasString = true;
+					if (frag.length > 0 && fits(lines, frag, limit) && isStr) hasString = true;
 				}
 				return;
 			}
@@ -386,22 +402,26 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			// `hasString` is set only when a fragment is actually emitted, so a string that
 			// doesn't fit the budget is an honest skip, never a provider call on injection-free input.
 			for (const line of s.split(TIER3_LINE_BREAKS)) {
-				if (used >= cap) break;
+				if (used >= limit) break;
 				if (line.length === 0) continue;
 				const full = `${prefix}: ${line}`;
-				if (fits(lines, full)) {
-					if (typeof v === "string") hasString = true;
-				} else {
-					// Doesn't fit whole — truncate the value to the remaining share, keeping `key:`.
+				if (fits(lines, full, limit)) {
+					if (isStr) hasString = true;
+				} else if (isStr) {
+					// String doesn't fit whole — truncate to the remaining share, keeping `key:`.
 					const sep = lines.length > 0 ? 1 : 0;
 					const room = cap - used - sep;
 					if (room > prefix.length + 2) {
 						lines.push(full.slice(0, room));
 						used += sep + room;
-						if (typeof v === "string") hasString = true;
+						hasString = true;
 					} else {
 						used = cap; // no room to keep field context — exhaust this record's budget
 					}
+					break;
+				} else {
+					// Non-string scalar past its reserved sub-budget: skip it but keep traversing,
+					// so a later string leaf in the same record is still reached and reviewed.
 					break;
 				}
 			}
@@ -422,6 +442,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		if (used >= maxChars) break;
 		const usedBefore = used;
 		cap = Math.min(usedBefore + perRecord, maxChars);
+		nonStringCap = Math.min(usedBefore + Math.floor(perRecord * TIER3_SCALAR_BUDGET_FRACTION), cap);
 		used += blocks.length > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 		const record = records[i];
 		const lines: string[] = [];
