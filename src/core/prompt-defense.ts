@@ -252,6 +252,187 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 	return strings;
 }
 
+// Line breaks (incl. U+2028/U+2029/NEL): flattened in keys, split in values, so neither can
+// forge a bare line or a `\n\n` record boundary.
+const TIER3_LINE_BREAKS = /[\r\n\u2028\u2029\u0085]/;
+const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
+
+// A large array of only non-string scalars collapses to `key: [N …]`: the values carry no
+// injection and enumerating them would flood the budget and starve string leaves.
+const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
+function isNonStringScalar(v: unknown): boolean {
+	return v === null || v === undefined || typeof v === "number" || typeof v === "boolean";
+}
+
+// Smallest per-record share worth emitting; lists longer than maxChars/this drop a tail (ENG-2530).
+const TIER3_MIN_PER_RECORD_CHARS = 64;
+
+// Per record, non-string scalars use at most this fraction of the share; the rest is reserved
+// for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
+const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
+
+// Cap on nodes visited while serializing (a DoS guard, decoupled from the review cap): emission
+// stops at maxChars, but traversal can keep walking no-op nodes (empty objects, scanned scalars)
+// on an untrusted payload. Counted, not byte-sized — empty objects are ~0 bytes but real work.
+// Generous: realistic payloads visit a few thousand; only millions-of-nodes payloads trip it.
+const TIER3_MAX_TRAVERSAL_NODES = 100_000;
+
+/**
+ * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
+ * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
+ * name) read as directives and false-positive-block; the per-leaf `key:` framing prevents that
+ * (e3: the signal is the field structure, not the values). Large non-string-scalar arrays
+ * collapse to `key: [N …]` and per-record scalar volume is capped, so numbers can't flood the
+ * budget and starve string leaves; the budget is split round-robin across records so a late
+ * record's injection is still reviewed. Values are cut to fit (whole lines / keeping `key:`),
+ * so the join stays within `maxChars`. Skip the provider when no string leaf is emitted.
+ * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
+ *
+ * Bare-line exception (intentional): a top-level scalar string has no field, so it stays bare.
+ */
+function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
+	let hasString = false;
+	// `used` = exact joined length (content + separators), so the join never exceeds maxChars;
+	// `cap` (per-record share) and `nonStringCap` (its scalar sub-budget) are reset per record.
+	let used = 0;
+	let cap = maxChars;
+	let nonStringCap = maxChars;
+	let nodes = 0; // nodes visited — bounds traversal work on a pathological payload (DoS guard)
+	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
+	function fits(lines: string[], text: string, limit: number): boolean {
+		const sep = lines.length > 0 ? 1 : 0;
+		if (used + sep + text.length > limit) return false;
+		lines.push(text);
+		used += sep + text.length;
+		return true;
+	}
+	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
+	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
+		if (used >= cap) return;
+		if (++nodes > TIER3_MAX_TRAVERSAL_NODES || depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true; // truncated: payload too deep or too broad to fully traverse
+			return;
+		}
+		if (v === null || v === undefined) return;
+		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
+			const bytes = (v as { byteLength: number }).byteLength;
+			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, nonStringCap);
+			return;
+		}
+		if (Array.isArray(v)) {
+			// Collapse a large all-non-string-scalar array to `key: [N …]` (structure kept, volume
+			// dropped). One pass confirms all-scalar (a late string can't be dropped) and picks the
+			// label; the scan is bounded by the node budget (bails to per-element past it).
+			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD) {
+				let allScalar = true;
+				let allNumber = true;
+				let scanned = 0;
+				for (const x of v) {
+					// Bound the collapse scan: past the node budget we can't confirm a late string
+					// isn't present, so don't collapse — fall through to the node-bounded loop below.
+					if (nodes + ++scanned > TIER3_MAX_TRAVERSAL_NODES) {
+						allScalar = false;
+						break;
+					}
+					if (!isNonStringScalar(x)) {
+						allScalar = false;
+						break;
+					}
+					if (typeof x !== "number") allNumber = false;
+				}
+				if (allScalar) {
+					const kind = allNumber ? "numbers" : "values";
+					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, nonStringCap);
+					return;
+				}
+			}
+			for (let i = 0; i < v.length; i++) {
+				if (used >= cap || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
+			}
+		} else if (typeof v === "object") {
+			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+				if (used >= cap || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
+				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
+				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
+			}
+		} else {
+			const s = String(v);
+			const isStr = typeof v === "string";
+			// Strings get the full cap; non-string scalars only their reserved slice (anti-crowd-out).
+			const limit = isStr ? cap : nonStringCap;
+			if (!prefix && !keyed) {
+				// Top-level scalar record — bare (see docstring). An empty-key field is `keyed`, so it
+				// takes the `: value` path below instead of going bare.
+				if (s.length > 0) {
+					const room = limit - used;
+					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
+					if (frag.length > 0 && fits(lines, frag, limit) && isStr) hasString = true;
+				}
+				return;
+			}
+			// Per-line `field:` prefix (e3: recall 0.995 vs 0.79 for collapse) so a multi-line value
+			// can't emit a bare line or forge a boundary. hasString only on actual emit — a string
+			// that doesn't fit is an honest skip, not a provider call on injection-free input.
+			for (const line of s.split(TIER3_LINE_BREAKS)) {
+				if (used >= limit) break;
+				if (line.length === 0) continue;
+				const full = `${prefix}: ${line}`;
+				if (fits(lines, full, limit)) {
+					if (isStr) hasString = true;
+				} else if (isStr) {
+					// String: truncate to the remaining share, keeping `key:`; else exhaust the record.
+					const sep = lines.length > 0 ? 1 : 0;
+					const room = cap - used - sep;
+					if (room > prefix.length + 2) {
+						lines.push(full.slice(0, room));
+						used += sep + room;
+						hasString = true;
+					} else {
+						used = cap;
+					}
+					break;
+				} else {
+					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
+				}
+			}
+		}
+	}
+
+	const records = Array.isArray(value) ? value : [value];
+	const topIsArray = Array.isArray(value);
+	// Round-robin: each top-level record gets an equal share of the budget, so a late record's
+	// injection isn't sliced off and the input stays short (e3: long front-loaded input induces
+	// hallucinated blocks). Lists longer than maxChars/perRecord drop a tail (ENG-2530).
+	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
+	const blocks: string[] = [];
+	for (let i = 0; i < records.length; i++) {
+		if (used >= maxChars || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
+		const usedBefore = used;
+		cap = Math.min(usedBefore + perRecord, maxChars);
+		nonStringCap = Math.min(usedBefore + Math.floor(perRecord * TIER3_SCALAR_BUDGET_FRACTION), cap);
+		used += blocks.length > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
+		const record = records[i];
+		const lines: string[] = [];
+		// Index a top-level array element unless it's a keyed object (its keys already give context);
+		// primitives, nested arrays and binary get `[i]` to keep record identity / avoid bare lines.
+		const isKeyedObject =
+			record !== null &&
+			typeof record === "object" &&
+			!Array.isArray(record) &&
+			!ArrayBuffer.isView(record) &&
+			!(record instanceof ArrayBuffer);
+		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
+		serialize(record, rootPrefix, lines, 0, false);
+		if (lines.length > 0) blocks.push(lines.join("\n"));
+		else used = usedBefore; // empty block → roll back the reserved separator
+	}
+	// No string leaf → nothing to review → skip the provider (empty input).
+	return hasString ? blocks.join("\n\n") : "";
+}
+
 /**
  * Options for PromptDefense initialization
  */
@@ -692,10 +873,9 @@ export class PromptDefense {
 		depthFlag: { hit: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
-		const strings = extractStrings(value, undefined, depthFlag).filter((s) => s.length > 0);
-		const joined = strings.join("\n");
-		// Cap input size before the provider call — bounds tokens/cost/latency
-		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
+		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
+		const joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
+		// Safety net; the serializer already keeps the join within the cap.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
 
 		let verdict: Tier3Verdict | undefined;
