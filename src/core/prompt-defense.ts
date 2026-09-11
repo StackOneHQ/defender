@@ -271,6 +271,12 @@ const TIER3_MIN_PER_RECORD_CHARS = 64;
 // for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
 
+// Cap on nodes visited while serializing (a DoS guard, decoupled from the review cap): emission
+// stops at maxChars, but traversal can keep walking no-op nodes (empty objects, scanned scalars)
+// on an untrusted payload. Counted, not byte-sized — empty objects are ~0 bytes but real work.
+// Generous: realistic payloads visit a few thousand; only millions-of-nodes payloads trip it.
+const TIER3_MAX_TRAVERSAL_NODES = 100_000;
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -291,6 +297,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	let used = 0;
 	let cap = maxChars;
 	let nonStringCap = maxChars;
+	let nodes = 0; // nodes visited — bounds traversal work on a pathological payload (DoS guard)
 	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
@@ -302,8 +309,8 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
 		if (used >= cap) return;
-		if (depth > MAX_TRAVERSAL_DEPTH) {
-			depthFlag.hit = true;
+		if (++nodes > TIER3_MAX_TRAVERSAL_NODES || depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true; // truncated: payload too deep or too broad to fully traverse
 			return;
 		}
 		if (v === null || v === undefined) return;
@@ -316,11 +323,18 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		if (Array.isArray(v)) {
 			// Collapse a large all-non-string-scalar array to `key: [N …]` (structure kept, volume
 			// dropped). One pass confirms all-scalar (a late string can't be dropped) and picks the
-			// label; O(array) is the ENG-2530 traversal-bound follow-up.
+			// label; the scan is bounded by the node budget (bails to per-element past it).
 			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD) {
 				let allScalar = true;
 				let allNumber = true;
+				let scanned = 0;
 				for (const x of v) {
+					// Bound the collapse scan: past the node budget we can't confirm a late string
+					// isn't present, so don't collapse — fall through to the node-bounded loop below.
+					if (nodes + ++scanned > TIER3_MAX_TRAVERSAL_NODES) {
+						allScalar = false;
+						break;
+					}
 					if (!isNonStringScalar(x)) {
 						allScalar = false;
 						break;
@@ -334,12 +348,12 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				}
 			}
 			for (let i = 0; i < v.length; i++) {
-				if (used >= cap) break;
+				if (used >= cap || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
 		} else if (typeof v === "object") {
 			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-				if (used >= cap) break;
+				if (used >= cap || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
@@ -395,7 +409,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
 	const blocks: string[] = [];
 	for (let i = 0; i < records.length; i++) {
-		if (used >= maxChars) break;
+		if (used >= maxChars || nodes > TIER3_MAX_TRAVERSAL_NODES) break;
 		const usedBefore = used;
 		cap = Math.min(usedBefore + perRecord, maxChars);
 		nonStringCap = Math.min(usedBefore + Math.floor(perRecord * TIER3_SCALAR_BUDGET_FRACTION), cap);

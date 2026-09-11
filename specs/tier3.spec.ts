@@ -418,6 +418,51 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input).toContain("n0: 0"); // scalar structure still present (keeps the FP fix)
 	});
 
+	it("bounds traversal on a huge array of empty objects (DoS guard) and still reviews the string", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		// 200k empty objects advance no output, so only the node budget can stop the walk.
+		const result = await defense.defendToolResult(
+			{ note: "review me", items: Array.from({ length: 200_000 }, () => ({})) },
+			"api_get",
+		);
+
+		expect(provider.classify).toHaveBeenCalledTimes(1); // completed, not hung
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("note: review me"); // the string leaf is still reviewed
+		expect(result.truncatedAtDepth).toBe(true); // traversal was bounded
+	});
+
+	it("bounds the collapse scan on a huge scalar array — input stays small, no full enumeration", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		await defense.defendToolResult(
+			{ note: "review me", data: Array.from({ length: 200_000 }, (_, i) => i) },
+			"api_get",
+		);
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("note: review me");
+		expect(input.length).toBeLessThanOrEqual(10_000); // bounded, never the full 200k elements
+		expect(input).not.toContain("data[199999]");
+	});
+
 	it("respects blockHighRisk:false — T3 'block' does not hard-block in permissive mode", async () => {
 		// Library invariant: blockHighRisk:false → allowed:true regardless of
 		// risk signals. Tier 3's verdict influences riskLevel for diagnostics
