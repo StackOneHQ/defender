@@ -464,7 +464,11 @@ export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 		// doc cross-reference like `[config](https://.../system-setup)`
 		// triggered. Real smuggled-instruction attacks include the full
 		// "ignore (all|the|previous|prior) ..." phrasing in the URL/anchor.
-		pattern: /\[.*?\]\(.*?(?:ignore|disregard|forget|override)\W+(?:all|the|previous|prior)\W+.*?\)/gi,
+		// Negated, bounded char classes ([^\]] / [^)]) instead of `.*?` so the
+		// regex is linear — the lazy-dot form could backtrack on long unclosed
+		// link/URL spans (ReDoS-prone).
+		pattern:
+			/\[[^\]\n]{0,200}\]\([^)\n]{0,300}(?:ignore|disregard|forget|override)\W{1,8}(?:all|the|previous|prior)\W{1,8}[^)\n]{0,300}\)/gi,
 		category: "structural",
 		severity: "high",
 		description: "Markdown link with hidden injection",

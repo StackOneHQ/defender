@@ -102,47 +102,6 @@ function normalizeSpecialCharacters(text: string): string {
 }
 
 /**
- * Check if text contains potentially suspicious Unicode
- *
- * @param text - Text to check
- * @returns Whether suspicious Unicode was detected
- */
-export function containsSuspiciousUnicode(text: string): boolean {
-	if (!text) return false;
-
-	// Check for zero-width characters
-	if (/[\u200B-\u200D\uFEFF]/.test(text)) {
-		return true;
-	}
-
-	// Check for Cyrillic characters mixed with Latin
-	const hasCyrillic = /[\u0400-\u04FF]/.test(text);
-	const hasLatin = /[a-zA-Z]/.test(text);
-	if (hasCyrillic && hasLatin) {
-		return true;
-	}
-
-	// Check for mathematical alphanumeric symbols
-	if (/[\u{1D400}-\u{1D7FF}]/u.test(text)) {
-		return true;
-	}
-
-	// Check for fullwidth characters
-	if (/[\uFF00-\uFFEF]/.test(text)) {
-		return true;
-	}
-
-	// Check for Zalgo / stacked combining diacritics (3+ is suspicious)
-	const combiningCount = (text.match(/[\u0300-\u036F\u1AB0-\u1AFF\u1DC0-\u1DFF\u20D0-\u20FF\uFE20-\uFE2F]/g) ?? [])
-		.length;
-	if (combiningCount >= 3) {
-		return true;
-	}
-
-	return false;
-}
-
-/**
  * Normalize whitespace obfuscation in text.
  *
  * Handles two common techniques used to split keywords past regex filters:
@@ -176,26 +135,4 @@ export function normalizeWhitespace(text: string): string {
 	// word-boundary separators (e.g. "ignore\n previous" → "ignoreprevious"), which
 	// breaks multi-word pattern matching rather than fixing obfuscation.
 	return result.replace(/([a-zA-Z])[\r\n]+([a-zA-Z])/g, "$1$2");
-}
-
-/**
- * Get details about suspicious Unicode in text
- *
- * @param text - Text to analyze
- * @returns Object with details about suspicious characters found
- */
-export function analyzeSuspiciousUnicode(text: string): {
-	hasSuspicious: boolean;
-	zeroWidth: boolean;
-	mixedScript: boolean;
-	mathSymbols: boolean;
-	fullwidth: boolean;
-} {
-	return {
-		hasSuspicious: containsSuspiciousUnicode(text),
-		zeroWidth: /[\u200B-\u200D\uFEFF]/.test(text),
-		mixedScript: /[\u0400-\u04FF]/.test(text) && /[a-zA-Z]/.test(text),
-		mathSymbols: /[\u{1D400}-\u{1D7FF}]/u.test(text),
-		fullwidth: /[\uFF00-\uFFEF]/.test(text),
-	};
 }

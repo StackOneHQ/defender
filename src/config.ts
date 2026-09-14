@@ -20,6 +20,15 @@ export const DANGEROUS_KEYS: ReadonlySet<string> = new Set(["__proto__", "constr
 export const MAX_TRAVERSAL_DEPTH = 100;
 
 /**
+ * Per-field cap (characters) on the text Tier 1 runs heavy regex / encoding
+ * detection over. Bounds worst-case regex cost on hostile inputs (ReDoS
+ * guard); mirrors the Tier 1 pattern detector's internal `maxAnalysisLength`.
+ * Content past the cap is not analysed and `analysisTruncated` is flagged so
+ * callers can detect degraded coverage.
+ */
+export const DEFAULT_MAX_FIELD_ANALYSIS_LENGTH = 50000;
+
+/**
  * Default risky field configuration
  */
 export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {
@@ -76,9 +85,7 @@ export const DEFAULT_RISKY_FIELDS: RiskyFieldConfig = {
  */
 export const DEFAULT_TRAVERSAL_CONFIG: TraversalConfig = {
 	maxDepth: 10,
-	maxSize: 10 * 1024 * 1024, // 10MB
-	largeArrayThreshold: 1000,
-	skipLargeArrays: true,
+	maxSize: 10 * 1024 * 1024, // 10MB — also the call-scoped Tier 1 detection budget
 };
 
 /**

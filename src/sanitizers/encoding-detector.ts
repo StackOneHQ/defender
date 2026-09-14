@@ -552,8 +552,11 @@ const MORSE_TABLE: Record<string, string> = {
  */
 function detectMorse(text: string): EncodingDetection[] {
 	const detections: EncodingDetection[] = [];
-	// Gate: 5+ Morse symbol groups
-	const morsePattern = /(?:[.-]+[ ]){4,}[.-]+/g;
+	// Gate: 5+ Morse symbol groups. Each group is bounded to {1,8} symbols
+	// (longer runs are not valid Morse anyway) so the regex is linear — the
+	// prior unbounded `[.-]+` backtracked catastrophically on long dot/dash
+	// runs with no spaces (ReDoS; 200k dots ≈ 30s of blocked event loop).
+	const morsePattern = /(?:[.-]{1,8}[ ]){4,}[.-]{1,8}/g;
 	let match: RegExpExecArray | null;
 
 	while ((match = morsePattern.exec(text)) !== null) {
@@ -647,14 +650,6 @@ function processEncodedContent(text: string, detections: EncodingDetection[], co
 }
 
 /**
- * Check if text contains any encoded content
- */
-export function containsEncodedContent(text: string): boolean {
-	const result = detectEncoding(text);
-	return result.hasEncoding;
-}
-
-/**
  * Check if text contains suspicious encoded content
  */
 export function containsSuspiciousEncoding(text: string): boolean {
@@ -663,17 +658,9 @@ export function containsSuspiciousEncoding(text: string): boolean {
 }
 
 /**
- * Decode all encoded content in text
- */
-export function decodeAllEncoding(text: string): string {
-	const result = detectEncoding(text, { action: "decode" });
-	return result.processedText ?? text;
-}
-
-/**
  * Decode all encoding levels in text, iterating until the output stabilises.
  *
- * A single call to `decodeAllEncoding` only unwraps one layer. Chained
+ * A single `detectEncoding` decode pass only unwraps one layer. Chained
  * encodings (e.g. base64 of hex-escaped content) require repeated passes.
  * This function loops until the text stops changing or `maxIterations` is
  * reached, whichever comes first.
@@ -726,15 +713,4 @@ export function containsSuspiciousEncodingDeep(text: string): boolean {
 	// Also check if the decoded result still contains encoded suspicious content
 	// (handles the case where decodeAllLevels hit maxIterations before fully unwrapping).
 	return /system|ignore|instruction|assistant|bypass|override/i.test(decoded) || containsSuspiciousEncoding(decoded);
-}
-
-/**
- * Redact all encoded content in text
- */
-export function redactAllEncoding(text: string, replacement: string = "[ENCODED DATA DETECTED]"): string {
-	const result = detectEncoding(text, {
-		action: "redact",
-		redactReplacement: replacement,
-	});
-	return result.processedText ?? text;
 }
