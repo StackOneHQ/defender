@@ -1,7 +1,7 @@
 # ATR-only baseline (Garak + PINT)
 
-A reproducible, ATR-only baseline on Garak (adversarial recall) and the Lakera
-PINT set (precision / recall / F1), contributed per the discussion in
+A reproducible, ATR-only baseline on Garak (adversarial recall) and a PINT-format
+set (precision / recall / F1), contributed per the discussion in
 [issue #66](https://github.com/StackOneHQ/defender/issues/66) as a reference
 point before deciding whether to bundle ATR rules into Defender.
 
@@ -11,35 +11,29 @@ Defender team to fill in — this file is the ATR half of a like-for-like table.
 ## What was measured
 
 - **Engine**: [`agent-threat-rules`](https://github.com/Agent-Threat-Rule/agent-threat-rules)
-  v3.5.7, 714 rules, commit [`1831d0d5`](https://github.com/Agent-Threat-Rule/agent-threat-rules/commit/1831d0d5) on `main`.
-
-  Every figure below is that commit, not the current release. The upstream
-  benchmark table moves — on 3.5.11 the all-families garak number is
-  materially higher than the 38.2% recorded here — so compare against this
-  pinned commit or re-run both engines on the same newer one, but do not mix
-  the two.
-  Numbers below are pinned to that commit; rerun the scripts against a newer
-  commit for a current figure — the ruleset grows over time.
-- **Garak**: the public in-the-wild jailbreak corpus plus a 23-family sweep
-  (3,475 samples). Two families are excluded from the headline recall number:
-  `snowball` (1,500 reasoning-error probes, not agent-attack payloads) and
-  `harmbench` (200 raw harmful-intent completions, out of ATR's agent-attack
-  scope). In-scope = 1,775 samples across 21 families.
+  v4.0.0, 784 rules loaded (only a minority fire on these corpora), commit
+  [`464548b4`](https://github.com/Agent-Threat-Rule/agent-threat-rules/commit/464548b4).
+  Numbers below are pinned to that commit; re-run the scripts against a newer
+  commit for a current figure — the ruleset grows over time, so compare against
+  this pinned commit rather than mixing versions.
+- **Garak**: the public in-the-wild jailbreak corpus plus a family sweep
+  (3,475 samples across 23 families). Two families are out of ATR's agent-attack
+  scope and excluded from the headline recall: `snowball` (1,500 reasoning-error
+  probes) and `harmbench` (200 raw harmful-intent completions). In-scope = 1,775
+  samples across 21 families.
 - **PINT-format**: a self-built 850-sample corpus (451 attack / 399 benign) in
   the format Lakera's PINT benchmark uses, assembled from
-  `deepset/prompt-injections` and `Lakera/gandalf_ignore_instructions`. It is
-  **not** a run of Lakera's PINT benchmark, which is private and roughly five
-  times larger. Its value here is that it is the only corpus in this document
-  with a real, measured precision number rather than `precision = 1` by
-  construction on an all-adversarial set. Read it as a prompt-injection-family
-  score: only a minority of the ruleset fires on it at all, and one rule
-  accounts for most of the detections.
+  `deepset/prompt-injections` (660) and `Lakera/gandalf_ignore_instructions`
+  (190). It is **not** a run of Lakera's PINT benchmark, which is private and
+  roughly five times larger. Its value here is being the only corpus in this
+  document with a real, measured precision number rather than `precision = 1` by
+  construction on an all-adversarial set.
 
 ## Reproduce
 
 ```bash
 git clone https://github.com/Agent-Threat-Rule/agent-threat-rules
-cd agent-threat-rules && git checkout 1831d0d5
+cd agent-threat-rules && git checkout v4.0.0   # 464548b4
 npm ci && npm run build
 npx tsx scripts/run-garak-full-benchmark.ts   # -> data/garak-benchmark/garak-full-report.json
 npx tsx src/eval/run-pint-benchmark.ts        # -> data/pint-benchmark/pint-eval-report.json
@@ -49,40 +43,53 @@ The eval harness is not shipped in the published npm package (`dist` / `spec` /
 `rules` only), so reproducing requires the repo checkout above rather than
 `npm install agent-threat-rules`.
 
-## Results (ATR-only)
+## Results (ATR-only, v4.0.0)
 
 ### Garak — recall
 
 | Scope | Recall |
 | :-- | :-- |
-| In-scope (21 families, 1,775 samples) | **74.4%** (1,321 / 1,775) |
-| Overall (all 23 families, 3,475 samples) | 38.2% (1,329 / 3,475) — dragged down by the two out-of-scope families above |
+| In-scope (21 families, 1,775 samples) | **80.5%** (1,429 / 1,775) |
+| Overall (all 23 families, 3,475 samples) | 57.2% (1,987 / 3,475) — dragged down by the two out-of-scope families above |
 
-Strongest families: `autodan` 100%, `sysprompt_extraction` 100%, `dan` 87.7%,
-`inthewild` 87.5%, `agent_breaker` 85.7%. Weakest in-scope: `latentinjection`
-34.4%; `badchars` / `malwaregen` / `sata` / `smuggling` ~12.5% each (small
-families, 16 samples each).
+Strongest in-scope families: `autodan` 100% (4/4), `sysprompt_extraction` 96.4%
+(27/28), `dan` 92.5% (614/664), `inthewild` 92.3% (600/650), `gcg` 92.3%
+(12/13). Weakest in-scope: `packagehallucination` 13.3% (6/45), `dra` 16.0%
+(13/81), `latentinjection` 34.4% (22/64).
 
-### PINT — precision / recall / F1
+### PINT-format — precision / recall / F1
 
 | Metric | Value |
 | :-- | :-- |
-| Precision | 99.7% |
-| Recall | 63.6% |
-| F1 | 77.7% |
-| Confusion | TP=287, FP=1, TN=398, FN=164 |
-
-The single false positive is a documented, known case (`pint-0121`) tracked
-against the rule that fires on it.
+| Precision | 100% |
+| Recall | 65.4% |
+| F1 | 79.1% |
+| Confusion | TP=295, FP=0, TN=399, FN=156 |
 
 ## Reading the numbers honestly
 
 - Garak measures **recall** on adversarial-only corpora, so it says nothing
-  about false positives; PINT is the only line here with a real precision
-  number because it carries benign samples.
-- The overall-Garak 38.2% is not a like-for-like figure — it includes two
-  families outside ATR's scope by design. The in-scope 74.4% is the number to
+  about false positives; PINT is the only line here with a real precision number
+  because it carries benign samples.
+- The overall-Garak 57.2% is **not** a like-for-like figure — it includes two
+  families outside ATR's scope by design. The in-scope 80.5% is the number to
   compare against a detector run on the same 21 families.
-- If a tool-result-focused subset is the right starting point for a bundled
-  pack (per the Tier-1 surface-fit point in #66), the per-family breakdown
-  above shows which ATR families are already strong candidates.
+- The PINT-format corpus is **not** Lakera's PINT (see above) — a reader seeing
+  "PINT" should not assume the official benchmark.
+- The PINT 100% precision is **in-sample**: eight rules reference this corpus —
+  five were mined from its false negatives, and two record zero-false-positive
+  verification against its benign half. The benign set the precision is measured
+  on is one the rules were verified against.
+- The PINT column is **concentrated**: one rule (`ATR-2026-00001`) accounts for
+  226 of 295 true positives (76.6%).
+- The two rows are **measured at different widths** and are not directly
+  comparable: the PINT row runs through the eval-harness canonical shape set
+  (which includes an admit-all shape plus a skill scan), the Garak row through
+  two production channels only. Read each on its own terms.
+- The Tier-2.5 embedding stage runs on the PINT cell but changes no cell of the
+  matrix (identical with it disabled), so the PINT result stands as a pure-regex
+  number.
+- These corpora are **jailbreak-shaped, not tool-result traffic** — the decision
+  on a bundled Tier-1 pack should be driven by a tool-result benign FP check,
+  not these. The per-family breakdown above shows which ATR families are the
+  strongest candidates for such a pack.
