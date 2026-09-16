@@ -881,7 +881,8 @@ export class PromptDefense {
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
 
 		if (bounded.length === 0) {
-			skipReason ??= "No strings extracted from tool result";
+			// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
+			skipReason ??= "No reviewable string content emitted from tool result";
 		} else {
 			try {
 				const raw = await provider.classify(bounded, { toolName });
