@@ -371,16 +371,17 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				if (fits(lines, full, limit)) {
 					if (isStr) hasString = true;
 				} else if (isStr) {
-					// String: truncate to the remaining share, keeping `key:`; else exhaust the record.
+					// String too big for the remaining share: truncate to it, keeping the `key:` prefix.
 					const sep = lines.length > 0 ? 1 : 0;
 					const room = cap - used - sep;
 					if (room > prefix.length + 2) {
 						lines.push(full.slice(0, room));
 						used += sep + room;
 						hasString = true;
-					} else {
-						used = cap;
 					}
+					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
+					// record; a later field may fit and may carry the injection. The outer loop's
+					// `used >= cap` guard still stops the record once the budget is genuinely full.
 					break;
 				} else {
 					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
