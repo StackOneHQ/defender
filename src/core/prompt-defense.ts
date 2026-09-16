@@ -273,6 +273,10 @@ const TIER3_MIN_PER_RECORD_CHARS = 64;
 // for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
 
+// Per-field floor reserved for each not-yet-serialized sibling, so one big string field can't
+// consume the whole record budget and starve a later field that may carry the injection.
+const TIER3_MIN_FIELD_CHARS = 48;
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -340,24 +344,46 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
 		} else if (typeof v === "object") {
-			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-				if (used >= cap) break;
+			const entries = Object.entries(v as Record<string, unknown>);
+			const outerCap = cap;
+			for (let idx = 0; idx < entries.length; idx++) {
+				if (used >= outerCap) break;
+				// Reserve a floor for each remaining sibling (bounded at half the remaining budget, so
+				// a dominant field still gets most) — one field can't starve a later injection field.
+				const reserve = Math.min(
+					(entries.length - 1 - idx) * TIER3_MIN_FIELD_CHARS,
+					Math.floor((outerCap - used) / 2),
+				);
+				cap = outerCap - reserve;
+				const [k, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
 			}
+			cap = outerCap;
 		} else {
 			const s = String(v);
 			const isStr = typeof v === "string";
 			// Strings get the full cap; non-string scalars only their reserved slice (anti-crowd-out).
 			const limit = isStr ? cap : nonStringCap;
 			if (!prefix && !keyed) {
-				// Top-level scalar record — bare (see docstring). An empty-key field is `keyed`, so it
-				// takes the `: value` path below instead of going bare.
-				if (s.length > 0) {
-					const room = limit - used;
-					const frag = s.length <= room ? s : s.slice(0, Math.max(0, room));
-					if (frag.length > 0 && fits(lines, frag, limit) && isStr) hasString = true;
+				// Top-level scalar record — bare (see docstring). Split on line breaks and drop blank
+				// lines (joined with single `\n`) so an embedded `\n\n` can't forge a record boundary.
+				for (const line of s.split(TIER3_LINE_BREAKS)) {
+					if (used >= limit) break;
+					if (line.length === 0) continue;
+					if (fits(lines, line, limit)) {
+						if (isStr) hasString = true;
+					} else if (isStr) {
+						const sep = lines.length > 0 ? 1 : 0;
+						const room = limit - used - sep;
+						if (room > 0) {
+							lines.push(line.slice(0, room));
+							used += sep + room;
+							hasString = true;
+						}
+						break;
+					} else break;
 				}
 				return;
 			}
@@ -396,8 +422,20 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	// injection isn't sliced off and the input stays short (e3: long front-loaded input induces
 	// hallucinated blocks). Lists longer than maxChars/perRecord drop a tail (ENG-2530).
 	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
+	// When there are more records than the budget can cover, sample them evenly across the whole
+	// list (stride) instead of taking a contiguous prefix — so an injection in a late record can
+	// still be reviewed rather than always dropped off the tail. Original indices are kept as labels.
+	const affordable = Math.max(1, Math.floor(maxChars / TIER3_MIN_PER_RECORD_CHARS));
+	let indices: number[];
+	if (records.length > affordable) {
+		const stride = records.length / affordable;
+		indices = Array.from({ length: affordable }, (_, k) => Math.floor(k * stride));
+		depthFlag.hit = true; // not every record reviewed → coverage degraded
+	} else {
+		indices = Array.from({ length: records.length }, (_, i) => i);
+	}
 	const blocks: string[] = [];
-	for (let i = 0; i < records.length; i++) {
+	for (const i of indices) {
 		if (used >= maxChars) break;
 		const usedBefore = used;
 		cap = Math.min(usedBefore + perRecord, maxChars);
