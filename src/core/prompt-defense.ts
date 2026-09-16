@@ -865,11 +865,16 @@ export class PromptDefense {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
 		let verdict: Tier3Verdict | undefined;
 		let skipReason: string | undefined;
+		// A payload-triggered error (a throwing getter, etc.) means we could NOT analyze attacker-
+		// controlled content — distinct from a provider outage. In strict mode we treat un-analyzable
+		// input as risky and fail CLOSED (see the `allowed` gate below), so a crafted getter can't
+		// force a bypass; permissive mode still allows. A provider outage stays fail-open.
+		let payloadError = false;
 		let joined = "";
 		try {
 			joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
 		} catch (err) {
-			// A throwing getter (invoked by Object.entries) must fail open here, not crash defendToolResult.
+			payloadError = true;
 			skipReason = `Tier 3 serialization error: ${err instanceof Error ? err.message : String(err)}`;
 		}
 		// Safety net; the serializer already keeps the join within the cap.
@@ -911,17 +916,20 @@ export class PromptDefense {
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit;
 		} catch (err) {
+			payloadError = true;
 			analysisDegraded = true;
 			skipReason ??= `Tier 1 metadata error: ${err instanceof Error ? err.message : String(err)}`;
 		}
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
-		const riskLevel: RiskLevel = blocked ? "high" : "low";
+		// Un-analyzable attacker-controlled input (payloadError) is itself a risk signal.
+		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
 		// Honor the library invariant: `blockHighRisk: false` always yields
 		// `allowed: true` — Tier 3 contributes to `riskLevel` for diagnostics
 		// but does not hard-block in permissive mode. Matches the cascade
-		// path's gating at the main `return` block.
-		const allowed = !this.config.blockHighRisk || !blocked;
+		// path's gating at the main `return` block. In strict mode we also fail
+		// closed when the payload could not be analyzed (payloadError).
+		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
 
 		return {
 			allowed,
