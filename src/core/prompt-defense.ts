@@ -896,12 +896,9 @@ export class PromptDefense {
 			}
 		}
 
-		// Always run Tier 1 detection so `detections` metadata is populated even
-		// in tier3_only mode. Detect-and-gate: content is not rewritten, and the
-		// Tier 1 risk level is intentionally NOT used for the block decision —
-		// in tier3_only mode the LLM is authoritative. A throwing getter here (as
-		// in the serializer above) must fail open, not crash defendToolResult:
-		// fall back to empty detections and mark coverage degraded.
+		// Tier 1 detection for `detections` metadata (LLM is authoritative in tier3_only).
+		// This walk is UNCAPPED, so a throw here can come from content past the review budget —
+		// it degrades coverage but must NOT override an obtained verdict, so it sets no payloadError.
 		let patternsRemovedByField: Record<string, string[]> = {};
 		let detections: string[] = [];
 		let sanitizedContent: unknown = value;
@@ -916,19 +913,15 @@ export class PromptDefense {
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit;
 		} catch (err) {
-			payloadError = true;
 			analysisDegraded = true;
 			skipReason ??= `Tier 1 metadata error: ${err instanceof Error ? err.message : String(err)}`;
 		}
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
-		// Un-analyzable attacker-controlled input (payloadError) is itself a risk signal.
+		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
 		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
-		// Honor the library invariant: `blockHighRisk: false` always yields
-		// `allowed: true` — Tier 3 contributes to `riskLevel` for diagnostics
-		// but does not hard-block in permissive mode. Matches the cascade
-		// path's gating at the main `return` block. In strict mode we also fail
-		// closed when the payload could not be analyzed (payloadError).
+		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when
+		// the payload couldn't be serialized for review (payloadError).
 		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
 
 		return {
@@ -942,7 +935,7 @@ export class PromptDefense {
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
 			truncatedAtDepth: depthFlag.hit || undefined,
-			coverageDegraded: depthFlag.hit || analysisDegraded || undefined,
+			coverageDegraded: depthFlag.hit || analysisDegraded || payloadError || undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

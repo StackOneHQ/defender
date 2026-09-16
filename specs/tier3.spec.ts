@@ -417,6 +417,72 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(result.coverageDegraded).toBe(true);
 	});
 
+	it("honors an allow verdict even when the uncapped sanitize walk throws past the review budget (adv review #2)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider, maxTextLength: 4000 },
+		});
+
+		// Records fill their per-record cap, so the 4000-char budget is spent well before record 199;
+		// the reviewer never sees it. A throwing getter there is reached only by the uncapped Tier-1
+		// walk — it must degrade coverage, not override the allow verdict.
+		const records: unknown[] = Array.from({ length: 200 }, (_, i) => ({
+			id: i,
+			note: `benign record content ${"x".repeat(80)}`,
+		}));
+		const poison: Record<string, unknown> = {};
+		Object.defineProperty(poison, "boom", {
+			enumerable: true,
+			get() {
+				throw new Error("late getter");
+			},
+		});
+		records[199] = poison;
+
+		const result = await defense.defendToolResult(records, "list_tool");
+
+		expect(provider.classify).toHaveBeenCalledTimes(1);
+		expect((result.tier3 as { decision?: string }).decision).toBe("allow"); // verdict obtained
+		expect(result.allowed).toBe(true); // not overridden by an unreviewed-tail throw
+		expect(result.coverageDegraded).toBe(true); // but coverage is flagged
+	});
+
+	it("flags coverageDegraded and fails closed when only the serializer hits a class-instance getter (adv review #3)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		// The sanitizer passes non-plain objects through untraversed, but the serializer runs
+		// Object.entries on them — so this own-enumerable getter throws only in the serializer.
+		class Evil {
+			constructor() {
+				Object.defineProperty(this, "boom", {
+					enumerable: true,
+					get() {
+						throw new Error("boom");
+					},
+				});
+			}
+		}
+		const result = await defense.defendToolResult({ user: new Evil(), summary: "hello" }, "api_get");
+
+		expect(provider.classify).not.toHaveBeenCalled();
+		expect(result.allowed).toBe(false); // strict fail-closed (payloadError)
+		expect(result.coverageDegraded).toBe(true); // surfaced even though sanitize didn't throw
+		expect((result.tier3 as { skipReason?: string }).skipReason).toMatch(/serialization error/i);
+	});
+
 	it("fails open (no crash) when a throwing getter blocks analysis (permissive mode, adv review #1)", async () => {
 		const provider = makeProvider("allow");
 		const defense = createPromptDefense({
