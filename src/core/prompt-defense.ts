@@ -261,7 +261,9 @@ const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
 // injection and enumerating them would flood the budget and starve string leaves.
 const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
 function isNonStringScalar(v: unknown): boolean {
-	return v === null || v === undefined || typeof v === "number" || typeof v === "boolean";
+	const t = typeof v;
+	// bigint/symbol included so those arrays collapse like number arrays (only strings carry injection).
+	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
 }
 
 // Smallest per-record share worth emitting; lists longer than maxChars/this drop a tail (ENG-2530).
@@ -860,14 +862,20 @@ export class PromptDefense {
 		startTime: number,
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
-		const joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
+		let verdict: Tier3Verdict | undefined;
+		let skipReason: string | undefined;
+		let joined = "";
+		try {
+			joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
+		} catch (err) {
+			// A throwing getter (invoked by Object.entries) must fail open here, not crash defendToolResult.
+			skipReason = `Tier 3 serialization error: ${err instanceof Error ? err.message : String(err)}`;
+		}
 		// Safety net; the serializer already keeps the join within the cap.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
 
-		let verdict: Tier3Verdict | undefined;
-		let skipReason: string | undefined;
 		if (bounded.length === 0) {
-			skipReason = "No strings extracted from tool result";
+			skipReason ??= "No strings extracted from tool result";
 		} else {
 			try {
 				const raw = await provider.classify(bounded, { toolName });
@@ -885,10 +893,26 @@ export class PromptDefense {
 		// Always run Tier 1 detection so `detections` metadata is populated even
 		// in tier3_only mode. Detect-and-gate: content is not rewritten, and the
 		// Tier 1 risk level is intentionally NOT used for the block decision —
-		// in tier3_only mode the LLM is authoritative.
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
-		const { patternsRemovedByField } = sanitized.metadata;
-		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+		// in tier3_only mode the LLM is authoritative. A throwing getter here (as
+		// in the serializer above) must fail open, not crash defendToolResult:
+		// fall back to empty detections and mark coverage degraded.
+		let patternsRemovedByField: Record<string, string[]> = {};
+		let detections: string[] = [];
+		let sanitizedContent: unknown = value;
+		let analysisDegraded = false;
+		try {
+			const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+			patternsRemovedByField = sanitized.metadata.patternsRemovedByField;
+			detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+			sanitizedContent = sanitized.sanitized;
+			analysisDegraded =
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit;
+		} catch (err) {
+			analysisDegraded = true;
+			skipReason ??= `Tier 1 metadata error: ${err instanceof Error ? err.message : String(err)}`;
+		}
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
 		const riskLevel: RiskLevel = blocked ? "high" : "low";
@@ -901,7 +925,7 @@ export class PromptDefense {
 		return {
 			allowed,
 			riskLevel,
-			sanitized: sanitized.sanitized,
+			sanitized: sanitizedContent,
 			detections,
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
@@ -909,12 +933,7 @@ export class PromptDefense {
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
 			truncatedAtDepth: depthFlag.hit || undefined,
-			coverageDegraded:
-				depthFlag.hit ||
-				sanitized.metadata.analysisTruncated === true ||
-				sanitized.metadata.sizeMetrics.depthLimitHit ||
-				sanitized.metadata.sizeMetrics.sizeLimitHit ||
-				undefined,
+			coverageDegraded: depthFlag.hit || analysisDegraded || undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

@@ -339,6 +339,56 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(input).not.toContain("[40 numbers]");
 	});
 
+	it("collapses a large bigint array like a scalar array instead of enumerating it (adv review #2)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		await defense.defendToolResult(
+			{ note: "review me", ids: Array.from({ length: 40 }, (_, i) => BigInt(i)) },
+			"api_get",
+		);
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("note: review me");
+		expect(input).toContain("ids: [40 values]"); // collapsed, not enumerated per element
+		expect(input).not.toContain("ids[0]");
+	});
+
+	it("fails open (no crash) when a value has a throwing getter (adv review #4)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider },
+		});
+
+		// A throwing getter is invoked by Object.entries during serialization. It must fail open
+		// (skip Tier 3, allow) rather than throw out of defendToolResult and crash the caller.
+		const evil: Record<string, unknown> = { note: "hi" };
+		Object.defineProperty(evil, "boom", {
+			enumerable: true,
+			get() {
+				throw new Error("getter blew up");
+			},
+		});
+
+		const result = await defense.defendToolResult(evil, "api_get");
+
+		expect(result.allowed).toBe(true); // fail-open
+		expect(provider.classify).not.toHaveBeenCalled(); // serialization aborted before review
+		expect((result.tier3 as { skipReason?: string }).skipReason).toMatch(/serialization error/i);
+	});
+
 	it("an empty-key field is not emitted as a bare directive-looking line (copilot)", async () => {
 		const provider = makeProvider("allow");
 		const defense = createPromptDefense({
