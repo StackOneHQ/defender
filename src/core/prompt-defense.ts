@@ -273,9 +273,19 @@ const TIER3_MIN_PER_RECORD_CHARS = 64;
 // for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
 
-// Per-field floor reserved for each not-yet-serialized sibling, so one big string field can't
-// consume the whole record budget and starve a later field that may carry the injection.
-const TIER3_MIN_FIELD_CHARS = 48;
+// Per-item floor reserved for each not-yet-serialized sibling, so one big field/element can't
+// consume the whole record budget and starve a later one that may carry the injection.
+const TIER3_MIN_FIELD_CHARS = 128;
+
+// Budget for one item (object field or array element) of a collection: it may use everything
+// except a floor reserved for each remaining sibling — but is always allowed at least the floor
+// itself. Applies to fields AND elements, and to nested subtrees (the item's whole subtree shares
+// this cap), so a big sibling (even a deep object/array) can't starve a later injection-bearing one.
+function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): number {
+	const avail = outerCap - usedNow;
+	const reserve = Math.min((remaining - 1) * TIER3_MIN_FIELD_CHARS, Math.max(0, avail - TIER3_MIN_FIELD_CHARS));
+	return outerCap - reserve;
+}
 
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
@@ -316,7 +326,8 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
 			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
 			const bytes = (v as { byteLength: number }).byteLength;
-			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, nonStringCap);
+			const limit = Math.min(cap, nonStringCap); // bound the scalar sub-budget by this item's cap
+			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit);
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -335,26 +346,32 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 				}
 				if (allScalar) {
 					const kind = allNumber ? "numbers" : "values";
-					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, nonStringCap);
+					const limit = Math.min(cap, nonStringCap);
+					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit);
 					return;
 				}
 			}
+			// Per-element budget with a sibling reserve (same as object fields), so an early element
+			// can't consume the whole cap and drop a later element that may carry the injection.
+			const outerCap = cap;
 			for (let i = 0; i < v.length; i++) {
-				if (used >= cap) break;
+				if (used >= outerCap) {
+					depthFlag.hit = true; // elements dropped for lack of budget → coverage degraded
+					break;
+				}
+				cap = tier3ItemCap(outerCap, used, v.length - i);
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
+			cap = outerCap;
 		} else if (typeof v === "object") {
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
 			for (let idx = 0; idx < entries.length; idx++) {
-				if (used >= outerCap) break;
-				// Reserve a floor for each remaining sibling (bounded at half the remaining budget, so
-				// a dominant field still gets most) — one field can't starve a later injection field.
-				const reserve = Math.min(
-					(entries.length - 1 - idx) * TIER3_MIN_FIELD_CHARS,
-					Math.floor((outerCap - used) / 2),
-				);
-				cap = outerCap - reserve;
+				if (used >= outerCap) {
+					depthFlag.hit = true; // fields dropped for lack of budget → coverage degraded
+					break;
+				}
+				cap = tier3ItemCap(outerCap, used, entries.length - idx);
 				const [k, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
@@ -364,8 +381,9 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 		} else {
 			const s = String(v);
 			const isStr = typeof v === "string";
-			// Strings get the full cap; non-string scalars only their reserved slice (anti-crowd-out).
-			const limit = isStr ? cap : nonStringCap;
+			// Strings get the full item cap; non-string scalars only their reserved slice, itself
+			// bounded by this item's cap (anti-crowd-out at both the record and the field level).
+			const limit = isStr ? cap : Math.min(cap, nonStringCap);
 			if (!prefix && !keyed) {
 				// Top-level scalar record — bare (see docstring). Split on line breaks and drop blank
 				// lines (joined with single `\n`) so an embedded `\n\n` can't forge a record boundary.
@@ -382,6 +400,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 							used += sep + room;
 							hasString = true;
 						}
+						depthFlag.hit = true; // string truncated for lack of budget → coverage degraded
 						break;
 					} else break;
 				}
@@ -408,6 +427,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
 					// record; a later field may fit and may carry the injection. The outer loop's
 					// `used >= cap` guard still stops the record once the budget is genuinely full.
+					depthFlag.hit = true; // string truncated/dropped for lack of budget → coverage degraded
 					break;
 				} else {
 					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
@@ -428,8 +448,14 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 	const affordable = Math.max(1, Math.floor(maxChars / TIER3_MIN_PER_RECORD_CHARS));
 	let indices: number[];
 	if (records.length > affordable) {
-		const stride = records.length / affordable;
-		indices = Array.from({ length: affordable }, (_, k) => Math.floor(k * stride));
+		if (affordable === 1) {
+			indices = [0];
+		} else {
+			// Endpoint-inclusive stride so BOTH the first and the LAST record are sampled — an
+			// injection appended as the final element of a long list must not be systematically skipped.
+			const stride = (records.length - 1) / (affordable - 1);
+			indices = Array.from({ length: affordable }, (_, k) => Math.round(k * stride));
+		}
 		depthFlag.hit = true; // not every record reviewed → coverage degraded
 	} else {
 		indices = Array.from({ length: records.length }, (_, i) => i);
