@@ -942,6 +942,26 @@ export class PromptDefense {
 	}
 
 	/**
+	 * Minimal result for a payload we can't traverse (e.g. a throwing getter). Fail closed in
+	 * strict mode (un-analyzable input is risky), open otherwise; never let the exception escape.
+	 */
+	private buildUnanalyzableResult(value: unknown, reason: string, startTime: number): DefenseResult {
+		return {
+			allowed: !this.config.blockHighRisk,
+			riskLevel: "high",
+			sanitized: value,
+			detections: [],
+			fieldsSanitized: [],
+			patternsByField: {},
+			detectedFieldCount: 0,
+			tier2SkipReason: reason,
+			fieldsDropped: [],
+			coverageDegraded: true,
+			latencyMs: performance.now() - startTime,
+		};
+	}
+
+	/**
 	 * Defend a tool result using both Tier 1 and Tier 2 classification.
 	 *
 	 * This is the primary method. It:
@@ -1016,9 +1036,22 @@ export class PromptDefense {
 
 		// Tier 1: pattern-based sanitization on the original value — SFE
 		// filtering is classifier-only and must not affect the returned payload.
+		// A throwing getter here (Object.entries) must not crash the primary API: we can't
+		// analyze the payload at all, so fail closed in strict mode (buildUnanalyzableResult).
 		const tTier1Start = performance.now();
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
+		let sanitized: ReturnType<typeof this.toolResultSanitizer.sanitize>;
+		try {
+			sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
+		} catch (err) {
+			return this.buildUnanalyzableResult(
+				value,
+				`Tier 1 sanitize error: ${err instanceof Error ? err.message : String(err)}`,
+				startTime,
+			);
+		}
 		const tier1Ms = performance.now() - tTier1Start;
+		// Set if a later payload traversal (Tier 2 extraction / content cleaning) throws.
+		let payloadError = false;
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
@@ -1082,9 +1115,17 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = tier2Ready
-				? extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0)
-				: [];
+			let strings: string[] = [];
+			if (tier2Ready) {
+				try {
+					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
+					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
+					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+				} catch (err) {
+					payloadError = true;
+					tier2SkipReason = `Tier 2 extraction error: ${err instanceof Error ? err.message : String(err)}`;
+				}
+			}
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
@@ -1317,7 +1358,8 @@ export class PromptDefense {
 						};
 					}
 				}
-			} else if (tier2Ready) {
+			} else if (tier2Ready && !payloadError) {
+				// (skip when payloadError: extraction threw and already set a more specific reason)
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
 					: "No strings extracted from tool result";
@@ -1385,6 +1427,10 @@ export class PromptDefense {
 		} else if (tier3OverrideBlock === false && tier2Index > tier1Index) {
 			riskLevel = riskLevels[tier1Index];
 		}
+		// Un-analyzable content (a payload traversal threw) is a risk signal.
+		if (payloadError && riskLevels.indexOf(riskLevel) < riskLevels.indexOf("high")) {
+			riskLevel = "high";
+		}
 
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
 		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
@@ -1413,7 +1459,10 @@ export class PromptDefense {
 		// 1. blockHighRisk is off → always allow
 		// 2. No threat signals found → allow (base risk from tool rules alone does not block)
 		// 3. Risk did not reach high/critical → allow
-		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
+		// A payloadError (un-analyzable content) fails closed in strict mode regardless.
+		const allowed =
+			!this.config.blockHighRisk ||
+			(!payloadError && (!hasThreats || (riskLevel !== "high" && riskLevel !== "critical")));
 
 		// `tier2Score` reports `tier2EffectiveScore` — the value that drove the
 		// block decision. When `blockHighRisk` is on and no Tier 1 detection
@@ -1439,12 +1488,19 @@ export class PromptDefense {
 			this.tier2Classifier &&
 			(riskLevel === "high" || riskLevel === "critical") &&
 			highRiskValues.size > 0;
-		const cleanResult = cleanContent
-			? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
+		let cleanResult = { content: original, changedFields: [] as string[] };
+		if (cleanContent) {
+			try {
+				cleanResult = await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
 					highRiskThreshold: this.config.tier2.highRiskThreshold,
 					boundary,
-				})
-			: { content: original, changedFields: [] as string[] };
+				});
+			} catch {
+				// Content cleaning traverses the payload too; on a throwing getter keep the original
+				// content (the block decision already stands) and flag degraded coverage.
+				payloadError = true;
+			}
+		}
 
 		return {
 			allowed,
@@ -1474,6 +1530,7 @@ export class PromptDefense {
 			tier1Ms,
 			coverageDegraded:
 				depthFlag.hit ||
+				payloadError ||
 				sanitized.metadata.analysisTruncated === true ||
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit ||
