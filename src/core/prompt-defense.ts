@@ -313,8 +313,11 @@ function tier3SpreadOrder(n: number): number[] {
 // key, capped at (and short-circuited past) `budget`. Approximate — it only decides whether a
 // collection's children FIT their budget so we can review them all without a starving reserve; the
 // actual truncation is still enforced by `serialize`, so an inaccurate estimate can never overrun.
-function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): number {
+function tier3EstimateCost(v: unknown, prefixLen: number, budget: number, depth = 0): number {
 	if (budget <= 0) return 0;
+	// Mirror serialize's depth cutoff exactly: content past MAX_TRAVERSAL_DEPTH is never emitted, so
+	// it must cost 0 here too — otherwise a deep decoy over-counts and wrongly forces the reserve path.
+	if (depth > MAX_TRAVERSAL_DEPTH) return 0;
 	if (v === null || v === undefined) return 0;
 	if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
 		const bytes = (v as { byteLength: number }).byteLength;
@@ -326,7 +329,7 @@ function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): numbe
 		}
 		let sum = 0;
 		for (let i = 0; i < v.length; i++) {
-			sum += tier3EstimateCost(v[i], prefixLen + 2 + String(i).length, budget - sum);
+			sum += tier3EstimateCost(v[i], prefixLen + 2 + String(i).length, budget - sum, depth + 1);
 			if (sum >= budget) return budget;
 		}
 		return sum;
@@ -334,7 +337,7 @@ function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): numbe
 	if (typeof v === "object") {
 		let sum = 0;
 		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-			sum += tier3EstimateCost(val, (prefixLen ? prefixLen + 1 : 0) + k.length, budget - sum);
+			sum += tier3EstimateCost(val, (prefixLen ? prefixLen + 1 : 0) + k.length, budget - sum, depth + 1);
 			if (sum >= budget) return budget;
 		}
 		return sum;
@@ -422,7 +425,7 @@ function formatRecordsForTier3(
 			const outerCap = cap;
 			// If all elements fit the remaining budget, review them all in full (no starving reserve).
 			// Otherwise give each a sibling-reserved share so an early element can't drop a later one.
-			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1) <= outerCap - used;
+			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1, depth) <= outerCap - used;
 			for (let i = 0; i < v.length; i++) {
 				if (used >= outerCap) {
 					depthFlag.coverageDegraded = true; // elements dropped for lack of budget → coverage degraded
@@ -437,7 +440,7 @@ function formatRecordsForTier3(
 			const outerCap = cap;
 			// If all fields fit the remaining budget, review them all in full (no starving reserve).
 			// Otherwise give each a sibling-reserved share so an early field can't drop a later one.
-			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1) <= outerCap - used;
+			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1, depth) <= outerCap - used;
 			for (let idx = 0; idx < entries.length; idx++) {
 				if (used >= outerCap) {
 					depthFlag.coverageDegraded = true; // fields dropped for lack of budget → coverage degraded
