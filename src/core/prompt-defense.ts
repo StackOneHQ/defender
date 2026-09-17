@@ -266,9 +266,6 @@ function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
 }
 
-// Smallest per-record share worth emitting; lists longer than maxChars/this drop a tail (ENG-2530).
-const TIER3_MIN_PER_RECORD_CHARS = 64;
-
 // Per record, non-string scalars use at most this fraction of the share; the rest is reserved
 // for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
@@ -287,6 +284,31 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 	return outerCap - reserve;
 }
 
+// Visiting order for top-level records: coarse-to-fine (0, then halves, quarters, …) so that if the
+// budget runs out partway, the records actually reviewed are spread across the WHOLE list rather than
+// a contiguous prefix. A list that fits is still fully visited (every index appears exactly once).
+// Records are emitted in original index order regardless; this only changes which survive a cutoff.
+function tier3SpreadOrder(n: number): number[] {
+	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
+	const order: number[] = [];
+	const seen = new Uint8Array(n);
+	const push = (i: number) => {
+		if (!seen[i]) {
+			seen[i] = 1;
+			order.push(i);
+		}
+	};
+	// Both endpoints first, so the first and LAST record survive a budget cutoff (an injection
+	// appended as the final element of a long list must not be systematically skipped).
+	push(0);
+	push(n - 1);
+	for (let step = Math.floor(n / 2); step >= 1; step = Math.floor(step / 2)) {
+		for (let i = step; i < n; i += step) push(i);
+		if (step === 1) break;
+	}
+	return order;
+}
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -300,7 +322,11 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
  *
  * Bare-line exception (intentional): a top-level scalar string has no field, so it stays bare.
  */
-function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxChars: number): string {
+function formatRecordsForTier3(
+	value: unknown,
+	depthFlag: { hit: boolean; coverageDegraded?: boolean },
+	maxChars: number,
+): string {
 	let hasString = false;
 	// `used` = exact joined length (content + separators), so the join never exceeds maxChars;
 	// `cap` (per-record share) and `nonStringCap` (its scalar sub-budget) are reset per record.
@@ -356,7 +382,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			const outerCap = cap;
 			for (let i = 0; i < v.length; i++) {
 				if (used >= outerCap) {
-					depthFlag.hit = true; // elements dropped for lack of budget → coverage degraded
+					depthFlag.coverageDegraded = true; // elements dropped for lack of budget → coverage degraded
 					break;
 				}
 				cap = tier3ItemCap(outerCap, used, v.length - i);
@@ -368,7 +394,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			const outerCap = cap;
 			for (let idx = 0; idx < entries.length; idx++) {
 				if (used >= outerCap) {
-					depthFlag.hit = true; // fields dropped for lack of budget → coverage degraded
+					depthFlag.coverageDegraded = true; // fields dropped for lack of budget → coverage degraded
 					break;
 				}
 				cap = tier3ItemCap(outerCap, used, entries.length - idx);
@@ -400,7 +426,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 							used += sep + room;
 							hasString = true;
 						}
-						depthFlag.hit = true; // string truncated for lack of budget → coverage degraded
+						depthFlag.coverageDegraded = true; // string truncated for lack of budget → coverage degraded
 						break;
 					} else break;
 				}
@@ -427,7 +453,7 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
 					// record; a later field may fit and may carry the injection. The outer loop's
 					// `used >= cap` guard still stops the record once the budget is genuinely full.
-					depthFlag.hit = true; // string truncated/dropped for lack of budget → coverage degraded
+					depthFlag.coverageDegraded = true; // string truncated/dropped for lack of budget → coverage degraded
 					break;
 				} else {
 					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
@@ -438,35 +464,23 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 
 	const records = Array.isArray(value) ? value : [value];
 	const topIsArray = Array.isArray(value);
-	// Round-robin: each top-level record gets an equal share of the budget, so a late record's
-	// injection isn't sliced off and the input stays short (e3: long front-loaded input induces
-	// hallucinated blocks). Lists longer than maxChars/perRecord drop a tail (ENG-2530).
-	const perRecord = Math.max(TIER3_MIN_PER_RECORD_CHARS, Math.floor(maxChars / (records.length || 1)));
-	// When there are more records than the budget can cover, sample them evenly across the whole
-	// list (stride) instead of taking a contiguous prefix — so an injection in a late record can
-	// still be reviewed rather than always dropped off the tail. Original indices are kept as labels.
-	const affordable = Math.max(1, Math.floor(maxChars / TIER3_MIN_PER_RECORD_CHARS));
-	let indices: number[];
-	if (records.length > affordable) {
-		if (affordable === 1) {
-			indices = [0];
-		} else {
-			// Endpoint-inclusive stride so BOTH the first and the LAST record are sampled — an
-			// injection appended as the final element of a long list must not be systematically skipped.
-			const stride = (records.length - 1) / (affordable - 1);
-			indices = Array.from({ length: affordable }, (_, k) => Math.round(k * stride));
-		}
-		depthFlag.hit = true; // not every record reviewed → coverage degraded
-	} else {
-		indices = Array.from({ length: records.length }, (_, i) => i);
-	}
-	const blocks: string[] = [];
-	for (const i of indices) {
+	const n = records.length;
+	// Visit records in a spread order and give each a sibling-reserved share (tier3ItemCap), so:
+	//  - a list that FITS is fully reviewed (we only drop when content genuinely exceeds the budget,
+	//    not based on record count — a big list of tiny records stays fully covered), and
+	//  - if the budget runs out, the reviewed records are spread across the WHOLE list, not a prefix,
+	//    so a late record's injection can still be reviewed.
+	// Records are emitted in original index order; only which ones survive a cutoff changes.
+	const order = tier3SpreadOrder(n);
+	const blocks: (string | undefined)[] = new Array(n);
+	let emitted = 0;
+	for (let oi = 0; oi < order.length; oi++) {
 		if (used >= maxChars) break;
+		const i = order[oi];
 		const usedBefore = used;
-		cap = Math.min(usedBefore + perRecord, maxChars);
-		nonStringCap = Math.min(usedBefore + Math.floor(perRecord * TIER3_SCALAR_BUDGET_FRACTION), cap);
-		used += blocks.length > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
+		cap = tier3ItemCap(maxChars, used, order.length - oi);
+		nonStringCap = Math.min(usedBefore + Math.floor((cap - usedBefore) * TIER3_SCALAR_BUDGET_FRACTION), cap);
+		used += emitted > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 		const record = records[i];
 		const lines: string[] = [];
 		// Index a top-level array element unless it's a keyed object (its keys already give context);
@@ -479,11 +493,16 @@ function formatRecordsForTier3(value: unknown, depthFlag: { hit: boolean }, maxC
 			!(record instanceof ArrayBuffer);
 		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
 		serialize(record, rootPrefix, lines, 0, false);
-		if (lines.length > 0) blocks.push(lines.join("\n"));
-		else used = usedBefore; // empty block → roll back the reserved separator
+		if (lines.length > 0) {
+			blocks[i] = lines.join("\n");
+			emitted++;
+		} else {
+			used = usedBefore; // empty block → roll back the reserved separator
+		}
 	}
-	// No string leaf → nothing to review → skip the provider (empty input).
-	return hasString ? blocks.join("\n\n") : "";
+	if (emitted < n) depthFlag.coverageDegraded = true; // some records not reviewed → coverage degraded
+	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
+	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
 
 /**
@@ -923,7 +942,7 @@ export class PromptDefense {
 		value: unknown,
 		provider: Tier3Provider,
 		toolName: string,
-		depthFlag: { hit: boolean },
+		depthFlag: { hit: boolean; coverageDegraded?: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
@@ -999,8 +1018,10 @@ export class PromptDefense {
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
+			// truncatedAtDepth is the depth-limit signal only; budget-driven drops set coverageDegraded.
 			truncatedAtDepth: depthFlag.hit || undefined,
-			coverageDegraded: depthFlag.hit || analysisDegraded || payloadError || undefined,
+			coverageDegraded:
+				depthFlag.hit || depthFlag.coverageDegraded || analysisDegraded || payloadError || undefined,
 			latencyMs: performance.now() - startTime,
 		};
 	}

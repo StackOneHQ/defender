@@ -372,6 +372,29 @@ describe("PromptDefense tier3_only mode", () => {
 		expect(result.coverageDegraded).toBe(true); // not every record fits → coverage flagged
 	});
 
+	it("does NOT drop or flag a large list of small records that fits the budget (adv review #2/size-aware)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { provider, maxTextLength: 10000 },
+		});
+
+		// 200 tiny records serialize to ~3k chars — well under 10k. Count-based striding used to drop
+		// ~40 of them and flag coverage; size-aware review keeps them all.
+		const records = Array.from({ length: 200 }, (_, i) => ({ id: i, tag: "ok" }));
+		const result = await defense.defendToolResult(records, "list_tool");
+
+		const input = (provider.classify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+		expect(input).toContain("id: 0");
+		expect(input).toContain("id: 199"); // every record reviewed, including the last
+		expect(input).toContain("id: 137"); // …and interior ones that count-striding would have dropped
+		expect(result.coverageDegraded).toBeUndefined(); // nothing dropped → no false coverage flag
+	});
+
 	it("always samples the LAST record so a trailing injection isn't systematically skipped (adv review #3)", async () => {
 		const provider = makeProvider("allow");
 		const defense = createPromptDefense({
