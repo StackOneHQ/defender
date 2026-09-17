@@ -9,6 +9,7 @@
  */
 
 import type { Tier2Classifier } from "../classifiers/tier2-classifier";
+import { MAX_TRAVERSAL_DEPTH } from "../config";
 import { stripRoleMarkers } from "../sanitizers/role-stripper";
 import type { DataBoundary } from "../types";
 import { stripBoundaryPatterns, wrapWithBoundary } from "../utils/boundary";
@@ -77,8 +78,10 @@ export async function cleanHighRiskContent(
 	if (highRiskValues.size === 0) return { content, changedFields: [] };
 
 	const changedFields: string[] = [];
+	// Cycle guard: an unguarded recursive walk OOM-crashes the process on a circular reference.
+	const seen = new WeakSet<object>();
 
-	async function walk(value: unknown, path: string): Promise<unknown> {
+	async function walk(value: unknown, path: string, depth: number): Promise<unknown> {
 		if (typeof value === "string") {
 			const raw = opts.boundary ? stripBoundaryPatterns(value) : value;
 			if (!highRiskValues.has(raw)) return value;
@@ -86,15 +89,29 @@ export async function cleanHighRiskContent(
 			if (cleaned !== raw) changedFields.push(path);
 			return opts.boundary ? wrapWithBoundary(cleaned, opts.boundary) : cleaned;
 		}
-		if (Array.isArray(value)) return Promise.all(value.map((v, i) => walk(v, `${path}[${i}]`)));
-		if (value && typeof value === "object") {
-			const out: Record<string, unknown> = {};
-			for (const [k, v] of Object.entries(value)) out[k] = await walk(v, path ? `${path}.${k}` : k);
-			return out;
+		// Bound the walk exactly like every other traversal (sanitize/extractStrings/serializer):
+		// past the depth cap, or on a cycle, pass through untouched — never recurse unboundedly.
+		if (value === null || typeof value !== "object" || depth > MAX_TRAVERSAL_DEPTH) return value;
+		if (seen.has(value)) return value;
+		seen.add(value);
+		if (Array.isArray(value)) return Promise.all(value.map((v, i) => walk(v, `${path}[${i}]`, depth + 1)));
+		// Only descend into PLAIN objects, matching the sanitizer — a non-plain object (Date, Map,
+		// class instance, Proxy) is passed through, so its getters/traps are never invoked here.
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return value;
+		// A throwing getter/Proxy trap during enumeration must not abort cleaning of the WHOLE payload
+		// (which would leak a sibling high-risk field unredacted) — skip only this subtree.
+		let entries: [string, unknown][];
+		try {
+			entries = Object.entries(value as Record<string, unknown>);
+		} catch {
+			return value;
 		}
-		return value;
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of entries) out[k] = await walk(v, path ? `${path}.${k}` : k, depth + 1);
+		return out;
 	}
 
-	const cleanedContent = await walk(content, "");
+	const cleanedContent = await walk(content, "", 0);
 	return { content: cleanedContent, changedFields };
 }

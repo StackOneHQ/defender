@@ -160,8 +160,10 @@ export interface Tier3Provider {
 	 * Classify a text snippet for prompt-injection risk.
 	 *
 	 * @param text - Content to classify. In cascade mode this is the highest-
-	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode it is the
-	 *   joined extracted strings of the tool result.
+	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode it is the tool
+	 *   result serialized as record-oriented `field: value` blocks (nested keys
+	 *   dotted, arrays indexed, records blank-line separated), capped to
+	 *   `tier3.maxTextLength`, so structured values keep their field context.
 	 * @param ctx - Optional context (e.g. originating tool name) the provider
 	 *   may include in its prompt.
 	 */

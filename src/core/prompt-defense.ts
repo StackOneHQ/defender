@@ -148,10 +148,14 @@ export interface DefenseResult {
 	 */
 	truncatedAtDepth?: boolean;
 	/**
-	 * True when Tier 1 *detection* coverage was reduced on this payload — a field
-	 * exceeded `maxFieldAnalysisLength`, or the call-scoped `maxSize` detection
-	 * budget / a depth limit was hit. Content is still returned in full; only
-	 * detection was capped, and Tier 2 (when enabled) still scanned every string.
+	 * True when analysis coverage was reduced on this payload. Causes:
+	 *  - Tier 1 *detection* was capped (a field exceeded `maxFieldAnalysisLength`, or the
+	 *    call-scoped `maxSize`/depth budget was hit) — content is still returned in full and
+	 *    Tier 2, when enabled, still scanned every string; OR
+	 *  - the Tier-3 reviewer input was truncated / a record was dropped for the review budget
+	 *    (tier3_only); OR
+	 *  - a payload traversal threw (a throwing getter, etc.) so part or ALL of it could not be
+	 *    analyzed — in this case a tier did NOT scan everything (not merely "capped detection").
 	 * **Absent (not `false`) when coverage was complete** — branch on `=== true`.
 	 * Monitor to catch payloads shaped to hide content past the analysis limits.
 	 */
@@ -250,6 +254,308 @@ function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: {
 
 	traverse(obj, 0);
 	return strings;
+}
+
+// Line breaks (incl. U+2028/U+2029/NEL): flattened in keys, split in values, so neither can
+// forge a bare line or a `\n\n` record boundary.
+const TIER3_LINE_BREAKS = /[\r\n\u2028\u2029\u0085]/;
+const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
+
+// A large array of only non-string scalars collapses to `key: [N …]`: the values carry no
+// injection and enumerating them would flood the budget and starve string leaves.
+const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
+function isNonStringScalar(v: unknown): boolean {
+	const t = typeof v;
+	// bigint/symbol included so those arrays collapse like number arrays (only strings carry injection).
+	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
+}
+
+// Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
+// (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
+// throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
+function describeError(err: unknown): string {
+	try {
+		if (err instanceof Error) return err.message;
+		return String(err);
+	} catch {
+		return "<unstringifiable thrown value>";
+	}
+}
+
+// Per record, non-string scalars use at most this fraction of the share; the rest is reserved
+// for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
+const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
+
+// Per-item floor reserved for each not-yet-serialized sibling, so one big field/element can't
+// consume the whole record budget and starve a later one that may carry the injection.
+const TIER3_MIN_FIELD_CHARS = 128;
+
+// Budget for one item (object field or array element) of a collection: it may use everything
+// except a floor reserved for each remaining sibling — but is always allowed at least the floor
+// itself. Applies to fields AND elements, and to nested subtrees (the item's whole subtree shares
+// this cap), so a big sibling (even a deep object/array) can't starve a later injection-bearing one.
+function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): number {
+	const avail = outerCap - usedNow;
+	const reserve = Math.min((remaining - 1) * TIER3_MIN_FIELD_CHARS, Math.max(0, avail - TIER3_MIN_FIELD_CHARS));
+	return outerCap - reserve;
+}
+
+// Visiting order for top-level records: coarse-to-fine (0, then halves, quarters, …) so that if the
+// budget runs out partway, the records actually reviewed are spread across the WHOLE list rather than
+// a contiguous prefix. A list that fits is still fully visited (every index appears exactly once).
+// Records are emitted in original index order regardless; this only changes which survive a cutoff.
+function tier3SpreadOrder(n: number): number[] {
+	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
+	const order: number[] = [];
+	const seen = new Uint8Array(n);
+	const push = (i: number) => {
+		if (!seen[i]) {
+			seen[i] = 1;
+			order.push(i);
+		}
+	};
+	// Both endpoints first, so the first and LAST record survive a budget cutoff (an injection
+	// appended as the final element of a long list must not be systematically skipped).
+	push(0);
+	push(n - 1);
+	for (let step = Math.floor(n / 2); step >= 1; step = Math.floor(step / 2)) {
+		for (let i = step; i < n; i += step) push(i);
+		if (step === 1) break;
+	}
+	return order;
+}
+
+/**
+ * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
+ * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
+ * name) read as directives and false-positive-block; the per-leaf `key:` framing prevents that
+ * (e3: the signal is the field structure, not the values). Large non-string-scalar arrays
+ * collapse to `key: [N …]` and per-record scalar volume is capped, so numbers can't flood the
+ * budget and starve string leaves; the budget is split round-robin across records so a late
+ * record's injection is still reviewed. Values are cut to fit (whole lines / keeping `key:`),
+ * so the join stays within `maxChars`. Skip the provider when no string leaf is emitted.
+ * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
+ *
+ * Bare-line exception (intentional): a top-level scalar string has no field, so it stays bare.
+ */
+function formatRecordsForTier3(
+	value: unknown,
+	depthFlag: { hit: boolean; coverageDegraded?: boolean },
+	maxChars: number,
+): string {
+	let hasString = false;
+	// `used` = exact joined length (content + separators), so the join never exceeds maxChars;
+	// `cap` (per-record share) and `nonStringCap` (its scalar sub-budget) are reset per record.
+	let used = 0;
+	let cap = maxChars;
+	let nonStringCap = maxChars;
+	// Two-pass allocation without a cost estimator: the first pass is greedy (every item may use the
+	// whole remaining budget). If that budget-truncates or drops anything (`budgetTruncated`), the
+	// caller re-runs in `reserveMode`, where each collection reserves a floor per remaining sibling so
+	// an early item can't starve a later one. Measurement IS the real serializer, so nothing can
+	// diverge from what is actually emitted. (Depth cuts are NOT budget truncation — they don't retry.)
+	let reserveMode = false;
+	let budgetTruncated = false;
+	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
+	function fits(lines: string[], text: string, limit: number): boolean {
+		const sep = lines.length > 0 ? 1 : 0;
+		if (used + sep + text.length > limit) return false;
+		lines.push(text);
+		used += sep + text.length;
+		return true;
+	}
+	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
+	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
+		if (used >= cap) return;
+		if (depth > MAX_TRAVERSAL_DEPTH) {
+			depthFlag.hit = true;
+			return;
+		}
+		if (v === null || v === undefined) return;
+		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
+			const bytes = (v as { byteLength: number }).byteLength;
+			const limit = Math.min(cap, nonStringCap); // bound the scalar sub-budget by this item's cap
+			if (!fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit)) {
+				budgetTruncated = true; // line (incl. its key) dropped for budget → retry with reserve / flag
+				depthFlag.coverageDegraded = true;
+			}
+			return;
+		}
+		if (Array.isArray(v)) {
+			// Collapse a large all-non-string-scalar array to `key: [N …]` (structure kept, volume
+			// dropped). One pass confirms all-scalar (a late string can't be dropped) and picks the
+			// label; O(array) is the ENG-2530 traversal-bound follow-up.
+			if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD) {
+				let allScalar = true;
+				let allNumber = true;
+				for (const x of v) {
+					if (!isNonStringScalar(x)) {
+						allScalar = false;
+						break;
+					}
+					if (typeof x !== "number") allNumber = false;
+				}
+				if (allScalar) {
+					const kind = allNumber ? "numbers" : "values";
+					const limit = Math.min(cap, nonStringCap);
+					if (!fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit)) {
+						budgetTruncated = true; // summary line (incl. its key) dropped for budget → retry / flag
+						depthFlag.coverageDegraded = true;
+					}
+					return;
+				}
+			}
+			const outerCap = cap;
+			for (let i = 0; i < v.length; i++) {
+				if (used >= outerCap) {
+					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
+					depthFlag.coverageDegraded = true;
+					break;
+				}
+				cap = reserveMode ? tier3ItemCap(outerCap, used, v.length - i) : outerCap;
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
+			}
+			cap = outerCap;
+		} else if (typeof v === "object") {
+			const entries = Object.entries(v as Record<string, unknown>);
+			const outerCap = cap;
+			for (let idx = 0; idx < entries.length; idx++) {
+				if (used >= outerCap) {
+					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
+					depthFlag.coverageDegraded = true;
+					break;
+				}
+				cap = reserveMode ? tier3ItemCap(outerCap, used, entries.length - idx) : outerCap;
+				const [k, val] = entries[idx];
+				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
+				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
+			}
+			cap = outerCap;
+		} else {
+			const s = String(v);
+			const isStr = typeof v === "string";
+			// Strings get the full item cap; non-string scalars only their reserved slice, itself
+			// bounded by this item's cap (anti-crowd-out at both the record and the field level).
+			const limit = isStr ? cap : Math.min(cap, nonStringCap);
+			if (!prefix && !keyed) {
+				// Top-level scalar record — bare (see docstring). Split on line breaks and drop blank
+				// lines (joined with single `\n`) so an embedded `\n\n` can't forge a record boundary.
+				for (const line of s.split(TIER3_LINE_BREAKS)) {
+					if (used >= limit) break;
+					if (line.length === 0) continue;
+					if (fits(lines, line, limit)) {
+						if (isStr) hasString = true;
+					} else if (isStr) {
+						const sep = lines.length > 0 ? 1 : 0;
+						const room = limit - used - sep;
+						if (room > 0) {
+							lines.push(line.slice(0, room));
+							used += sep + room;
+							hasString = true;
+						}
+						budgetTruncated = true; // string truncated for lack of budget → retry with reserve
+						depthFlag.coverageDegraded = true;
+						break;
+					} else break;
+				}
+				return;
+			}
+			// Per-line `field:` prefix (e3: recall 0.995 vs 0.79 for collapse) so a multi-line value
+			// can't emit a bare line or forge a boundary. hasString only on actual emit — a string
+			// that doesn't fit is an honest skip, not a provider call on injection-free input.
+			for (const line of s.split(TIER3_LINE_BREAKS)) {
+				if (used >= limit) break;
+				if (line.length === 0) continue;
+				const full = `${prefix}: ${line}`;
+				if (fits(lines, full, limit)) {
+					if (isStr) hasString = true;
+				} else if (isStr) {
+					// String too big for the remaining share: truncate to it, keeping the `key:` prefix.
+					const sep = lines.length > 0 ? 1 : 0;
+					const room = cap - used - sep;
+					if (room > prefix.length + 2) {
+						lines.push(full.slice(0, room));
+						used += sep + room;
+						hasString = true;
+					}
+					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
+					// record; a later field may fit and may carry the injection. The outer loop's
+					// `used >= cap` guard still stops the record once the budget is genuinely full.
+					budgetTruncated = true; // string truncated/dropped for lack of budget → retry with reserve
+					depthFlag.coverageDegraded = true;
+					break;
+				} else {
+					// Non-string scalar past its sub-budget — its line (incl. the attacker-controlled key)
+					// is dropped. Flag it so coverage is honest and a genuine overflow triggers the retry.
+					budgetTruncated = true;
+					depthFlag.coverageDegraded = true;
+					break;
+				}
+			}
+		}
+	}
+
+	const records = Array.isArray(value) ? value : [value];
+	const topIsArray = Array.isArray(value);
+	const n = records.length;
+	const isKeyedObject = (r: unknown): boolean =>
+		r !== null &&
+		typeof r === "object" &&
+		!Array.isArray(r) &&
+		!ArrayBuffer.isView(r) &&
+		!(r instanceof ArrayBuffer);
+	const rootPrefixOf = (r: unknown, i: number): string => (topIsArray && !isKeyedObject(r) ? `[${i}]` : "");
+	// One pass over the records. Greedy (reserveMode=false): index order, each record at full budget.
+	// Reserve pass (reserveMode=true): spread order (so a budget cutoff samples across the whole list,
+	// not a prefix), each record with a per-record sibling reserve. Emitted in original index order.
+	const runRecords = (): (string | undefined)[] => {
+		const order = reserveMode ? tier3SpreadOrder(n) : Array.from({ length: n }, (_, i) => i);
+		const out: (string | undefined)[] = new Array(n);
+		let emitted = 0;
+		for (let oi = 0; oi < order.length; oi++) {
+			if (used >= maxChars) {
+				budgetTruncated = true; // remaining records dropped for lack of budget
+				depthFlag.coverageDegraded = true;
+				break;
+			}
+			const i = order[oi];
+			const usedBefore = used;
+			cap = reserveMode ? tier3ItemCap(maxChars, used, order.length - oi) : maxChars;
+			// The scalar sub-budget is an anti-crowd-out reserve — only meaningful in the reserve pass.
+			// In the greedy pass scalars get the full cap, so a record that FITS is reviewed in full
+			// (keys and all) rather than self-inflicting a drop that the estimator-free design can't retry.
+			nonStringCap = reserveMode
+				? Math.min(usedBefore + Math.floor((cap - usedBefore) * TIER3_SCALAR_BUDGET_FRACTION), cap)
+				: cap;
+			used += emitted > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
+			const record = records[i];
+			const lines: string[] = [];
+			serialize(record, rootPrefixOf(record, i), lines, 0, false);
+			if (lines.length > 0) {
+				out[i] = lines.join("\n");
+				emitted++;
+			} else {
+				used = usedBefore; // empty block → roll back the reserved separator
+			}
+		}
+		return out;
+	};
+
+	let blocks = runRecords(); // greedy
+	if (budgetTruncated) {
+		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
+		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
+		used = 0;
+		hasString = false;
+		budgetTruncated = false;
+		depthFlag.coverageDegraded = undefined;
+		reserveMode = true;
+		blocks = runRecords();
+	}
+	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
+	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
 
 /**
@@ -485,11 +791,13 @@ export class PromptDefense {
 		}
 		if (options.tier3?.maxTextLength !== undefined) {
 			const cap = options.tier3.maxTextLength;
-			if (Number.isFinite(cap) && cap > 0) {
+			// Validate the FLOORED value: a cap in (0, 1) is finite and > 0 but floors to 0, which
+			// would silently disable Tier 3 (formatRecordsForTier3 emits nothing at budget 0).
+			if (Number.isFinite(cap) && Math.floor(cap) >= 1) {
 				this.tier3MaxTextLength = Math.floor(cap);
 			} else {
 				console.warn(
-					`[defender] invalid tier3.maxTextLength ${cap} — must be a positive finite number. Falling back to default 10000.`,
+					`[defender] invalid tier3.maxTextLength ${cap} — must be a finite number >= 1. Falling back to default 10000.`,
 				);
 			}
 		}
@@ -588,7 +896,7 @@ export class PromptDefense {
 	 * module-scoped) and returns so the caller can continue Tier-1-only (fail-open).
 	 */
 	private handleTier2Unavailable(err: unknown): void {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = describeError(err);
 		if (this.tier2Required) {
 			throw new Error(
 				`[defender] Tier 2 is required (requireTier2: true) but the model/runtime failed to load: ${msg}. Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers'.`,
@@ -689,19 +997,30 @@ export class PromptDefense {
 		value: unknown,
 		provider: Tier3Provider,
 		toolName: string,
-		depthFlag: { hit: boolean },
+		depthFlag: { hit: boolean; coverageDegraded?: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
-		const strings = extractStrings(value, undefined, depthFlag).filter((s) => s.length > 0);
-		const joined = strings.join("\n");
-		// Cap input size before the provider call — bounds tokens/cost/latency
-		// on pathological payloads. Mirrors Tier 2's maxTextLength behavior.
-		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
-
+		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
 		let verdict: Tier3Verdict | undefined;
 		let skipReason: string | undefined;
+		// A payload-triggered error (a throwing getter, etc.) means we could NOT analyze attacker-
+		// controlled content — distinct from a provider outage. In strict mode we treat un-analyzable
+		// input as risky and fail CLOSED (see the `allowed` gate below), so a crafted getter can't
+		// force a bypass; permissive mode still allows. A provider outage stays fail-open.
+		let payloadError = false;
+		let joined = "";
+		try {
+			joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
+		} catch (err) {
+			payloadError = true;
+			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
+		}
+		// Safety net; the serializer already keeps the join within the cap.
+		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
+
 		if (bounded.length === 0) {
-			skipReason = "No strings extracted from tool result";
+			// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
+			skipReason ??= "No reviewable string content emitted from tool result";
 		} else {
 			try {
 				const raw = await provider.classify(bounded, { toolName });
@@ -712,43 +1031,72 @@ export class PromptDefense {
 					verdict = validated;
 				}
 			} catch (err) {
-				skipReason = `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`;
+				skipReason = `Tier 3 provider error: ${describeError(err)}`;
 			}
 		}
 
-		// Always run Tier 1 detection so `detections` metadata is populated even
-		// in tier3_only mode. Detect-and-gate: content is not rewritten, and the
-		// Tier 1 risk level is intentionally NOT used for the block decision —
-		// in tier3_only mode the LLM is authoritative.
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
-		const { patternsRemovedByField } = sanitized.metadata;
-		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+		// Tier 1 detection for `detections` metadata (LLM is authoritative in tier3_only).
+		// This walk is UNCAPPED, so a throw here can come from content past the review budget —
+		// it degrades coverage but must NOT override an obtained verdict, so it sets no payloadError.
+		let patternsRemovedByField: Record<string, string[]> = {};
+		let detections: string[] = [];
+		let sanitizedContent: unknown = value;
+		let analysisDegraded = false;
+		try {
+			const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+			patternsRemovedByField = sanitized.metadata.patternsRemovedByField;
+			detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+			sanitizedContent = sanitized.sanitized;
+			analysisDegraded =
+				sanitized.metadata.analysisTruncated === true ||
+				sanitized.metadata.sizeMetrics.depthLimitHit ||
+				sanitized.metadata.sizeMetrics.sizeLimitHit;
+		} catch (err) {
+			analysisDegraded = true;
+			skipReason ??= `Tier 1 metadata error: ${describeError(err)}`;
+		}
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
-		const riskLevel: RiskLevel = blocked ? "high" : "low";
-		// Honor the library invariant: `blockHighRisk: false` always yields
-		// `allowed: true` — Tier 3 contributes to `riskLevel` for diagnostics
-		// but does not hard-block in permissive mode. Matches the cascade
-		// path's gating at the main `return` block.
-		const allowed = !this.config.blockHighRisk || !blocked;
+		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
+		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
+		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when
+		// the payload couldn't be serialized for review (payloadError).
+		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
 
 		return {
 			allowed,
 			riskLevel,
-			sanitized: sanitized.sanitized,
+			sanitized: sanitizedContent,
 			detections,
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
 			fieldsDropped: [],
+			// truncatedAtDepth is the depth-limit signal only; budget-driven drops set coverageDegraded.
 			truncatedAtDepth: depthFlag.hit || undefined,
 			coverageDegraded:
-				depthFlag.hit ||
-				sanitized.metadata.analysisTruncated === true ||
-				sanitized.metadata.sizeMetrics.depthLimitHit ||
-				sanitized.metadata.sizeMetrics.sizeLimitHit ||
-				undefined,
+				depthFlag.hit || depthFlag.coverageDegraded || analysisDegraded || payloadError || undefined,
+			latencyMs: performance.now() - startTime,
+		};
+	}
+
+	/**
+	 * Minimal result for a payload we can't traverse (e.g. a throwing getter). Fail closed in
+	 * strict mode (un-analyzable input is risky), open otherwise; never let the exception escape.
+	 */
+	private buildUnanalyzableResult(value: unknown, reason: string, startTime: number): DefenseResult {
+		return {
+			allowed: !this.config.blockHighRisk,
+			riskLevel: "high",
+			sanitized: value,
+			detections: [],
+			fieldsSanitized: [],
+			patternsByField: {},
+			detectedFieldCount: 0,
+			tier2SkipReason: reason,
+			fieldsDropped: [],
+			coverageDegraded: true,
 			latencyMs: performance.now() - startTime,
 		};
 	}
@@ -815,7 +1163,7 @@ export class PromptDefense {
 				// can detect predictor regressions (e.g. WASM runtime
 				// transient failures, malformed payload) via telemetry.
 				console.warn(
-					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${err instanceof Error ? err.message : String(err)}`,
+					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${describeError(err)}`,
 				);
 			}
 		}
@@ -828,9 +1176,18 @@ export class PromptDefense {
 
 		// Tier 1: pattern-based sanitization on the original value — SFE
 		// filtering is classifier-only and must not affect the returned payload.
+		// A throwing getter here (Object.entries) must not crash the primary API: we can't
+		// analyze the payload at all, so fail closed in strict mode (buildUnanalyzableResult).
 		const tTier1Start = performance.now();
-		const sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
+		let sanitized: ReturnType<typeof this.toolResultSanitizer.sanitize>;
+		try {
+			sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
+		} catch (err) {
+			return this.buildUnanalyzableResult(value, `Tier 1 sanitize error: ${describeError(err)}`, startTime);
+		}
 		const tier1Ms = performance.now() - tTier1Start;
+		// Set if a later payload traversal (Tier 2 extraction / content cleaning) throws.
+		let payloadError = false;
 
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
@@ -885,7 +1242,7 @@ export class PromptDefense {
 			} catch (err) {
 				tier2Ready = false;
 				tier2Available = false;
-				tier2SkipReason = `Tier 2 unavailable (model/runtime failed to load): ${err instanceof Error ? err.message : String(err)}`;
+				tier2SkipReason = `Tier 2 unavailable (model/runtime failed to load): ${describeError(err)}`;
 				this.handleTier2Unavailable(err);
 			}
 
@@ -894,9 +1251,17 @@ export class PromptDefense {
 			// in fields not covered by tool rules would bypass Tier 2 entirely while still
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
-			const strings = tier2Ready
-				? extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0)
-				: [];
+			let strings: string[] = [];
+			if (tier2Ready) {
+				try {
+					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
+					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
+					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+				} catch (err) {
+					payloadError = true;
+					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
+				}
+			}
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
@@ -990,7 +1355,7 @@ export class PromptDefense {
 							allScores = dedupeIndex.map((u) => uniqueScores[u]);
 						}
 					} catch (err) {
-						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
+						tier2SkipReason = `Inference error: ${describeError(err)}`;
 					}
 					const tAggStart = performance.now();
 
@@ -1129,7 +1494,8 @@ export class PromptDefense {
 						};
 					}
 				}
-			} else if (tier2Ready) {
+			} else if (tier2Ready && !payloadError) {
+				// (skip when payloadError: extraction threw and already set a more specific reason)
 				tier2SkipReason = this.tier2Fields?.length
 					? "No strings found in tier2Fields"
 					: "No strings extracted from tool result";
@@ -1169,7 +1535,7 @@ export class PromptDefense {
 					}
 				} catch (err) {
 					tier3Result = {
-						skipReason: `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`,
+						skipReason: `Tier 3 provider error: ${describeError(err)}`,
 					};
 				}
 			} else {
@@ -1196,6 +1562,10 @@ export class PromptDefense {
 			riskLevel = "high";
 		} else if (tier3OverrideBlock === false && tier2Index > tier1Index) {
 			riskLevel = riskLevels[tier1Index];
+		}
+		// Un-analyzable content (a payload traversal threw) is a risk signal.
+		if (payloadError && riskLevels.indexOf(riskLevel) < riskLevels.indexOf("high")) {
+			riskLevel = "high";
 		}
 
 		// Determine whether any threat signals were found (Tier 1 or Tier 2).
@@ -1225,7 +1595,10 @@ export class PromptDefense {
 		// 1. blockHighRisk is off → always allow
 		// 2. No threat signals found → allow (base risk from tool rules alone does not block)
 		// 3. Risk did not reach high/critical → allow
-		const allowed = !this.config.blockHighRisk || !hasThreats || (riskLevel !== "high" && riskLevel !== "critical");
+		// A payloadError (un-analyzable content) fails closed in strict mode regardless.
+		const allowed =
+			!this.config.blockHighRisk ||
+			(!payloadError && (!hasThreats || (riskLevel !== "high" && riskLevel !== "critical")));
 
 		// `tier2Score` reports `tier2EffectiveScore` — the value that drove the
 		// block decision. When `blockHighRisk` is on and no Tier 1 detection
@@ -1251,12 +1624,19 @@ export class PromptDefense {
 			this.tier2Classifier &&
 			(riskLevel === "high" || riskLevel === "critical") &&
 			highRiskValues.size > 0;
-		const cleanResult = cleanContent
-			? await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
+		let cleanResult = { content: original, changedFields: [] as string[] };
+		if (cleanContent) {
+			try {
+				cleanResult = await cleanHighRiskContent(original, highRiskValues, this.tier2Classifier!, {
 					highRiskThreshold: this.config.tier2.highRiskThreshold,
 					boundary,
-				})
-			: { content: original, changedFields: [] as string[] };
+				});
+			} catch {
+				// Content cleaning traverses the payload too; on a throwing getter keep the original
+				// content (the block decision already stands) and flag degraded coverage.
+				payloadError = true;
+			}
+		}
 
 		return {
 			allowed,
@@ -1286,6 +1666,7 @@ export class PromptDefense {
 			tier1Ms,
 			coverageDegraded:
 				depthFlag.hit ||
+				payloadError ||
 				sanitized.metadata.analysisTruncated === true ||
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit ||
