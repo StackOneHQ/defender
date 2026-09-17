@@ -675,9 +675,10 @@ describe("PromptDefense tier3_only mode", () => {
 			tier3: { provider, maxTextLength: 4000 },
 		});
 
-		// 200 records at a 4000 cap → striding samples ~62 of them (indices 0, 3, 7, …); index 1 is
-		// NOT sampled, so the serializer never touches it, but the uncapped Tier-1 walk does. A throwing
-		// getter there must degrade coverage, not override the allow verdict from the sampled records.
+		// 200 records over a 4000 cap: the greedy pass (index order) reaches only ~40 records and the
+		// reserve pass (spread order) samples ~40 more — a high odd index like 197 is in NEITHER, so the
+		// serializer never touches it, but the uncapped Tier-1 walk does. A throwing getter there must
+		// degrade coverage, not override the allow verdict from the records that WERE reviewed.
 		const records: unknown[] = Array.from({ length: 200 }, (_, i) => ({
 			id: i,
 			note: `benign record content ${"x".repeat(80)}`,
@@ -689,7 +690,7 @@ describe("PromptDefense tier3_only mode", () => {
 				throw new Error("unsampled getter");
 			},
 		});
-		records[1] = poison; // unsampled by the stride (0 → 3 → 7 → …)
+		records[197] = poison; // serialized by neither the greedy (index-order) nor reserve (spread) pass
 
 		const result = await defense.defendToolResult(records, "list_tool");
 
