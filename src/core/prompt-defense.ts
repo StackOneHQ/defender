@@ -316,10 +316,13 @@ function tier3SpreadOrder(n: number): number[] {
 function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): number {
 	if (budget <= 0) return 0;
 	if (v === null || v === undefined) return 0;
-	if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return Math.min(budget, prefixLen + 18);
+	if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+		const bytes = (v as { byteLength: number }).byteLength;
+		return Math.min(budget, prefixLen + 18 + String(bytes).length); // `key: <binary N bytes>` + sep
+	}
 	if (Array.isArray(v)) {
 		if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
-			return Math.min(budget, prefixLen + 20); // collapses to `key: [N …]`
+			return Math.min(budget, prefixLen + 21); // collapses to `key: [N …]` + sep
 		}
 		let sum = 0;
 		for (let i = 0; i < v.length; i++) {
@@ -336,7 +339,16 @@ function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): numbe
 		}
 		return sum;
 	}
-	return Math.min(budget, prefixLen + 2 + String(v).length);
+	// A string/scalar is emitted per line with the `key:` prefix REPEATED on each line (serialize),
+	// plus a joining separator — mirror that, or a multi-line value is grossly under-counted and the
+	// fit-check would wrongly skip the reserve and let it starve later siblings.
+	let sum = 0;
+	for (const line of String(v).split(TIER3_LINE_BREAKS)) {
+		if (line.length === 0) continue;
+		sum += prefixLen + 2 + line.length + 1;
+		if (sum >= budget) return budget;
+	}
+	return Math.min(budget, sum);
 }
 
 /**
@@ -511,6 +523,7 @@ function formatRecordsForTier3(
 	// the reviewed records are spread across the WHOLE list (a late record's injection is still seen).
 	let estTotal = 0;
 	for (let i = 0; i < n && estTotal <= maxChars; i++) {
+		if (i > 0) estTotal += 2; // "\n\n" between record blocks
 		try {
 			estTotal += tier3EstimateCost(records[i], rootPrefixOf(records[i], i).length, maxChars + 1 - estTotal);
 		} catch {
