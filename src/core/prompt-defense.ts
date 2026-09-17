@@ -309,6 +309,36 @@ function tier3SpreadOrder(n: number): number[] {
 	return order;
 }
 
+// Cheap upper-ish estimate of the chars `serialize` would emit for a value under a `prefixLen`-char
+// key, capped at (and short-circuited past) `budget`. Approximate — it only decides whether a
+// collection's children FIT their budget so we can review them all without a starving reserve; the
+// actual truncation is still enforced by `serialize`, so an inaccurate estimate can never overrun.
+function tier3EstimateCost(v: unknown, prefixLen: number, budget: number): number {
+	if (budget <= 0) return 0;
+	if (v === null || v === undefined) return 0;
+	if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return Math.min(budget, prefixLen + 18);
+	if (Array.isArray(v)) {
+		if (v.length > TIER3_ARRAY_SUMMARY_THRESHOLD && v.every(isNonStringScalar)) {
+			return Math.min(budget, prefixLen + 20); // collapses to `key: [N …]`
+		}
+		let sum = 0;
+		for (let i = 0; i < v.length; i++) {
+			sum += tier3EstimateCost(v[i], prefixLen + 2 + String(i).length, budget - sum);
+			if (sum >= budget) return budget;
+		}
+		return sum;
+	}
+	if (typeof v === "object") {
+		let sum = 0;
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+			sum += tier3EstimateCost(val, (prefixLen ? prefixLen + 1 : 0) + k.length, budget - sum);
+			if (sum >= budget) return budget;
+		}
+		return sum;
+	}
+	return Math.min(budget, prefixLen + 2 + String(v).length);
+}
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -377,27 +407,31 @@ function formatRecordsForTier3(
 					return;
 				}
 			}
-			// Per-element budget with a sibling reserve (same as object fields), so an early element
-			// can't consume the whole cap and drop a later element that may carry the injection.
 			const outerCap = cap;
+			// If all elements fit the remaining budget, review them all in full (no starving reserve).
+			// Otherwise give each a sibling-reserved share so an early element can't drop a later one.
+			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1) <= outerCap - used;
 			for (let i = 0; i < v.length; i++) {
 				if (used >= outerCap) {
 					depthFlag.coverageDegraded = true; // elements dropped for lack of budget → coverage degraded
 					break;
 				}
-				cap = tier3ItemCap(outerCap, used, v.length - i);
+				cap = childrenFit ? outerCap : tier3ItemCap(outerCap, used, v.length - i);
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
 			cap = outerCap;
 		} else if (typeof v === "object") {
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
+			// If all fields fit the remaining budget, review them all in full (no starving reserve).
+			// Otherwise give each a sibling-reserved share so an early field can't drop a later one.
+			const childrenFit = tier3EstimateCost(v, prefix.length, outerCap - used + 1) <= outerCap - used;
 			for (let idx = 0; idx < entries.length; idx++) {
 				if (used >= outerCap) {
 					depthFlag.coverageDegraded = true; // fields dropped for lack of budget → coverage degraded
 					break;
 				}
-				cap = tier3ItemCap(outerCap, used, entries.length - idx);
+				cap = childrenFit ? outerCap : tier3ItemCap(outerCap, used, entries.length - idx);
 				const [k, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
@@ -465,34 +499,43 @@ function formatRecordsForTier3(
 	const records = Array.isArray(value) ? value : [value];
 	const topIsArray = Array.isArray(value);
 	const n = records.length;
-	// Visit records in a spread order and give each a sibling-reserved share (tier3ItemCap), so:
-	//  - a list that FITS is fully reviewed (we only drop when content genuinely exceeds the budget,
-	//    not based on record count — a big list of tiny records stays fully covered), and
-	//  - if the budget runs out, the reviewed records are spread across the WHOLE list, not a prefix,
-	//    so a late record's injection can still be reviewed.
-	// Records are emitted in original index order; only which ones survive a cutoff changes.
-	const order = tier3SpreadOrder(n);
+	const isKeyedObject = (r: unknown): boolean =>
+		r !== null &&
+		typeof r === "object" &&
+		!Array.isArray(r) &&
+		!ArrayBuffer.isView(r) &&
+		!(r instanceof ArrayBuffer);
+	const rootPrefixOf = (r: unknown, i: number): string => (topIsArray && !isKeyedObject(r) ? `[${i}]` : "");
+	// Do the records fit the whole budget? If so, review them ALL in index order at full budget (no
+	// dropping/striding based on count). If not, sample in a spread order with a per-record reserve so
+	// the reviewed records are spread across the WHOLE list (a late record's injection is still seen).
+	let estTotal = 0;
+	for (let i = 0; i < n && estTotal <= maxChars; i++) {
+		try {
+			estTotal += tier3EstimateCost(records[i], rootPrefixOf(records[i], i).length, maxChars + 1 - estTotal);
+		} catch {
+			// A throwing getter during estimation: count this record as over-budget so we take the
+			// sample path (don't crash here — only a record we actually serialize should fail closed).
+			estTotal = maxChars + 1;
+		}
+	}
+	const recordsFit = estTotal <= maxChars;
+	const order = recordsFit ? Array.from({ length: n }, (_, i) => i) : tier3SpreadOrder(n);
 	const blocks: (string | undefined)[] = new Array(n);
 	let emitted = 0;
 	for (let oi = 0; oi < order.length; oi++) {
-		if (used >= maxChars) break;
+		if (used >= maxChars) {
+			depthFlag.coverageDegraded = true; // remaining records dropped for lack of budget
+			break;
+		}
 		const i = order[oi];
 		const usedBefore = used;
-		cap = tier3ItemCap(maxChars, used, order.length - oi);
+		cap = recordsFit ? maxChars : tier3ItemCap(maxChars, used, order.length - oi);
 		nonStringCap = Math.min(usedBefore + Math.floor((cap - usedBefore) * TIER3_SCALAR_BUDGET_FRACTION), cap);
 		used += emitted > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 		const record = records[i];
 		const lines: string[] = [];
-		// Index a top-level array element unless it's a keyed object (its keys already give context);
-		// primitives, nested arrays and binary get `[i]` to keep record identity / avoid bare lines.
-		const isKeyedObject =
-			record !== null &&
-			typeof record === "object" &&
-			!Array.isArray(record) &&
-			!ArrayBuffer.isView(record) &&
-			!(record instanceof ArrayBuffer);
-		const rootPrefix = topIsArray && !isKeyedObject ? `[${i}]` : "";
-		serialize(record, rootPrefix, lines, 0, false);
+		serialize(record, rootPrefixOf(record, i), lines, 0, false);
 		if (lines.length > 0) {
 			blocks[i] = lines.join("\n");
 			emitted++;
@@ -500,7 +543,9 @@ function formatRecordsForTier3(
 			used = usedBefore; // empty block → roll back the reserved separator
 		}
 	}
-	if (emitted < n) depthFlag.coverageDegraded = true; // some records not reviewed → coverage degraded
+	// coverageDegraded on genuine drops only (a sampled/dropped record, or serialize truncation) — NOT
+	// merely because a record was naturally empty (an `{}` or empty-string field is fully reviewed).
+	if (!recordsFit && emitted < n) depthFlag.coverageDegraded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
