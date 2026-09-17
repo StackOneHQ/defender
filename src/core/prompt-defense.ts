@@ -791,11 +791,13 @@ export class PromptDefense {
 		}
 		if (options.tier3?.maxTextLength !== undefined) {
 			const cap = options.tier3.maxTextLength;
-			if (Number.isFinite(cap) && cap > 0) {
+			// Validate the FLOORED value: a cap in (0, 1) is finite and > 0 but floors to 0, which
+			// would silently disable Tier 3 (formatRecordsForTier3 emits nothing at budget 0).
+			if (Number.isFinite(cap) && Math.floor(cap) >= 1) {
 				this.tier3MaxTextLength = Math.floor(cap);
 			} else {
 				console.warn(
-					`[defender] invalid tier3.maxTextLength ${cap} — must be a positive finite number. Falling back to default 10000.`,
+					`[defender] invalid tier3.maxTextLength ${cap} — must be a finite number >= 1. Falling back to default 10000.`,
 				);
 			}
 		}
