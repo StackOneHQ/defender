@@ -148,10 +148,14 @@ export interface DefenseResult {
 	 */
 	truncatedAtDepth?: boolean;
 	/**
-	 * True when Tier 1 *detection* coverage was reduced on this payload — a field
-	 * exceeded `maxFieldAnalysisLength`, or the call-scoped `maxSize` detection
-	 * budget / a depth limit was hit. Content is still returned in full; only
-	 * detection was capped, and Tier 2 (when enabled) still scanned every string.
+	 * True when analysis coverage was reduced on this payload. Causes:
+	 *  - Tier 1 *detection* was capped (a field exceeded `maxFieldAnalysisLength`, or the
+	 *    call-scoped `maxSize`/depth budget was hit) — content is still returned in full and
+	 *    Tier 2, when enabled, still scanned every string; OR
+	 *  - the Tier-3 reviewer input was truncated / a record was dropped for the review budget
+	 *    (tier3_only); OR
+	 *  - a payload traversal threw (a throwing getter, etc.) so part or ALL of it could not be
+	 *    analyzed — in this case a tier did NOT scan everything (not merely "capped detection").
 	 * **Absent (not `false`) when coverage was complete** — branch on `=== true`.
 	 * Monitor to catch payloads shaped to hide content past the analysis limits.
 	 */
@@ -266,6 +270,18 @@ function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
 }
 
+// Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
+// (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
+// throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
+function describeError(err: unknown): string {
+	try {
+		if (err instanceof Error) return err.message;
+		return String(err);
+	} catch {
+		return "<unstringifiable thrown value>";
+	}
+}
+
 // Per record, non-string scalars use at most this fraction of the share; the rest is reserved
 // for string leaves (anti-crowd-out). FP-safe: the signal is key structure, not scalar volume.
 const TIER3_SCALAR_BUDGET_FRACTION = 0.5;
@@ -360,7 +376,10 @@ function formatRecordsForTier3(
 			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
 			const bytes = (v as { byteLength: number }).byteLength;
 			const limit = Math.min(cap, nonStringCap); // bound the scalar sub-budget by this item's cap
-			fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit);
+			if (!fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit)) {
+				budgetTruncated = true; // line (incl. its key) dropped for budget → retry with reserve / flag
+				depthFlag.coverageDegraded = true;
+			}
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -380,7 +399,10 @@ function formatRecordsForTier3(
 				if (allScalar) {
 					const kind = allNumber ? "numbers" : "values";
 					const limit = Math.min(cap, nonStringCap);
-					fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit);
+					if (!fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit)) {
+						budgetTruncated = true; // summary line (incl. its key) dropped for budget → retry / flag
+						depthFlag.coverageDegraded = true;
+					}
 					return;
 				}
 			}
@@ -465,7 +487,11 @@ function formatRecordsForTier3(
 					depthFlag.coverageDegraded = true;
 					break;
 				} else {
-					break; // scalar past its sub-budget — skip, but keep walking to reach a later string
+					// Non-string scalar past its sub-budget — its line (incl. the attacker-controlled key)
+					// is dropped. Flag it so coverage is honest and a genuine overflow triggers the retry.
+					budgetTruncated = true;
+					depthFlag.coverageDegraded = true;
+					break;
 				}
 			}
 		}
@@ -497,7 +523,12 @@ function formatRecordsForTier3(
 			const i = order[oi];
 			const usedBefore = used;
 			cap = reserveMode ? tier3ItemCap(maxChars, used, order.length - oi) : maxChars;
-			nonStringCap = Math.min(usedBefore + Math.floor((cap - usedBefore) * TIER3_SCALAR_BUDGET_FRACTION), cap);
+			// The scalar sub-budget is an anti-crowd-out reserve — only meaningful in the reserve pass.
+			// In the greedy pass scalars get the full cap, so a record that FITS is reviewed in full
+			// (keys and all) rather than self-inflicting a drop that the estimator-free design can't retry.
+			nonStringCap = reserveMode
+				? Math.min(usedBefore + Math.floor((cap - usedBefore) * TIER3_SCALAR_BUDGET_FRACTION), cap)
+				: cap;
 			used += emitted > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 			const record = records[i];
 			const lines: string[] = [];
@@ -863,7 +894,7 @@ export class PromptDefense {
 	 * module-scoped) and returns so the caller can continue Tier-1-only (fail-open).
 	 */
 	private handleTier2Unavailable(err: unknown): void {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = describeError(err);
 		if (this.tier2Required) {
 			throw new Error(
 				`[defender] Tier 2 is required (requireTier2: true) but the model/runtime failed to load: ${msg}. Install the optional peer dependencies 'onnxruntime-node' and '@huggingface/transformers'.`,
@@ -980,7 +1011,7 @@ export class PromptDefense {
 			joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
 		} catch (err) {
 			payloadError = true;
-			skipReason = `Tier 3 serialization error: ${err instanceof Error ? err.message : String(err)}`;
+			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
 		}
 		// Safety net; the serializer already keeps the join within the cap.
 		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
@@ -998,7 +1029,7 @@ export class PromptDefense {
 					verdict = validated;
 				}
 			} catch (err) {
-				skipReason = `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`;
+				skipReason = `Tier 3 provider error: ${describeError(err)}`;
 			}
 		}
 
@@ -1020,7 +1051,7 @@ export class PromptDefense {
 				sanitized.metadata.sizeMetrics.sizeLimitHit;
 		} catch (err) {
 			analysisDegraded = true;
-			skipReason ??= `Tier 1 metadata error: ${err instanceof Error ? err.message : String(err)}`;
+			skipReason ??= `Tier 1 metadata error: ${describeError(err)}`;
 		}
 
 		const blocked = verdict !== undefined && this.isTier3Block(verdict);
@@ -1130,7 +1161,7 @@ export class PromptDefense {
 				// can detect predictor regressions (e.g. WASM runtime
 				// transient failures, malformed payload) via telemetry.
 				console.warn(
-					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${err instanceof Error ? err.message : String(err)}`,
+					`[defender] SFE preprocessing failed; continuing without filtering. Reason: ${describeError(err)}`,
 				);
 			}
 		}
@@ -1150,11 +1181,7 @@ export class PromptDefense {
 		try {
 			sanitized = this.toolResultSanitizer.sanitize(value, { toolName, boundary });
 		} catch (err) {
-			return this.buildUnanalyzableResult(
-				value,
-				`Tier 1 sanitize error: ${err instanceof Error ? err.message : String(err)}`,
-				startTime,
-			);
+			return this.buildUnanalyzableResult(value, `Tier 1 sanitize error: ${describeError(err)}`, startTime);
 		}
 		const tier1Ms = performance.now() - tTier1Start;
 		// Set if a later payload traversal (Tier 2 extraction / content cleaning) throws.
@@ -1213,7 +1240,7 @@ export class PromptDefense {
 			} catch (err) {
 				tier2Ready = false;
 				tier2Available = false;
-				tier2SkipReason = `Tier 2 unavailable (model/runtime failed to load): ${err instanceof Error ? err.message : String(err)}`;
+				tier2SkipReason = `Tier 2 unavailable (model/runtime failed to load): ${describeError(err)}`;
 				this.handleTier2Unavailable(err);
 			}
 
@@ -1230,7 +1257,7 @@ export class PromptDefense {
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
 				} catch (err) {
 					payloadError = true;
-					tier2SkipReason = `Tier 2 extraction error: ${err instanceof Error ? err.message : String(err)}`;
+					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
 				}
 			}
 
@@ -1326,7 +1353,7 @@ export class PromptDefense {
 							allScores = dedupeIndex.map((u) => uniqueScores[u]);
 						}
 					} catch (err) {
-						tier2SkipReason = `Inference error: ${err instanceof Error ? err.message : String(err)}`;
+						tier2SkipReason = `Inference error: ${describeError(err)}`;
 					}
 					const tAggStart = performance.now();
 
@@ -1506,7 +1533,7 @@ export class PromptDefense {
 					}
 				} catch (err) {
 					tier3Result = {
-						skipReason: `Tier 3 provider error: ${err instanceof Error ? err.message : String(err)}`,
+						skipReason: `Tier 3 provider error: ${describeError(err)}`,
 					};
 				}
 			} else {

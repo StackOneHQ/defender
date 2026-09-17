@@ -433,6 +433,21 @@ describe("cascade robustness — a throwing getter must not crash the primary AP
 		expect(result.allowed).toBe(true); // permissive invariant preserved
 		expect(result.coverageDegraded).toBe(true);
 	});
+
+	it("does not crash when a getter throws a non-Error value (error-format safety)", async () => {
+		// String() on the thrown value throws again — the catch's own formatting must not escape.
+		const evil: Record<string, unknown> = { note: "hi" };
+		Object.defineProperty(evil, "boom", {
+			enumerable: true,
+			get() {
+				throw Object.create(null);
+			},
+		});
+		const defense = createPromptDefense({ enableTier2: false, blockHighRisk: true });
+		const result = await defense.defendToolResult(evil, "docs_get");
+		expect(result.allowed).toBe(false); // fail-closed, not a crash
+		expect(result.coverageDegraded).toBe(true);
+	});
 });
 
 // These exercise the real Tier 2 path (model load), so skipped on CI runners.
