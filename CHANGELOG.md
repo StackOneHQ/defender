@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/StackOneHQ/defender/compare/defender-v0.8.2...defender-v0.8.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* **ENG-2455:** record-oriented Tier-3 reviewer input (fix tier3_only FPs) ([#94](https://github.com/StackOneHQ/defender/issues/94)) ([851d8db](https://github.com/StackOneHQ/defender/commit/851d8db4aad2798385c90b7d204ca6de32cf1119))
+
 ## [0.8.2](https://github.com/StackOneHQ/defender/compare/defender-v0.8.1...defender-v0.8.2) (2026-08-19)
 
 
