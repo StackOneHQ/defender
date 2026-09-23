@@ -407,29 +407,38 @@ function formatRecordsForTier3(
 				}
 			}
 			const outerCap = cap;
-			for (let i = 0; i < v.length; i++) {
+			// In the reserve pass, visit elements in spread order — as the top-level record loop does —
+			// so a budget cutoff drops a SPREAD of indices, not a predictable tail. A nested array (the
+			// common `{data:[...]}` list-envelope shape) otherwise got NONE of tier3SpreadOrder's
+			// protection, so an injection appended to the list was deterministically unreviewed.
+			const arrOrder = reserveMode ? tier3SpreadOrder(v.length) : undefined;
+			for (let k = 0; k < v.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
 				}
-				cap = reserveMode ? tier3ItemCap(outerCap, used, v.length - i) : outerCap;
+				const i = arrOrder ? arrOrder[k] : k;
+				cap = reserveMode ? tier3ItemCap(outerCap, used, v.length - k) : outerCap;
 				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
 			}
 			cap = outerCap;
 		} else if (typeof v === "object") {
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
-			for (let idx = 0; idx < entries.length; idx++) {
+			// Spread the field visitation in the reserve pass too (same reason as the array branch above).
+			const objOrder = reserveMode ? tier3SpreadOrder(entries.length) : undefined;
+			for (let k = 0; k < entries.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
 				}
-				cap = reserveMode ? tier3ItemCap(outerCap, used, entries.length - idx) : outerCap;
-				const [k, val] = entries[idx];
+				const idx = objOrder ? objOrder[k] : k;
+				cap = reserveMode ? tier3ItemCap(outerCap, used, entries.length - k) : outerCap;
+				const [rawKey, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
-				const key = k.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
+				const key = rawKey.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
 			}
 			cap = outerCap;
