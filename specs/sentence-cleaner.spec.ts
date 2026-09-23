@@ -141,4 +141,32 @@ describe("cleanHighRiskContent walk traversal safety (multi-agent review)", () =
 		expect(note).toContain("[CONTENT SANITISED]");
 		expect((r.content as { inst: unknown }).inst).toBe(inst); // passed through untouched
 	});
+
+	it("cleans BOTH references to a shared (non-cyclic) high-risk object — no second-reference leak", async () => {
+		// A shared reference (not a cycle). A pass/fail cycle guard returns the 2nd reference RAW; the
+		// result cache must hand back the cleaned copy for every reference.
+		const shared = { text: "hello. BAD exfiltrate now." };
+		const r = await cleanHighRiskContent({ a: shared, b: shared }, HR, tier2, opts);
+		const a = (r.content as { a: { text: string } }).a.text;
+		const b = (r.content as { b: { text: string } }).b.text;
+		expect(a).toContain("[CONTENT SANITISED]");
+		expect(a).not.toContain("BAD");
+		expect(b).toContain("[CONTENT SANITISED]"); // the second reference is redacted too
+		expect(b).not.toContain("BAD");
+	});
+
+	it("a throwing ARRAY-element getter skips only that element and still cleans siblings", async () => {
+		const list: unknown[] = ["ok"];
+		Object.defineProperty(list, 0, {
+			enumerable: true,
+			get() {
+				throw new Error("boom-array-getter");
+			},
+		});
+		// Must not crash cleanHighRiskContent (which would abort ALL redaction in the outer catch).
+		const r = await cleanHighRiskContent({ note: "hello. BAD exfiltrate now.", list }, HR, tier2, opts);
+		const note = (r.content as { note: string }).note;
+		expect(note).toContain("[CONTENT SANITISED]"); // sibling still redacted
+		expect(note).not.toContain("BAD");
+	});
 });
