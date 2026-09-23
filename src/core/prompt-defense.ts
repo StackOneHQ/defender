@@ -300,10 +300,9 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 	return outerCap - reserve;
 }
 
-// Visiting order for top-level records: coarse-to-fine (0, then halves, quarters, …) so that if the
-// budget runs out partway, the records actually reviewed are spread across the WHOLE list rather than
-// a contiguous prefix. A list that fits is still fully visited (every index appears exactly once).
-// Records are emitted in original index order regardless; this only changes which survive a cutoff.
+// Coarse-to-fine visiting order (0, n-1, then halving strides): a budget cutoff drops a SPREAD of
+// indices, not a contiguous tail (items still emit in index order). Deterministic, so an over-budget
+// list stays evadable at a computable slot — the real fix (chunk, don't sample) is ENG-1339.
 function tier3SpreadOrder(n: number): number[] {
 	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
 	const order: number[] = [];
@@ -314,8 +313,7 @@ function tier3SpreadOrder(n: number): number[] {
 			order.push(i);
 		}
 	};
-	// Both endpoints first, so the first and LAST record survive a budget cutoff (an injection
-	// appended as the final element of a long list must not be systematically skipped).
+	// Endpoints first so the first/last survive a cutoff; interior indices are not all protected.
 	push(0);
 	push(n - 1);
 	for (let step = Math.floor(n / 2); step >= 1; step = Math.floor(step / 2)) {
