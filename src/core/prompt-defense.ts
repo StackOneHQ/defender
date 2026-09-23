@@ -194,6 +194,17 @@ export interface DefenseResult {
 	tier1Ms?: number;
 	/** True when this call loaded the ONNX model (cold start). Present only when Tier 2 ran. */
 	coldLoad?: boolean;
+	/**
+	 * Present only when the tier3_only chunk path ran (same presence rule as `tier2Stats`).
+	 * `chunks` = chunks reviewed in parallel; `blocked` = how many returned block; `blockingChunk`
+	 * = first blocking index; `oversize` = content exceeded the coverage ceiling (onOversize applied).
+	 */
+	tier3ChunkSummary?: {
+		chunks: number;
+		blocked: number;
+		blockingChunk?: number;
+		oversize?: boolean;
+	};
 }
 
 /**
@@ -300,6 +311,60 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 	return outerCap - reserve;
 }
 
+// tier3_only reviews up to `maxChunks` chunks of `maxTextLength` chars each (coverage ceiling =
+// maxChunks × maxTextLength); the per-chunk cap stays well under the reviewer's token window. The
+// overlap tail carries whole lines across a boundary so an injection straddling it lands in both chunks.
+const TIER3_CHUNK_OVERLAP_CHARS = 500;
+const TIER3_DEFAULT_MAX_CHUNKS = 5;
+
+// An over-long single line has no line boundary to split on — word-split it so it can still be reviewed.
+function splitLongLine(line: string, max: number): string[] {
+	const out: string[] = [];
+	let rest = line;
+	while (rest.length > max) {
+		let cut = rest.lastIndexOf(" ", max);
+		if (cut <= 0) cut = max; // no space in range → hard cut
+		out.push(rest.slice(0, cut));
+		rest = rest.slice(cut).replace(/^\s+/, "");
+	}
+	if (rest.length > 0) out.push(rest);
+	return out;
+}
+
+// Split the serialized (\n-delimited) Tier-3 input into ≤perChunkChars chunks on whole-line boundaries,
+// carrying an ~overlapChars tail of whole lines from each chunk into the next so a boundary-spanning
+// injection appears in both. Always advances (a unit alone over budget is taken whole).
+function chunkTier3Input(text: string, perChunkChars: number, overlapChars: number): string[] {
+	if (text.length <= perChunkChars) return [text];
+	const overlap = Math.min(overlapChars, Math.floor(perChunkChars / 4)); // keep overlap a minority of a chunk
+	const units: string[] = [];
+	for (const line of text.split("\n")) {
+		if (line.length <= perChunkChars) units.push(line);
+		else units.push(...splitLongLine(line, perChunkChars));
+	}
+	const chunks: string[] = [];
+	let i = 0;
+	while (i < units.length) {
+		let j = i;
+		let len = 0;
+		while (j < units.length && (len === 0 || len + 1 + units[j].length <= perChunkChars)) {
+			len += (len === 0 ? 0 : 1) + units[j].length;
+			j++;
+		}
+		if (j === i) j = i + 1; // unit alone exceeds budget — take it whole rather than stall
+		chunks.push(units.slice(i, j).join("\n"));
+		if (j >= units.length) break;
+		let back = j;
+		let ov = 0;
+		while (back > i + 1 && ov < overlap) {
+			back--;
+			ov += units[back].length + 1;
+		}
+		i = back; // back > i, so the walk always advances
+	}
+	return chunks;
+}
+
 // Coarse-to-fine visiting order (0, n-1, then halving strides): a budget cutoff drops a SPREAD of
 // indices, not a contiguous tail (items still emit in index order). Deterministic, so an over-budget
 // list stays evadable at a computable slot — the real fix (chunk, don't sample) is ENG-1339.
@@ -338,7 +403,7 @@ function tier3SpreadOrder(n: number): number[] {
  */
 function formatRecordsForTier3(
 	value: unknown,
-	depthFlag: { hit: boolean; coverageDegraded?: boolean },
+	depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 	maxChars: number,
 ): string {
 	let hasString = false;
@@ -354,6 +419,9 @@ function formatRecordsForTier3(
 	// diverge from what is actually emitted. (Depth cuts are NOT budget truncation — they don't retry.)
 	let reserveMode = false;
 	let budgetTruncated = false;
+	// Genuine ceiling overflow: whole records dropped or a string value cut for budget (NOT a lone
+	// unfittable key while the rest fit). Set across both passes; drives the caller's oversize routing.
+	let budgetOverflow = false;
 	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
@@ -461,6 +529,7 @@ function formatRecordsForTier3(
 							lines.push(line.slice(0, room));
 							used += sep + room;
 							hasString = true;
+							budgetOverflow = true; // real content was cut for budget → genuine overflow
 						}
 						budgetTruncated = true; // string truncated for lack of budget → retry with reserve
 						depthFlag.coverageDegraded = true;
@@ -486,6 +555,7 @@ function formatRecordsForTier3(
 						lines.push(full.slice(0, room));
 						used += sep + room;
 						hasString = true;
+						budgetOverflow = true; // real string content was cut for budget → genuine overflow
 					}
 					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
 					// record; a later field may fit and may carry the injection. The outer loop's
@@ -524,6 +594,7 @@ function formatRecordsForTier3(
 		for (let oi = 0; oi < order.length; oi++) {
 			if (used >= maxChars) {
 				budgetTruncated = true; // remaining records dropped for lack of budget
+				budgetOverflow = true; // whole records dropped → genuine overflow of the ceiling
 				depthFlag.coverageDegraded = true;
 				break;
 			}
@@ -561,6 +632,10 @@ function formatRecordsForTier3(
 		reserveMode = true;
 		blocks = runRecords();
 	}
+	// Oversize = genuine overflow of the ceiling (whole records dropped or a string value cut), NOT a
+	// lone unfittable field/key while the rest fit. Only the former routes to onOversize; the latter
+	// chunks and reviews the content that fit.
+	if (budgetOverflow) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
@@ -679,14 +754,34 @@ export interface PromptDefenseOptions {
 		 */
 		escalationBand?: { lower: number; upper: number };
 		/**
-		 * Maximum character length of the text passed to the Tier 3 provider.
-		 * Inputs longer than this are sliced before invocation — bounds token
-		 * usage / cost / latency on pathological payloads. Mirrors Tier 2's
-		 * `maxTextLength` (default 10000).
+		 * Maximum character length of the text passed to the Tier 3 provider per
+		 * call. In cascade mode the escalated chunk is sliced to this. In
+		 * tier3_only mode it is the PER-CHUNK cap: the serialized tool result is
+		 * split into chunks of this size and each is reviewed (see `maxChunks`),
+		 * so the reviewer never sees more than this many chars at once.
 		 *
 		 * Default: 10000.
 		 */
 		maxTextLength?: number;
+		/**
+		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage
+		 * ceiling (`maxChunks × maxTextLength`) — i.e. too large to fully review even after chunking.
+		 *  - "skip" (default): allow per the blockHighRisk invariant, mark `coverageDegraded`.
+		 *  - "block": treat un-reviewable oversize input as high risk (blocks in strict mode).
+		 *  - "scan_anyway": review the ceiling's chunks; block if any blocks, else fail closed
+		 *    because the overflow went unreviewed.
+		 *
+		 * Default: "skip".
+		 */
+		onOversize?: "skip" | "block" | "scan_anyway";
+		/**
+		 * tier3_only only. Max chunks reviewed in parallel per tool result; with `maxTextLength`
+		 * it sets the coverage ceiling (`maxChunks × maxTextLength`). Higher = more coverage at
+		 * up to N× Tier-3 cost/latency.
+		 *
+		 * Default: 5.
+		 */
+		maxChunks?: number;
 		/**
 		 * Decide by `verdict.score >= blockThreshold` instead of trusting the
 		 * model's generated `decision` word.
@@ -746,6 +841,8 @@ export class PromptDefense {
 	private tier3CustomProvider: Tier3Provider | undefined = undefined;
 	private tier3Band: { lower: number; upper: number } = { lower: 0.3, upper: 0.85 };
 	private tier3MaxTextLength: number = 10000;
+	private tier3OnOversize: "skip" | "block" | "scan_anyway" = "skip";
+	private tier3MaxChunks: number = TIER3_DEFAULT_MAX_CHUNKS;
 	private tier3MissingProviderWarned: boolean = false;
 	private tier3BlockThreshold: number | undefined = undefined;
 	private tier3MissingScoreWarned: boolean = false;
@@ -805,6 +902,26 @@ export class PromptDefense {
 			} else {
 				console.warn(
 					`[defender] invalid tier3.maxTextLength ${cap} — must be a finite number >= 1. Falling back to default 10000.`,
+				);
+			}
+		}
+		if (options.tier3?.onOversize !== undefined) {
+			const policy = options.tier3.onOversize;
+			if (policy === "skip" || policy === "block" || policy === "scan_anyway") {
+				this.tier3OnOversize = policy;
+			} else {
+				console.warn(
+					`[defender] invalid tier3.onOversize ${policy} — must be "skip", "block", or "scan_anyway". Falling back to default "skip".`,
+				);
+			}
+		}
+		if (options.tier3?.maxChunks !== undefined) {
+			const mc = options.tier3.maxChunks;
+			if (Number.isFinite(mc) && Math.floor(mc) >= 1) {
+				this.tier3MaxChunks = Math.floor(mc);
+			} else {
+				console.warn(
+					`[defender] invalid tier3.maxChunks ${mc} — must be a finite number >= 1. Falling back to default ${TIER3_DEFAULT_MAX_CHUNKS}.`,
 				);
 			}
 		}
@@ -1004,41 +1121,113 @@ export class PromptDefense {
 		value: unknown,
 		provider: Tier3Provider,
 		toolName: string,
-		depthFlag: { hit: boolean; coverageDegraded?: boolean },
+		depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 		startTime: number,
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
+		// ENG-1339: serialize up to a coverage ceiling, chunk it, and review every chunk in parallel
+		// (union-of-blocks) instead of truncating — a deterministic truncation is precomputable/evadable.
 		let verdict: Tier3Verdict | undefined;
 		let skipReason: string | undefined;
+		// A policy-driven block: onOversize:"block", or scan_anyway when the unreviewed overflow forces
+		// a fail-closed. Distinct from a verdict-driven block (some chunk returned block).
+		let oversizeBlock = false;
+		let chunkSummary: DefenseResult["tier3ChunkSummary"];
 		// A payload-triggered error (a throwing getter, etc.) means we could NOT analyze attacker-
 		// controlled content — distinct from a provider outage. In strict mode we treat un-analyzable
 		// input as risky and fail CLOSED (see the `allowed` gate below), so a crafted getter can't
 		// force a bypass; permissive mode still allows. A provider outage stays fail-open.
 		let payloadError = false;
+
+		// Review each chunk in parallel, dropping any that error/skip (per-chunk fail-open, matching the
+		// provider-outage policy). Representative = a blocker if any, else the highest-score allow.
+		const reviewChunks = async (chunks: string[]) => {
+			const results = await Promise.all(
+				chunks.map(async (c): Promise<{ verdict?: Tier3Verdict; skip?: string }> => {
+					try {
+						const validated = this.validateTier3Verdict(await provider.classify(c, { toolName }));
+						return "skipReason" in validated ? { skip: validated.skipReason } : { verdict: validated };
+					} catch (err) {
+						return { skip: `Tier 3 provider error: ${describeError(err)}` };
+					}
+				}),
+			);
+			let rep: Tier3Verdict | undefined;
+			let blockedCount = 0;
+			let blockingChunk: number | undefined;
+			let reviewed = 0;
+			let firstSkip: string | undefined;
+			results.forEach((res, idx) => {
+				const v = res.verdict;
+				if (!v) {
+					firstSkip ??= res.skip;
+					return;
+				}
+				reviewed++;
+				const isBlock = this.isTier3Block(v);
+				if (isBlock && blockingChunk === undefined) blockingChunk = idx;
+				if (isBlock) blockedCount++;
+				if (rep === undefined) {
+					rep = v;
+				} else {
+					const repBlock = this.isTier3Block(rep);
+					if ((isBlock && !repBlock) || (isBlock === repBlock && (v.score ?? 0) > (rep.score ?? 0))) rep = v;
+				}
+			});
+			return { rep, blockedCount, blockingChunk, reviewed, firstSkip, total: chunks.length };
+		};
+
+		const perChunk = this.tier3MaxTextLength;
+		const ceiling = this.tier3MaxChunks * perChunk;
 		let joined = "";
 		try {
-			joined = formatRecordsForTier3(value, depthFlag, this.tier3MaxTextLength);
+			joined = formatRecordsForTier3(value, depthFlag, ceiling);
 		} catch (err) {
 			payloadError = true;
 			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
 		}
-		// Safety net; the serializer already keeps the join within the cap.
-		const bounded = joined.length > this.tier3MaxTextLength ? joined.slice(0, this.tier3MaxTextLength) : joined;
+		const oversize = depthFlag.budgetExceeded === true;
 
-		if (bounded.length === 0) {
+		if (payloadError) {
+			// The allowed gate below fails closed in strict mode.
+		} else if (joined.length === 0) {
 			// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
 			skipReason ??= "No reviewable string content emitted from tool result";
-		} else {
-			try {
-				const raw = await provider.classify(bounded, { toolName });
-				const validated = this.validateTier3Verdict(raw);
-				if ("skipReason" in validated) {
-					skipReason = validated.skipReason;
-				} else {
-					verdict = validated;
+		} else if (oversize) {
+			// Serialized form exceeds the coverage ceiling (> maxChunks chunks) → onOversize policy.
+			depthFlag.coverageDegraded = true;
+			if (this.tier3OnOversize === "block") {
+				oversizeBlock = true;
+				skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks) — blocked by onOversize`;
+			} else if (this.tier3OnOversize === "scan_anyway") {
+				const r = await reviewChunks(chunkTier3Input(joined, perChunk, TIER3_CHUNK_OVERLAP_CHARS));
+				verdict = r.rep;
+				chunkSummary = {
+					chunks: r.total,
+					blocked: r.blockedCount,
+					blockingChunk: r.blockingChunk,
+					oversize: true,
+				};
+				if (!(verdict !== undefined && this.isTier3Block(verdict))) {
+					// Nothing in the reviewed portion blocked, but the overflow is unseen → fail closed.
+					oversizeBlock = true;
+					skipReason = `Tool result exceeds review ceiling; ${r.total} chunks scanned, overflow unreviewed`;
 				}
-			} catch (err) {
-				skipReason = `Tier 3 provider error: ${describeError(err)}`;
+			} else {
+				skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks)`;
+			}
+		} else {
+			// Normal path: chunk the full (sub-ceiling) serialized text and review every chunk in parallel.
+			const r = await reviewChunks(chunkTier3Input(joined, perChunk, TIER3_CHUNK_OVERLAP_CHARS));
+			verdict = r.rep;
+			chunkSummary = { chunks: r.total, blocked: r.blockedCount, blockingChunk: r.blockingChunk };
+			if (r.reviewed === 0) {
+				// Every chunk errored/skipped → provider outage or malformed verdict → fail open (unchanged
+				// policy). Surface the first chunk's reason (e.g. "invalid decision", provider error text).
+				skipReason ??= r.firstSkip ?? "Tier 3 skipped: no chunk produced a verdict";
+				depthFlag.coverageDegraded = true;
+			} else if (r.reviewed < r.total) {
+				depthFlag.coverageDegraded = true; // partial coverage: some chunks unreviewed
 			}
 		}
 
@@ -1063,11 +1252,12 @@ export class PromptDefense {
 			skipReason ??= `Tier 1 metadata error: ${describeError(err)}`;
 		}
 
-		const blocked = verdict !== undefined && this.isTier3Block(verdict);
+		// A block comes from a chunk verdict OR the onOversize policy (block / scan_anyway overflow).
+		const blocked = oversizeBlock || (verdict !== undefined && this.isTier3Block(verdict));
 		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
 		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
-		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when
-		// the payload couldn't be serialized for review (payloadError).
+		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when the payload
+		// couldn't be serialized (payloadError) or an onOversize policy blocked (oversizeBlock).
 		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
 
 		return {
@@ -1084,6 +1274,7 @@ export class PromptDefense {
 			truncatedAtDepth: depthFlag.hit || undefined,
 			coverageDegraded:
 				depthFlag.hit || depthFlag.coverageDegraded || analysisDegraded || payloadError || undefined,
+			...(chunkSummary ? { tier3ChunkSummary: chunkSummary } : {}),
 			latencyMs: performance.now() - startTime,
 		};
 	}
