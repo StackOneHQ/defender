@@ -9,6 +9,7 @@
  */
 
 import type { Tier2Classifier } from "../classifiers/tier2-classifier";
+import { MAX_TRAVERSAL_DEPTH } from "../config";
 import { stripRoleMarkers } from "../sanitizers/role-stripper";
 import type { DataBoundary } from "../types";
 import { stripBoundaryPatterns, wrapWithBoundary } from "../utils/boundary";
@@ -77,8 +78,15 @@ export async function cleanHighRiskContent(
 	if (highRiskValues.size === 0) return { content, changedFields: [] };
 
 	const changedFields: string[] = [];
+	// Memoize the cleaned result per object identity. An unguarded recursive walk OOM-crashes on a
+	// circular reference; a naive pass/fail guard would instead return a SECOND reference to a shared
+	// (non-cyclic) high-risk object UNCLEANED. So: a completed entry returns the SAME cleaned copy for
+	// every reference (no leak), and an IN_PROGRESS entry — a true cycle or concurrent re-entry — is
+	// broken by returning `undefined` (safe: never a raw, unredacted value; bounds cycles and DAGs).
+	const cache = new Map<object, unknown>();
+	const IN_PROGRESS = Symbol("in-progress");
 
-	async function walk(value: unknown, path: string): Promise<unknown> {
+	async function walk(value: unknown, path: string, depth: number): Promise<unknown> {
 		if (typeof value === "string") {
 			const raw = opts.boundary ? stripBoundaryPatterns(value) : value;
 			if (!highRiskValues.has(raw)) return value;
@@ -86,15 +94,60 @@ export async function cleanHighRiskContent(
 			if (cleaned !== raw) changedFields.push(path);
 			return opts.boundary ? wrapWithBoundary(cleaned, opts.boundary) : cleaned;
 		}
-		if (Array.isArray(value)) return Promise.all(value.map((v, i) => walk(v, `${path}[${i}]`)));
-		if (value && typeof value === "object") {
-			const out: Record<string, unknown> = {};
-			for (const [k, v] of Object.entries(value)) out[k] = await walk(v, path ? `${path}.${k}` : k);
-			return out;
+		// Bound the walk like every other traversal (sanitize/extractStrings/serializer): past the
+		// depth cap, pass through untouched — never recurse unboundedly.
+		if (value === null || typeof value !== "object" || depth > MAX_TRAVERSAL_DEPTH) return value;
+		if (cache.has(value)) {
+			const memo = cache.get(value);
+			return memo === IN_PROGRESS ? undefined : memo;
 		}
-		return value;
+		cache.set(value, IN_PROGRESS);
+		let result: unknown;
+		if (Array.isArray(value)) {
+			try {
+				result = await Promise.all(
+					// Read AND walk each element under a guard (via Array.from, which does NOT pre-read
+					// the elements): a throwing element getter/Proxy trap skips only that element, not the
+					// whole payload. The outer try covers a hostile `length`/index trap.
+					Array.from({ length: value.length }, async (_unused, i) => {
+						try {
+							return await walk(value[i], `${path}[${i}]`, depth + 1);
+						} catch {
+							return undefined;
+						}
+					}),
+				);
+			} catch {
+				result = value;
+			}
+		} else {
+			const proto = Object.getPrototypeOf(value);
+			// Only descend into PLAIN objects, matching the sanitizer — a non-plain object (Date, Map,
+			// class instance, Proxy) is passed through untouched (rebuilding it would corrupt it, e.g. a
+			// Date becomes {}, and its getters/traps must not be invoked). Its strings are still DETECTED
+			// by Tier 2; only permissive-mode REDACTION of them is skipped (real tool results are JSON,
+			// which has no non-plain objects — see ENG-2472 for the key/non-plain coverage follow-up).
+			if (proto !== Object.prototype && proto !== null) {
+				result = value;
+			} else {
+				let entries: [string, unknown][];
+				try {
+					// A throwing getter/Proxy trap during enumeration must not abort cleaning of the WHOLE
+					// payload (which would leak a sibling high-risk field unredacted) — skip only this subtree.
+					entries = Object.entries(value as Record<string, unknown>);
+				} catch {
+					cache.set(value, value);
+					return value;
+				}
+				const out: Record<string, unknown> = {};
+				for (const [k, v] of entries) out[k] = await walk(v, path ? `${path}.${k}` : k, depth + 1);
+				result = out;
+			}
+		}
+		cache.set(value, result);
+		return result;
 	}
 
-	const cleanedContent = await walk(content, "");
+	const cleanedContent = await walk(content, "", 0);
 	return { content: cleanedContent, changedFields };
 }
