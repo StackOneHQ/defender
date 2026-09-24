@@ -788,18 +788,25 @@ export interface PromptDefenseOptions {
 		 * split into chunks of this size and each is reviewed (see `maxChunks`),
 		 * so the reviewer never sees more than this many chars at once.
 		 *
-		 * Default: 10000.
+		 * Default: 10000. Raising it does not improve recall and worsens benign
+		 * over-block (large content self-blocks), so 10000 is the tuned value.
+		 * Note: reviewing a >10k result as multiple chunks (union-of-blocks)
+		 * raises benign FPR by ~13pp vs a single review — the cost of full
+		 * coverage; `blockHighRisk` consumers feel it on large tool results.
 		 */
 		maxTextLength?: number;
 		/**
 		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage
 		 * ceiling (`maxChunks × maxTextLength`) — i.e. too large to fully review even after chunking.
-		 *  - "skip" (default): allow per the blockHighRisk invariant, mark `coverageDegraded`.
+		 *  - "skip" (default): allow per the blockHighRisk invariant, mark `coverageDegraded`. This
+		 *    FAILS OPEN on oversize input — an oversized payload is not reviewed. Empirically ~0.6% of
+		 *    real payloads hit this, but they are the largest (most room to hide an injection). Set
+		 *    "block" or "scan_anyway" to fail closed instead.
 		 *  - "block": treat un-reviewable oversize input as high risk (blocks in strict mode).
 		 *  - "scan_anyway": review the ceiling's chunks; block if any blocks, else fail closed
 		 *    because the overflow went unreviewed.
 		 *
-		 * Default: "skip".
+		 * Default: "skip" (favors availability; consumers with a stricter threat model override it).
 		 */
 		onOversize?: "skip" | "block" | "scan_anyway";
 		/**
