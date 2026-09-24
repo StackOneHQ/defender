@@ -275,10 +275,6 @@ const TIER3_LINE_BREAKS_GLOBAL = /[\r\n\u2028\u2029\u0085]+/g;
 // A large array of only non-string scalars collapses to `key: [N …]`: the values carry no
 // injection and enumerating them would flood the budget and starve string leaves.
 const TIER3_ARRAY_SUMMARY_THRESHOLD = 32;
-// Node cap on the read-once snapshot (below). Far above any payload whose strings could fit the review
-// ceiling, so realistic payloads snapshot fully; a payload past it is flagged oversize, bounding the copy
-// cost against a huge attacker-supplied tool result.
-const TIER3_MAX_MATERIALIZE_NODES = 250_000;
 function isNonStringScalar(v: unknown): boolean {
 	const t = typeof v;
 	// bigint/symbol included so those arrays collapse like number arrays (only strings carry injection).
@@ -401,69 +397,10 @@ function tier3SpreadOrder(n: number): number[] {
 	return order;
 }
 
-// Read the payload ONCE into a plain deep snapshot (each getter/accessor invoked a single time), so the
-// greedy pass, the reserve retry, and the input-vs-emitted comparison all see IDENTICAL data. Without
-// this a non-idempotent getter ("malicious on first read, benign after") could show content to one pass
-// and hide it from another, defeating every oversize signal. Mirrors the serializer's traversal exactly:
-// records enter at depth 0, recurse at depth+1, depth-capped (sets `hit`), binary/primitives passed
-// through. Getter throws propagate (→ payloadError → fail closed), unchanged. Only own-indexed access is
-// used on untrusted objects (never a shadowable prototype method like `.map`). The cache is keyed by
-// (object, depth) — a shared object visited at two depths must not reuse the depth-capped copy for the
-// shallow one. A node budget bounds the copy cost; exceeding it flags oversize (too large to snapshot).
-function materializeForTier3(
-	value: unknown,
-	depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
-): unknown {
-	const seen = new WeakMap<object, Map<number, unknown>>();
-	let nodes = 0;
-	let budgetHit = false;
-	const cacheGet = (v: object, depth: number): unknown => seen.get(v)?.get(depth);
-	const cacheSet = (v: object, depth: number, node: unknown): void => {
-		let byDepth = seen.get(v);
-		if (!byDepth) {
-			byDepth = new Map();
-			seen.set(v, byDepth);
-		}
-		byDepth.set(depth, node);
-	};
-	const mat = (v: unknown, depth: number): unknown => {
-		if (v === null || typeof v !== "object" || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return v;
-		if (depth > MAX_TRAVERSAL_DEPTH) {
-			depthFlag.hit = true;
-			return undefined;
-		}
-		if (budgetHit) return undefined;
-		if (++nodes > TIER3_MAX_MATERIALIZE_NODES) {
-			// Too large to fully snapshot → oversize (onOversize governs the un-snapshotted remainder).
-			budgetHit = true;
-			depthFlag.budgetExceeded = true;
-			depthFlag.coverageDegraded = true;
-			return undefined;
-		}
-		const cached = cacheGet(v, depth);
-		if (cached !== undefined) return cached;
-		if (Array.isArray(v)) {
-			const out: unknown[] = [];
-			cacheSet(v, depth, out); // set before children so a cycle collapses to this node
-			for (let i = 0; i < v.length; i++) out.push(mat(v[i], depth + 1));
-			return out;
-		}
-		const out: Record<string, unknown> = {};
-		cacheSet(v, depth, out);
-		for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = mat(val, depth + 1);
-		return out;
-	};
-	// Top-level array elements ARE the records (serialized at depth 0), so materialize them at depth 0 via
-	// indexed access — never `value.map`, which an own `map` property on the array could shadow.
-	if (!Array.isArray(value)) return mat(value, 0);
-	const out: unknown[] = [];
-	for (let i = 0; i < value.length; i++) out.push(mat(value[i], 0));
-	return out;
-}
-
 // Total string-leaf content a payload holds, counted exactly as `formatRecordsForTier3` emits it (per
 // string: sum of line lengths = non-line-break chars; keys, non-strings and binary contribute 0) and
-// traversed the same way. Runs on the plain snapshot, so no getter is re-invoked here.
+// traversed the same way. Compared against the chars actually emitted, this is the definitive oversize
+// signal — independent of every drop site. A throwing getter propagates → payloadError → fail closed.
 function sumStringContent(v: unknown, depth: number): number {
 	if (depth > MAX_TRAVERSAL_DEPTH) return 0;
 	if (typeof v === "string") {
@@ -509,9 +446,6 @@ function formatRecordsForTier3(
 	depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 	maxChars: number,
 ): string {
-	// Read the payload once; every pass below (greedy, reserve, input-sum) works off this snapshot, so a
-	// non-idempotent getter can't reveal content to one pass and hide it from another.
-	const input = materializeForTier3(value, depthFlag);
 	let hasString = false;
 	// Total STRING-leaf content actually emitted (excludes `key:` prefixes and separators). Compared
 	// against the input's string content below to flag oversize independently of any drop-site logic.
@@ -691,8 +625,8 @@ function formatRecordsForTier3(
 		}
 	}
 
-	const records = Array.isArray(input) ? input : [input];
-	const topIsArray = Array.isArray(input);
+	const records = Array.isArray(value) ? value : [value];
+	const topIsArray = Array.isArray(value);
 	const n = records.length;
 	const isKeyedObject = (r: unknown): boolean =>
 		r !== null &&
@@ -755,7 +689,7 @@ function formatRecordsForTier3(
 	// emitted (final pass) against the input's total string content. Any string leaf dropped or truncated
 	// makes emitted < input → oversize. Positive accounting fails SAFE — a mis-count under-reports emitted
 	// (→ over-flag, harmless: the fitting content is still reviewed) rather than silently missing a drop.
-	if (emittedStringChars < sumInputStringChars(input)) depthFlag.budgetExceeded = true;
+	if (emittedStringChars < sumInputStringChars(value)) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
