@@ -311,11 +311,22 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 	return outerCap - reserve;
 }
 
-// tier3_only reviews up to `maxChunks` chunks of `maxTextLength` chars each (coverage ceiling =
-// maxChunks × maxTextLength); the per-chunk cap stays well under the reviewer's token window. The
-// overlap tail carries whole lines across a boundary so an injection straddling it lands in both chunks.
+// tier3_only reviews chunks of `maxTextLength` chars each (the reviewer never sees more per call); the
+// coverage ceiling = maxChunks × the per-chunk CONTENT budget. Each chunk carries an ~overlap-char tail
+// of the previous chunk so an injection straddling a boundary lands in both — char-level, so it holds
+// even when a chunk is a single long line.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
+
+// Overlap carried between chunks (a minority of a chunk), and the resulting new-content budget per chunk
+// (perChunk minus the carried overlap and its joining "\n"). The ceiling uses the content budget so the
+// common case fits in maxChunks chunks; uneven line lengths can still add a chunk (calls are a target).
+function tier3ChunkOverlap(perChunk: number): number {
+	return Math.min(TIER3_CHUNK_OVERLAP_CHARS, Math.floor(perChunk / 4));
+}
+function tier3ContentBudget(perChunk: number): number {
+	return Math.max(1, perChunk - tier3ChunkOverlap(perChunk));
+}
 
 // An over-long single line has no line boundary to split on — word-split it so it can still be reviewed.
 function splitLongLine(line: string, max: number): string[] {
@@ -331,36 +342,38 @@ function splitLongLine(line: string, max: number): string[] {
 	return out;
 }
 
-// Split the serialized (\n-delimited) Tier-3 input into ≤perChunkChars chunks on whole-line boundaries,
-// carrying an ~overlapChars tail of whole lines from each chunk into the next so a boundary-spanning
-// injection appears in both. Always advances (a unit alone over budget is taken whole).
-function chunkTier3Input(text: string, perChunkChars: number, overlapChars: number): string[] {
+// Split the serialized (\n-delimited) Tier-3 input into chunks. Each chunk = an ~overlap-char CHARACTER
+// tail of the previous chunk, concatenated directly in front of whole lines packed to the content budget.
+// Direct concatenation (no separator) means the carry is byte-contiguous with the boundary, so a token
+// hard-split at a chunk edge is reconstructed whole in the next chunk. Every chunk is ≤ perChunk and
+// consecutive chunks always share ~overlap chars — a guarantee that holds even when a chunk is one long line.
+function chunkTier3Input(text: string, perChunkChars: number): string[] {
 	if (text.length <= perChunkChars) return [text];
-	const overlap = Math.min(overlapChars, Math.floor(perChunkChars / 4)); // keep overlap a minority of a chunk
+	const overlap = tier3ChunkOverlap(perChunkChars);
+	const budget = tier3ContentBudget(perChunkChars); // new content per chunk; carry sits on top, ≤ perChunk
 	const units: string[] = [];
 	for (const line of text.split("\n")) {
-		if (line.length <= perChunkChars) units.push(line);
-		else units.push(...splitLongLine(line, perChunkChars));
+		if (line.length <= budget) units.push(line);
+		else units.push(...splitLongLine(line, budget)); // ≤ budget so carry + content ≤ perChunk
 	}
 	const chunks: string[] = [];
 	let i = 0;
+	let carry = "";
 	while (i < units.length) {
-		let j = i;
-		let len = 0;
-		while (j < units.length && (len === 0 || len + 1 + units[j].length <= perChunkChars)) {
-			len += (len === 0 ? 0 : 1) + units[j].length;
-			j++;
+		let content = "";
+		while (i < units.length) {
+			const add = content.length === 0 ? units[i] : `\n${units[i]}`;
+			if (content.length > 0 && content.length + add.length > budget) break;
+			content += add;
+			i++;
 		}
-		if (j === i) j = i + 1; // unit alone exceeds budget — take it whole rather than stall
-		chunks.push(units.slice(i, j).join("\n"));
-		if (j >= units.length) break;
-		let back = j;
-		let ov = 0;
-		while (back > i + 1 && ov < overlap) {
-			back--;
-			ov += units[back].length + 1;
+		if (content.length === 0) {
+			content = units[i]; // single unit over budget (shouldn't happen after splitLongLine) — take it
+			i++;
 		}
-		i = back; // back > i, so the walk always advances
+		const chunk = carry + content; // no separator → byte-contiguous overlap across the boundary
+		chunks.push(chunk);
+		carry = chunk.slice(-overlap); // character tail → next chunk overlaps this one even if it was one unit
 	}
 	return chunks;
 }
@@ -419,9 +432,6 @@ function formatRecordsForTier3(
 	// diverge from what is actually emitted. (Depth cuts are NOT budget truncation — they don't retry.)
 	let reserveMode = false;
 	let budgetTruncated = false;
-	// Genuine ceiling overflow: whole records dropped or a string value cut for budget (NOT a lone
-	// unfittable key while the rest fit). Set across both passes; drives the caller's oversize routing.
-	let budgetOverflow = false;
 	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
@@ -529,7 +539,6 @@ function formatRecordsForTier3(
 							lines.push(line.slice(0, room));
 							used += sep + room;
 							hasString = true;
-							budgetOverflow = true; // real content was cut for budget → genuine overflow
 						}
 						budgetTruncated = true; // string truncated for lack of budget → retry with reserve
 						depthFlag.coverageDegraded = true;
@@ -555,7 +564,6 @@ function formatRecordsForTier3(
 						lines.push(full.slice(0, room));
 						used += sep + room;
 						hasString = true;
-						budgetOverflow = true; // real string content was cut for budget → genuine overflow
 					}
 					// else: no room to keep a meaningful `key:` — skip this field WITHOUT exhausting the
 					// record; a later field may fit and may carry the injection. The outer loop's
@@ -594,7 +602,6 @@ function formatRecordsForTier3(
 		for (let oi = 0; oi < order.length; oi++) {
 			if (used >= maxChars) {
 				budgetTruncated = true; // remaining records dropped for lack of budget
-				budgetOverflow = true; // whole records dropped → genuine overflow of the ceiling
 				depthFlag.coverageDegraded = true;
 				break;
 			}
@@ -622,6 +629,11 @@ function formatRecordsForTier3(
 	};
 
 	let blocks = runRecords(); // greedy
+	// The greedy pass gives every item the full budget in index order, so it truncates iff the content
+	// genuinely exceeds `maxChars` (the caller's ceiling) — at ANY drop site (record, string, field).
+	// That is the reliable oversize signal; the reserve pass only re-packs a sample and can silently
+	// drop records without re-flagging, so its `budgetTruncated` is not a trustworthy overflow signal.
+	const greedyTruncated = budgetTruncated;
 	if (budgetTruncated) {
 		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
 		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
@@ -632,10 +644,9 @@ function formatRecordsForTier3(
 		reserveMode = true;
 		blocks = runRecords();
 	}
-	// Oversize = genuine overflow of the ceiling (whole records dropped or a string value cut), NOT a
-	// lone unfittable field/key while the rest fit. Only the former routes to onOversize; the latter
-	// chunks and reviews the content that fit.
-	if (budgetOverflow) depthFlag.budgetExceeded = true;
+	// Oversize = the greedy (full-budget) pass could not fit all content within the ceiling → route to
+	// onOversize. A sub-ceiling payload never trips this and takes the normal chunk-and-review path.
+	if (greedyTruncated) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
@@ -775,9 +786,11 @@ export interface PromptDefenseOptions {
 		 */
 		onOversize?: "skip" | "block" | "scan_anyway";
 		/**
-		 * tier3_only only. Max chunks reviewed in parallel per tool result; with `maxTextLength`
-		 * it sets the coverage ceiling (`maxChunks × maxTextLength`). Higher = more coverage at
-		 * up to N× Tier-3 cost/latency.
+		 * tier3_only only. Target number of chunks reviewed in parallel per tool result; with
+		 * `maxTextLength` it sets the coverage ceiling (`maxChunks ×` the per-chunk content budget,
+		 * ~`maxTextLength` minus the carried overlap). Higher = more coverage at up to ~N× Tier-3
+		 * cost/latency. This is a target, not a hard cap: uneven line lengths can add a chunk, since
+		 * each chunk carries an overlap tail and packs only whole lines.
 		 *
 		 * Default: 5.
 		 */
@@ -1178,7 +1191,9 @@ export class PromptDefense {
 		};
 
 		const perChunk = this.tier3MaxTextLength;
-		const ceiling = this.tier3MaxChunks * perChunk;
+		// Ceiling uses the per-chunk CONTENT budget (perChunk minus the carried overlap) so the content
+		// typically fits in maxChunks chunks; the reviewer still sees ≤ perChunk chars per call.
+		const ceiling = this.tier3MaxChunks * tier3ContentBudget(perChunk);
 		let joined = "";
 		try {
 			joined = formatRecordsForTier3(value, depthFlag, ceiling);
@@ -1200,7 +1215,7 @@ export class PromptDefense {
 				oversizeBlock = true;
 				skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks) — blocked by onOversize`;
 			} else if (this.tier3OnOversize === "scan_anyway") {
-				const r = await reviewChunks(chunkTier3Input(joined, perChunk, TIER3_CHUNK_OVERLAP_CHARS));
+				const r = await reviewChunks(chunkTier3Input(joined, perChunk));
 				verdict = r.rep;
 				chunkSummary = {
 					chunks: r.total,
@@ -1218,7 +1233,7 @@ export class PromptDefense {
 			}
 		} else {
 			// Normal path: chunk the full (sub-ceiling) serialized text and review every chunk in parallel.
-			const r = await reviewChunks(chunkTier3Input(joined, perChunk, TIER3_CHUNK_OVERLAP_CHARS));
+			const r = await reviewChunks(chunkTier3Input(joined, perChunk));
 			verdict = r.rep;
 			chunkSummary = { chunks: r.total, blocked: r.blockedCount, blockingChunk: r.blockingChunk };
 			if (r.reviewed === 0) {
