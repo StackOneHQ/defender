@@ -428,9 +428,6 @@ function formatRecordsForTier3(
 	// diverge from what is actually emitted. (Depth cuts are NOT budget truncation — they don't retry.)
 	let reserveMode = false;
 	let budgetTruncated = false;
-	// Set only when a string leaf or whole record is dropped for budget (unlike budgetTruncated, which
-	// also fires on benign non-string drops). Drives the oversize signal so those don't force skip.
-	let budgetOverflow = false;
 	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
 		const sep = lines.length > 0 ? 1 : 0;
@@ -490,7 +487,6 @@ function formatRecordsForTier3(
 			for (let k = 0; k < v.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
-					budgetOverflow = true; // dropped elements may carry strings → oversize
 					depthFlag.coverageDegraded = true;
 					break;
 				}
@@ -507,7 +503,6 @@ function formatRecordsForTier3(
 			for (let k = 0; k < entries.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
-					budgetOverflow = true; // dropped fields may carry strings → oversize
 					depthFlag.coverageDegraded = true;
 					break;
 				}
@@ -542,9 +537,7 @@ function formatRecordsForTier3(
 							used += sep + room;
 							hasString = true;
 						}
-						// String content cut for budget → oversize.
-						budgetTruncated = true;
-						budgetOverflow = true;
+						budgetTruncated = true; // string truncated for lack of budget → retry with reserve
 						depthFlag.coverageDegraded = true;
 						break;
 					} else break;
@@ -569,9 +562,8 @@ function formatRecordsForTier3(
 						used += sep + room;
 						hasString = true;
 					}
-					// else: no room to keep a meaningful `key:` — field dropped. Either way a string was cut.
+					// else: no room to keep a meaningful `key:` — the field is dropped (see the retry).
 					budgetTruncated = true;
-					budgetOverflow = true;
 					depthFlag.coverageDegraded = true;
 					break;
 				} else {
@@ -605,7 +597,6 @@ function formatRecordsForTier3(
 		for (let oi = 0; oi < order.length; oi++) {
 			if (used >= maxChars) {
 				budgetTruncated = true; // remaining records dropped for lack of budget
-				budgetOverflow = true; // whole records dropped → oversize (their strings are unreviewed)
 				depthFlag.coverageDegraded = true;
 				break;
 			}
@@ -633,10 +624,9 @@ function formatRecordsForTier3(
 	};
 
 	let blocks = runRecords(); // greedy
-	// Capture the greedy pass's overflow: it uses the full budget in index order, so a string/record it
-	// can't fit genuinely exceeds the ceiling. The reserve pass re-packs a sample and its flags can't be
-	// trusted for this.
-	const greedyOverflow = budgetOverflow;
+	// The greedy pass uses the full budget in index order, so it truncates iff the content genuinely
+	// exceeds the ceiling — a reliable "joined is incomplete" signal. Capture it before the reserve reset.
+	const greedyTruncated = budgetTruncated;
 	if (budgetTruncated) {
 		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
 		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
@@ -647,8 +637,9 @@ function formatRecordsForTier3(
 		reserveMode = true;
 		blocks = runRecords();
 	}
-	// A greedy string/record drop → oversize → onOversize. A benign non-string drop takes the normal path.
-	if (greedyOverflow) depthFlag.budgetExceeded = true;
+	// Greedy couldn't fit everything → joined is incomplete → oversize. onOversize governs the overflow;
+	// the content that DID fit (joined) is still reviewed (see runTier3Only), so nothing fitting is lost.
+	if (greedyTruncated) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
@@ -779,12 +770,13 @@ export interface PromptDefenseOptions {
 		 */
 		maxTextLength?: number;
 		/**
-		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage
-		 * ceiling (`maxChunks × maxTextLength`) — i.e. too large to fully review even after chunking.
-		 *  - "skip" (default): allow (per the blockHighRisk invariant), mark `coverageDegraded`. Fails
-		 *    OPEN — the oversized payload is not reviewed (~0.6% of real payloads, but the largest ones).
-		 *  - "block": treat un-reviewable oversize input as high risk (blocks in strict mode).
-		 *  - "scan_anyway": review the ceiling's chunks; block if any blocks, else fail closed.
+		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage ceiling
+		 * (`maxChunks × maxTextLength`):
+		 *  - "skip" (default): review the content that FIT (union-of-blocks — a fitting injection still
+		 *    blocks) and allow the unreviewed overflow (fails OPEN on it; ~0.6% of real payloads, the largest).
+		 *  - "block": block the payload without reviewing (un-reviewable = high risk; strict mode).
+		 *  - "scan_anyway": review what fit, then fail closed on the overflow (block in strict mode unless a
+		 *    fitting chunk already blocked).
 		 *
 		 * Default: "skip" (favors availability; set block/scan_anyway to fail closed).
 		 */
@@ -1209,34 +1201,23 @@ export class PromptDefense {
 		} else if (joined.length === 0) {
 			// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
 			skipReason ??= "No reviewable string content emitted from tool result";
-		} else if (oversize) {
-			// Serialized form exceeds the coverage ceiling (> maxChunks chunks) → onOversize policy.
+		} else if (oversize && this.tier3OnOversize === "block") {
+			// Treat un-reviewable oversize input as high risk without reviewing (blocks in strict mode).
+			oversizeBlock = true;
 			depthFlag.coverageDegraded = true;
-			if (this.tier3OnOversize === "block") {
-				oversizeBlock = true;
-				skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks) — blocked by onOversize`;
-			} else if (this.tier3OnOversize === "scan_anyway") {
-				const r = await reviewChunks(chunkTier3Input(joined, perChunk));
-				verdict = r.rep;
-				chunkSummary = {
-					chunks: r.total,
-					blocked: r.blockedCount,
-					blockingChunk: r.blockingChunk,
-					oversize: true,
-				};
-				if (!(verdict !== undefined && this.isTier3Block(verdict))) {
-					// Nothing in the reviewed portion blocked, but the overflow is unseen → fail closed.
-					oversizeBlock = true;
-					skipReason = `Tool result exceeds review ceiling; ${r.total} chunks scanned, overflow unreviewed`;
-				}
-			} else {
-				skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks)`;
-			}
+			skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks) — blocked by onOversize`;
 		} else {
-			// Normal path: chunk the full (sub-ceiling) serialized text and review every chunk in parallel.
+			// Review whatever fit under the ceiling (union-of-blocks). ALWAYS runs — an oversize payload's
+			// fitting content still gets reviewed, so a fitting injection is never silently dropped; only
+			// the genuinely-dropped overflow is unreviewed, and onOversize governs it (below).
 			const r = await reviewChunks(chunkTier3Input(joined, perChunk));
 			verdict = r.rep;
-			chunkSummary = { chunks: r.total, blocked: r.blockedCount, blockingChunk: r.blockingChunk };
+			chunkSummary = {
+				chunks: r.total,
+				blocked: r.blockedCount,
+				blockingChunk: r.blockingChunk,
+				...(oversize ? { oversize: true } : {}),
+			};
 			if (r.reviewed === 0) {
 				// Every chunk errored/skipped → provider outage or malformed verdict → fail open (unchanged
 				// policy). Surface the first chunk's reason (e.g. "invalid decision", provider error text).
@@ -1244,6 +1225,16 @@ export class PromptDefense {
 				depthFlag.coverageDegraded = true;
 			} else if (r.reviewed < r.total) {
 				depthFlag.coverageDegraded = true; // partial coverage: some chunks unreviewed
+			}
+			if (oversize) {
+				depthFlag.coverageDegraded = true;
+				const reviewedBlock = verdict !== undefined && this.isTier3Block(verdict);
+				// The overflow beyond the ceiling went unreviewed. scan_anyway fails closed on it; skip
+				// accepts it (allow — the reviewed verdict stands). A block from the fitting chunks stands either way.
+				if (!reviewedBlock && this.tier3OnOversize === "scan_anyway") {
+					oversizeBlock = true;
+					skipReason = `Tool result exceeds review ceiling; ${r.total} chunks scanned, overflow unreviewed`;
+				}
 			}
 		}
 
