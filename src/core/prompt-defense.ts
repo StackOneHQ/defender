@@ -1244,7 +1244,9 @@ export class PromptDefense {
 			payloadError = true;
 			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
 		}
-		const oversize = depthFlag.budgetExceeded === true;
+		// A depth cut also drops content the reviewer can't see (and it's invisible to the emitted-vs-input
+		// check, which stops at the same depth on both sides), so treat it as oversize → onOversize governs it.
+		const oversize = depthFlag.budgetExceeded === true || depthFlag.hit === true;
 
 		if (payloadError) {
 			// The allowed gate below fails closed in strict mode.
