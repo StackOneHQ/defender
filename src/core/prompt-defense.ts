@@ -438,7 +438,13 @@ function formatRecordsForTier3(
 	}
 	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
 	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
-		if (used >= cap) return;
+		// Self-report: reaching here with no budget means this item is dropped. Flagging here (not just at
+		// each caller's precheck) closes the "silently dropped, never flagged" class against future callers.
+		if (used >= cap) {
+			budgetTruncated = true;
+			depthFlag.coverageDegraded = true;
+			return;
+		}
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
 			return;
@@ -595,7 +601,9 @@ function formatRecordsForTier3(
 		const out: (string | undefined)[] = new Array(n);
 		let emitted = 0;
 		for (let oi = 0; oi < order.length; oi++) {
-			if (used >= maxChars) {
+			// Account for the "\n\n" separator this block would add — otherwise `used` can sit 2 below
+			// maxChars, pass this check, then trip serialize's guard after the `+= 2` and drop silently.
+			if (used + (emitted > 0 ? 2 : 0) >= maxChars) {
 				budgetTruncated = true; // remaining records dropped for lack of budget
 				depthFlag.coverageDegraded = true;
 				break;
@@ -1198,14 +1206,25 @@ export class PromptDefense {
 
 		if (payloadError) {
 			// The allowed gate below fails closed in strict mode.
-		} else if (joined.length === 0) {
-			// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
-			skipReason ??= "No reviewable string content emitted from tool result";
 		} else if (oversize && this.tier3OnOversize === "block") {
 			// Treat un-reviewable oversize input as high risk without reviewing (blocks in strict mode).
+			// Checked before the empty-joined case so `block` fails closed even when NOTHING fit.
 			oversizeBlock = true;
 			depthFlag.coverageDegraded = true;
 			skipReason = `Tool result too large to fully review (> ${this.tier3MaxChunks} chunks) — blocked by onOversize`;
+		} else if (joined.length === 0) {
+			// No reviewable string emitted. If that's because content overflowed the ceiling (oversize),
+			// scan_anyway fails closed on the unseen overflow; skip accepts it. Otherwise nothing to review.
+			depthFlag.coverageDegraded ||= oversize;
+			if (oversize && this.tier3OnOversize === "scan_anyway") {
+				oversizeBlock = true;
+				skipReason = "Tool result too large to review — no content fit within the ceiling";
+			} else {
+				// "emitted", not "extracted": a string may exist but be omitted for lack of budget.
+				skipReason ??= oversize
+					? "Tool result too large to review — no content fit within the ceiling"
+					: "No reviewable string content emitted from tool result";
+			}
 		} else {
 			// Review whatever fit under the ceiling (union-of-blocks). ALWAYS runs — an oversize payload's
 			// fitting content still gets reviewed, so a fitting injection is never silently dropped; only
