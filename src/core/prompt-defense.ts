@@ -311,26 +311,20 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 	return outerCap - reserve;
 }
 
-// tier3_only reviews chunks of `maxTextLength` chars each (the reviewer never sees more per call); the
-// coverage ceiling = maxChunks × the per-chunk CONTENT budget. Each chunk carries an ~overlap-char tail
-// of the previous chunk so an injection straddling a boundary lands in both — char-level, so it holds
-// even when a chunk is a single long line.
+// tier3_only reviews chunks of ≤maxTextLength chars; the coverage ceiling = maxChunks × the per-chunk
+// content budget. Consecutive chunks share ~overlap chars so a boundary-straddling injection lands in both.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
 
-// Overlap carried between chunks (a minority of a chunk), and the resulting new-content budget per chunk
-// (perChunk minus the carried overlap and its joining "\n"). The ceiling uses the content budget so the
-// common case fits in maxChunks chunks; uneven line lengths can still add a chunk (calls are a target).
 function tier3ChunkOverlap(perChunk: number): number {
 	return Math.min(TIER3_CHUNK_OVERLAP_CHARS, Math.floor(perChunk / 4));
 }
 function tier3ContentBudget(perChunk: number): number {
-	return Math.max(1, perChunk - tier3ChunkOverlap(perChunk) - 1); // -1 for the "\n" between carry and content
+	return Math.max(1, perChunk - tier3ChunkOverlap(perChunk) - 1); // -1 for the "\n" after the carry
 }
 
-// Split an over-long line into ≤max pieces, each starting `overlap` chars before the previous ended so a
-// token hard-split at a piece boundary is reconstructed whole inside the next (byte-contiguous) piece.
-// Prefer a space boundary for the forward cut so normal text stays word-aligned.
+// Split an over-long line into ≤max word-aligned pieces, each overlapping the previous by `overlap` chars
+// so a token hard-split at a piece boundary is reconstructed whole inside the next piece.
 function splitLongLine(line: string, max: number, overlap: number): string[] {
 	const out: string[] = [];
 	let start = 0;
@@ -347,19 +341,16 @@ function splitLongLine(line: string, max: number, overlap: number): string[] {
 	return out;
 }
 
-// Split the serialized (\n-delimited) Tier-3 input into chunks. Each chunk = an ~overlap-char CHARACTER
-// tail of the previous chunk, on its OWN line in front of whole lines packed to the content budget. The
-// "\n" keeps the carry from gluing onto the next line's `field:` framing; hard-split tokens are instead
-// reconstructed inside the overlapping `splitLongLine` pieces. Every chunk is ≤ perChunk and consecutive
-// chunks always share ~overlap chars — a guarantee that holds even when a chunk is a single long line.
+// Chunk the serialized (\n-delimited) input. Each chunk = the previous chunk's ~overlap-char tail on its
+// own line (the "\n" avoids gluing it onto the next `field:`), then whole lines packed to the budget.
 function chunkTier3Input(text: string, perChunkChars: number): string[] {
 	if (text.length <= perChunkChars) return [text];
 	const overlap = tier3ChunkOverlap(perChunkChars);
-	const budget = tier3ContentBudget(perChunkChars); // new content per chunk; carry + "\n" on top, ≤ perChunk
+	const budget = tier3ContentBudget(perChunkChars);
 	const units: string[] = [];
 	for (const line of text.split("\n")) {
 		if (line.length <= budget) units.push(line);
-		else units.push(...splitLongLine(line, budget, overlap)); // ≤ budget so carry + "\n" + content ≤ perChunk
+		else units.push(...splitLongLine(line, budget, overlap));
 	}
 	const chunks: string[] = [];
 	let i = 0;
@@ -437,9 +428,8 @@ function formatRecordsForTier3(
 	// diverge from what is actually emitted. (Depth cuts are NOT budget truncation — they don't retry.)
 	let reserveMode = false;
 	let budgetTruncated = false;
-	// Oversize signal: a STRING leaf or a whole RECORD was dropped/truncated for budget (injection-
-	// relevant content the reviewer can't fully see). Distinct from budgetTruncated, which also fires on
-	// benign non-string drops (a numeric-array summary line, a dropped scalar) that must NOT force skip.
+	// Set only when a string leaf or whole record is dropped for budget (unlike budgetTruncated, which
+	// also fires on benign non-string drops). Drives the oversize signal so those don't force skip.
 	let budgetOverflow = false;
 	// Push a line iff it fits `limit`, charging the joining `\n`. Returns whether it fit.
 	function fits(lines: string[], text: string, limit: number): boolean {
@@ -500,7 +490,7 @@ function formatRecordsForTier3(
 			for (let k = 0; k < v.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
-					budgetOverflow = true; // dropped array elements may carry strings → oversize (greedy: ceiling full)
+					budgetOverflow = true; // dropped elements may carry strings → oversize
 					depthFlag.coverageDegraded = true;
 					break;
 				}
@@ -517,7 +507,7 @@ function formatRecordsForTier3(
 			for (let k = 0; k < entries.length; k++) {
 				if (used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
-					budgetOverflow = true; // dropped fields may carry strings → oversize (greedy: ceiling full)
+					budgetOverflow = true; // dropped fields may carry strings → oversize
 					depthFlag.coverageDegraded = true;
 					break;
 				}
@@ -538,8 +528,8 @@ function formatRecordsForTier3(
 			if (!prefix && !keyed) {
 				// Top-level scalar record — bare (see docstring). Split on line breaks and drop blank
 				// lines (joined with single `\n`) so an embedded `\n\n` can't forge a record boundary.
-				// No `used >= limit` short-circuit: a later line that can't fit must reach the flagging branch
-				// below, or a mid-string drop (a prior line filled the budget exactly) would go unsignalled.
+				// No `used >= limit` short-circuit — a non-fitting line must reach the flagging branch, else a
+				// mid-string drop goes unsignalled.
 				for (const line of s.split(TIER3_LINE_BREAKS)) {
 					if (line.length === 0) continue;
 					if (fits(lines, line, limit)) {
@@ -552,7 +542,7 @@ function formatRecordsForTier3(
 							used += sep + room;
 							hasString = true;
 						}
-						// String content dropped/truncated for budget → oversize (injection-relevant).
+						// String content cut for budget → oversize.
 						budgetTruncated = true;
 						budgetOverflow = true;
 						depthFlag.coverageDegraded = true;
@@ -564,8 +554,7 @@ function formatRecordsForTier3(
 			// Per-line `field:` prefix (e3: recall 0.995 vs 0.79 for collapse) so a multi-line value
 			// can't emit a bare line or forge a boundary. hasString only on actual emit — a string
 			// that doesn't fit is an honest skip, not a provider call on injection-free input.
-			// No `used >= limit` short-circuit (see the bare-scalar loop above): a mid-string drop must
-			// reach the flagging branch, not slip out unsignalled when a prior line filled the budget.
+			// No `used >= limit` short-circuit (see the bare-scalar loop above).
 			for (const line of s.split(TIER3_LINE_BREAKS)) {
 				if (line.length === 0) continue;
 				const full = `${prefix}: ${line}`;
@@ -580,8 +569,7 @@ function formatRecordsForTier3(
 						used += sep + room;
 						hasString = true;
 					}
-					// else: no room to keep a meaningful `key:` — the field is dropped. Either way STRING
-					// content was dropped/truncated for budget → oversize (injection-relevant).
+					// else: no room to keep a meaningful `key:` — field dropped. Either way a string was cut.
 					budgetTruncated = true;
 					budgetOverflow = true;
 					depthFlag.coverageDegraded = true;
@@ -645,11 +633,9 @@ function formatRecordsForTier3(
 	};
 
 	let blocks = runRecords(); // greedy
-	// The greedy pass gives every item the full budget in index order, so a string/record it can't fit
-	// means the content genuinely exceeds the ceiling. Capture the greedy pass's overflow here: the
-	// reserve pass only re-packs a sample and can silently drop records, so its flags aren't trustworthy.
-	// A benign non-string drop (numeric-array summary, dropped scalar) sets budgetTruncated but NOT
-	// budgetOverflow, so it triggers the reserve retry without forcing the whole payload to onOversize.
+	// Capture the greedy pass's overflow: it uses the full budget in index order, so a string/record it
+	// can't fit genuinely exceeds the ceiling. The reserve pass re-packs a sample and its flags can't be
+	// trusted for this.
 	const greedyOverflow = budgetOverflow;
 	if (budgetTruncated) {
 		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
@@ -661,8 +647,7 @@ function formatRecordsForTier3(
 		reserveMode = true;
 		blocks = runRecords();
 	}
-	// Oversize = the greedy pass dropped/truncated a string leaf or a whole record → route to onOversize.
-	// A payload whose strings all fit (even if a benign numeric summary didn't) takes the normal path.
+	// A greedy string/record drop → oversize → onOversize. A benign non-string drop takes the normal path.
 	if (greedyOverflow) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
@@ -788,33 +773,25 @@ export interface PromptDefenseOptions {
 		 * split into chunks of this size and each is reviewed (see `maxChunks`),
 		 * so the reviewer never sees more than this many chars at once.
 		 *
-		 * Default: 10000. Raising it does not improve recall and worsens benign
-		 * over-block (large content self-blocks), so 10000 is the tuned value.
-		 * Note: reviewing a >10k result as multiple chunks (union-of-blocks)
-		 * raises benign FPR by ~13pp vs a single review — the cost of full
-		 * coverage; `blockHighRisk` consumers feel it on large tool results.
+		 * Default: 10000 (tuned — larger gives no recall gain and worsens
+		 * over-block). Chunking a >10k result (union-of-blocks) costs ~13pp
+		 * benign FPR vs a single review.
 		 */
 		maxTextLength?: number;
 		/**
 		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage
 		 * ceiling (`maxChunks × maxTextLength`) — i.e. too large to fully review even after chunking.
-		 *  - "skip" (default): allow per the blockHighRisk invariant, mark `coverageDegraded`. This
-		 *    FAILS OPEN on oversize input — an oversized payload is not reviewed. Empirically ~0.6% of
-		 *    real payloads hit this, but they are the largest (most room to hide an injection). Set
-		 *    "block" or "scan_anyway" to fail closed instead.
+		 *  - "skip" (default): allow (per the blockHighRisk invariant), mark `coverageDegraded`. Fails
+		 *    OPEN — the oversized payload is not reviewed (~0.6% of real payloads, but the largest ones).
 		 *  - "block": treat un-reviewable oversize input as high risk (blocks in strict mode).
-		 *  - "scan_anyway": review the ceiling's chunks; block if any blocks, else fail closed
-		 *    because the overflow went unreviewed.
+		 *  - "scan_anyway": review the ceiling's chunks; block if any blocks, else fail closed.
 		 *
-		 * Default: "skip" (favors availability; consumers with a stricter threat model override it).
+		 * Default: "skip" (favors availability; set block/scan_anyway to fail closed).
 		 */
 		onOversize?: "skip" | "block" | "scan_anyway";
 		/**
-		 * tier3_only only. Target number of chunks reviewed in parallel per tool result; with
-		 * `maxTextLength` it sets the coverage ceiling (`maxChunks ×` the per-chunk content budget,
-		 * ~`maxTextLength` minus the carried overlap). Higher = more coverage at up to ~N× Tier-3
-		 * cost/latency. This is a target, not a hard cap: uneven line lengths can add a chunk, since
-		 * each chunk carries an overlap tail and packs only whole lines.
+		 * tier3_only only. Target chunks reviewed in parallel per tool result; with `maxTextLength` it
+		 * sets the coverage ceiling. A target, not a hard cap — uneven line lengths can add a chunk.
 		 *
 		 * Default: 5.
 		 */
