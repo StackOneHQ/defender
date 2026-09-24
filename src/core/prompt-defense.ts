@@ -397,6 +397,41 @@ function tier3SpreadOrder(n: number): number[] {
 	return order;
 }
 
+// Total string-leaf content a payload holds, counted exactly as `formatRecordsForTier3` would emit it
+// (per-string: sum of line lengths, i.e. non-line-break chars; keys, non-strings and binary contribute 0)
+// and traversed the same way (arrays/objects incl. non-plain; depth-capped; binary skipped). Compared to
+// the chars actually emitted, this is the definitive oversize signal — independent of every drop site.
+function sumStringContent(v: unknown, depth: number): number {
+	if (depth > MAX_TRAVERSAL_DEPTH) return 0;
+	if (typeof v === "string") {
+		let s = 0;
+		for (const line of v.split(TIER3_LINE_BREAKS)) s += line.length;
+		return s;
+	}
+	if (v === null || typeof v !== "object" || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return 0;
+	if (Array.isArray(v)) {
+		let s = 0;
+		for (const x of v) s += sumStringContent(x, depth + 1);
+		return s;
+	}
+	let s = 0;
+	try {
+		for (const val of Object.values(v as Record<string, unknown>)) s += sumStringContent(val, depth + 1);
+	} catch {
+		// A throwing getter under-reports (→ over-flag oversize), which is the safe direction.
+	}
+	return s;
+}
+
+// Top-level records serialize at depth 0 (a top-level array's elements ARE the records), so mirror that
+// entry rather than treating the whole array as one depth-0 node.
+function sumInputStringChars(value: unknown): number {
+	const records = Array.isArray(value) ? value : [value];
+	let total = 0;
+	for (const r of records) total += sumStringContent(r, 0);
+	return total;
+}
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -416,6 +451,9 @@ function formatRecordsForTier3(
 	maxChars: number,
 ): string {
 	let hasString = false;
+	// Total STRING-leaf content actually emitted (excludes `key:` prefixes and separators). Compared
+	// against the input's string content below to flag oversize independently of any drop-site logic.
+	let emittedStringChars = 0;
 	// `used` = exact joined length (content + separators), so the join never exceeds maxChars;
 	// `cap` (per-record share) and `nonStringCap` (its scalar sub-budget) are reset per record.
 	let used = 0;
@@ -534,7 +572,10 @@ function formatRecordsForTier3(
 				for (const line of s.split(TIER3_LINE_BREAKS)) {
 					if (line.length === 0) continue;
 					if (fits(lines, line, limit)) {
-						if (isStr) hasString = true;
+						if (isStr) {
+							hasString = true;
+							emittedStringChars += line.length;
+						}
 					} else if (isStr) {
 						const sep = lines.length > 0 ? 1 : 0;
 						const room = limit - used - sep;
@@ -542,6 +583,7 @@ function formatRecordsForTier3(
 							lines.push(line.slice(0, room));
 							used += sep + room;
 							hasString = true;
+							emittedStringChars += room; // only the kept prefix of this line was emitted
 						}
 						budgetTruncated = true; // string truncated for lack of budget → retry with reserve
 						depthFlag.coverageDegraded = true;
@@ -558,7 +600,10 @@ function formatRecordsForTier3(
 				if (line.length === 0) continue;
 				const full = `${prefix}: ${line}`;
 				if (fits(lines, full, limit)) {
-					if (isStr) hasString = true;
+					if (isStr) {
+						hasString = true;
+						emittedStringChars += line.length;
+					}
 				} else if (isStr) {
 					// String too big for the remaining share: truncate to it, keeping the `key:` prefix.
 					const sep = lines.length > 0 ? 1 : 0;
@@ -567,6 +612,7 @@ function formatRecordsForTier3(
 						lines.push(full.slice(0, room));
 						used += sep + room;
 						hasString = true;
+						emittedStringChars += room - prefix.length - 2; // room minus the `prefix: ` = string content kept
 					}
 					// else: no room to keep a meaningful `key:` — the field is dropped (see the retry).
 					budgetTruncated = true;
@@ -632,22 +678,22 @@ function formatRecordsForTier3(
 	};
 
 	let blocks = runRecords(); // greedy
-	// The greedy pass uses the full budget in index order, so it truncates iff the content genuinely
-	// exceeds the ceiling — a reliable "joined is incomplete" signal. Capture it before the reserve reset.
-	const greedyTruncated = budgetTruncated;
 	if (budgetTruncated) {
 		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
 		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
 		used = 0;
 		hasString = false;
+		emittedStringChars = 0;
 		budgetTruncated = false;
 		depthFlag.coverageDegraded = undefined;
 		reserveMode = true;
 		blocks = runRecords();
 	}
-	// Greedy couldn't fit everything → joined is incomplete → oversize. onOversize governs the overflow;
-	// the content that DID fit (joined) is still reviewed (see runTier3Only), so nothing fitting is lost.
-	if (greedyTruncated) depthFlag.budgetExceeded = true;
+	// Definitive oversize check, independent of every drop-site flag: compare the string content actually
+	// emitted (final pass) against the input's total string content. Any string leaf dropped or truncated
+	// makes emitted < input → oversize. Positive accounting fails SAFE — a mis-count under-reports emitted
+	// (→ over-flag, harmless: the fitting content is still reviewed) rather than silently missing a drop.
+	if (emittedStringChars < sumInputStringChars(value)) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
 	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
 }
