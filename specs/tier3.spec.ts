@@ -1278,6 +1278,67 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 		expect(skipResult.coverageDegraded).toBe(true); // ...flags it (not a silent pass)
 	});
 
+	it("flags oversize via the resource bound (traversal.maxSize), independent of string content (Phase 1)", async () => {
+		// A large numeric array collapses to `[N numbers]` — ~0 string content, so the emitted<input string
+		// check would NOT fire. Its byte size blows the (tiny, for the test) resource bound → oversize.
+		const mk = (onOversize: "skip" | "block" | "scan_anyway") =>
+			createPromptDefense({
+				enableTier1: false,
+				enableTier2: false,
+				enableTier3: true,
+				defenderMode: "tier3_only",
+				blockHighRisk: true,
+				config: { traversal: { maxSize: 2000 } },
+				tier3: { provider: makeProvider("allow"), onOversize },
+			});
+		const payload = { nums: Array.from({ length: 5000 }, (_, i) => i) }; // >2000 estimated bytes, no strings
+
+		expect((await mk("block").defendToolResult(payload, "api_get")).allowed).toBe(false);
+		expect((await mk("scan_anyway").defendToolResult(payload, "api_get")).allowed).toBe(false);
+		const skip = await mk("skip").defendToolResult(payload, "api_get");
+		expect(skip.allowed).toBe(true); // skip fails open on the overflow, but...
+		expect(skip.coverageDegraded).toBe(true); // ...flags it (resource bound, not a silent pass)
+	});
+
+	it("does not flag a payload within the resource bound (no false oversize) (Phase 1)", async () => {
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			config: { traversal: { maxSize: 100000 } },
+			tier3: { provider },
+		});
+		const rows = Array.from({ length: 20 }, (_, i) => ({ id: i, note: `note ${i} please review` }));
+		const result = await defense.defendToolResult(rows, "list_tool");
+
+		expect(provider.classify).toHaveBeenCalled();
+		expect(result.allowed).toBe(true);
+		expect(result.coverageDegraded).toBeUndefined(); // well within maxSize → not flagged
+	});
+
+	it("stops the element loop on a mid-array byte-budget trip and flags oversize (Phase 1)", async () => {
+		// The array's own overhead is under maxSize (so the element loop is entered), but the elements'
+		// cumulative size trips the meter mid-loop — the loop must break on meter.hit, not scan the rest.
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			config: { traversal: { maxSize: 3000 } },
+			tier3: { provider, onOversize: "block" },
+		});
+		const arr = Array.from({ length: 2000 }, () => ({ v: 0 })); // ~2000 array overhead < 3000; elements tip it over
+		const result = await defense.defendToolResult({ arr }, "api_get");
+
+		expect(result.allowed).toBe(false); // block fails closed on the resource-limited payload
+		expect(result.coverageDegraded).toBe(true);
+	});
+
 	it("onOversize 'block': blocks oversize input in strict mode, allows in permissive mode", async () => {
 		const rows = Array.from({ length: 500 }, (_, i) => ({ id: i, note: `row ${i} ${"z".repeat(60)}` }));
 		const strict = makeProvider("allow");

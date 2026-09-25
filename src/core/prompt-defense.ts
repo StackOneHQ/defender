@@ -16,6 +16,7 @@ import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type { DataBoundary, PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
 import { generateDataBoundary } from "../utils/boundary";
+import { estimateSize } from "../utils/structure";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
@@ -377,8 +378,18 @@ function chunkTier3Input(text: string, perChunkChars: number): string[] {
 // Coarse-to-fine visiting order (0, n-1, then halving strides): a budget cutoff drops a SPREAD of
 // indices, not a contiguous tail (items still emit in index order). Deterministic, so an over-budget
 // list stays evadable at a computable slot — the real fix (chunk, don't sample) is ENG-1339.
-function tier3SpreadOrder(n: number): number[] {
+// `maxOut` caps the output (and the O(n) `seen` scratch): a list too large to review within the budget
+// is sampled with a bounded even spread, so a huge list can't force an O(n) allocation here.
+function tier3SpreadOrder(n: number, maxOut = n): number[] {
 	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
+	if (n > maxOut) {
+		// Even-spread sample of ≤cap indices across [0, n), endpoints first — O(cap), no O(n) scratch.
+		const cap = Math.max(1, maxOut);
+		const sample = new Set<number>([0]);
+		if (cap >= 2) sample.add(n - 1);
+		for (let k = 1; k < cap - 1; k++) sample.add(Math.floor((k * (n - 1)) / (cap - 1)));
+		return [...sample].slice(0, cap);
+	}
 	const order: number[] = [];
 	const seen = new Uint8Array(n);
 	const push = (i: number) => {
@@ -397,12 +408,24 @@ function tier3SpreadOrder(n: number): number[] {
 	return order;
 }
 
+// Shared byte budget for a Tier-3 traversal: `bytes` accumulates estimated input size across the
+// serializer and the input-sum; `hit` trips once past `limit` (traversal.maxSize) so a huge payload
+// can't drive unbounded CPU/memory here — the resource bound, decoupled from the LLM review cap.
+type Tier3Meter = { bytes: number; limit: number; hit: boolean };
+
 // Total string-leaf content a payload holds, counted exactly as `formatRecordsForTier3` emits it (per
 // string: sum of line lengths = non-line-break chars; keys, non-strings and binary contribute 0) and
 // traversed the same way. Compared against the chars actually emitted, this is the definitive oversize
 // signal — independent of every drop site. A throwing getter propagates → payloadError → fail closed.
-function sumStringContent(v: unknown, depth: number): number {
-	if (depth > MAX_TRAVERSAL_DEPTH) return 0;
+// Metered: stops (and sets `meter.hit`) once the shared byte budget is exhausted — over-budget input is
+// oversize anyway, so a partial sum is harmless (the caller flags it).
+function sumStringContent(v: unknown, depth: number, meter: Tier3Meter): number {
+	if (depth > MAX_TRAVERSAL_DEPTH || meter.hit) return 0;
+	meter.bytes += estimateSize(v as never);
+	if (meter.bytes > meter.limit) {
+		meter.hit = true;
+		return 0;
+	}
 	if (typeof v === "string") {
 		let s = 0;
 		for (const line of v.split(TIER3_LINE_BREAKS)) s += line.length;
@@ -411,20 +434,29 @@ function sumStringContent(v: unknown, depth: number): number {
 	if (v === null || typeof v !== "object" || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return 0;
 	if (Array.isArray(v)) {
 		let s = 0;
-		for (const x of v) s += sumStringContent(x, depth + 1);
+		for (const x of v) {
+			s += sumStringContent(x, depth + 1, meter);
+			if (meter.hit) break;
+		}
 		return s;
 	}
 	let s = 0;
-	for (const val of Object.values(v as Record<string, unknown>)) s += sumStringContent(val, depth + 1);
+	for (const val of Object.values(v as Record<string, unknown>)) {
+		s += sumStringContent(val, depth + 1, meter);
+		if (meter.hit) break;
+	}
 	return s;
 }
 
 // Top-level records serialize at depth 0 (a top-level array's elements ARE the records), so mirror that
 // entry rather than treating the whole array as one depth-0 node.
-function sumInputStringChars(value: unknown): number {
+function sumInputStringChars(value: unknown, meter: Tier3Meter): number {
 	const records = Array.isArray(value) ? value : [value];
 	let total = 0;
-	for (const r of records) total += sumStringContent(r, 0);
+	for (const r of records) {
+		total += sumStringContent(r, 0, meter);
+		if (meter.hit) break;
+	}
 	return total;
 }
 
@@ -445,7 +477,17 @@ function formatRecordsForTier3(
 	value: unknown,
 	depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 	maxChars: number,
+	maxSize: number,
 ): string {
+	// Resource bound (bytes of input traversed), decoupled from `maxChars` (the LLM review window). Reset
+	// before each traversal so each gets a fresh maxSize budget (matching Tier 1/2's single-pass bound);
+	// `sizeLimitHit` OR-accumulates across passes and flags oversize → onOversize governs it.
+	const meter: Tier3Meter = { bytes: 0, limit: maxSize, hit: false };
+	let sizeLimitHit = false;
+	const resetMeter = (): void => {
+		meter.bytes = 0;
+		meter.hit = false;
+	};
 	let hasString = false;
 	// Total STRING-leaf content actually emitted (excludes `key:` prefixes and separators). Compared
 	// against the input's string content below to flag oversize independently of any drop-site logic.
@@ -481,6 +523,16 @@ function formatRecordsForTier3(
 		}
 		if (depth > MAX_TRAVERSAL_DEPTH) {
 			depthFlag.hit = true;
+			return;
+		}
+		// Resource bound: meter each visited node's estimated size (estimateSize is O(1) for an array —
+		// it returns ~length — and O(keys) for an object) and stop past the byte budget.
+		if (meter.hit) return;
+		meter.bytes += estimateSize(v as never);
+		if (meter.bytes > meter.limit) {
+			meter.hit = true;
+			budgetTruncated = true;
+			depthFlag.coverageDegraded = true;
 			return;
 		}
 		if (v === null || v === undefined) return;
@@ -523,9 +575,11 @@ function formatRecordsForTier3(
 			// so a budget cutoff drops a SPREAD of indices, not a predictable tail. A nested array (the
 			// common `{data:[...]}` list-envelope shape) otherwise got NONE of tier3SpreadOrder's
 			// protection, so an injection appended to the list was deterministically unreviewed.
-			const arrOrder = reserveMode ? tier3SpreadOrder(v.length) : undefined;
+			const arrOrder = reserveMode ? tier3SpreadOrder(v.length, maxChars) : undefined;
 			for (let k = 0; k < v.length; k++) {
-				if (used >= outerCap) {
+				// Stop on the byte budget too — else a meter trip mid-array still costs O(remaining length)
+				// of loop iterations even though each serialize() call bails immediately.
+				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
@@ -539,9 +593,9 @@ function formatRecordsForTier3(
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
 			// Spread the field visitation in the reserve pass too (same reason as the array branch above).
-			const objOrder = reserveMode ? tier3SpreadOrder(entries.length) : undefined;
+			const objOrder = reserveMode ? tier3SpreadOrder(entries.length, maxChars) : undefined;
 			for (let k = 0; k < entries.length; k++) {
-				if (used >= outerCap) {
+				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
@@ -638,21 +692,24 @@ function formatRecordsForTier3(
 	// One pass over the records. Greedy (reserveMode=false): index order, each record at full budget.
 	// Reserve pass (reserveMode=true): spread order (so a budget cutoff samples across the whole list,
 	// not a prefix), each record with a per-record sibling reserve. Emitted in original index order.
-	const runRecords = (): (string | undefined)[] => {
-		const order = reserveMode ? tier3SpreadOrder(n) : Array.from({ length: n }, (_, i) => i);
-		const out: (string | undefined)[] = new Array(n);
+	const runRecords = (): string[] => {
+		// Greedy: index order, no O(n) order array (the loop breaks early at the ceiling / byte budget).
+		// Reserve: a spread sample capped at `maxChars`, so a huge list can't allocate an O(n) order here.
+		const order = reserveMode ? tier3SpreadOrder(n, maxChars) : null;
+		const total = order ? order.length : n;
+		const collected: Array<{ i: number; block: string }> = [];
 		let emitted = 0;
-		for (let oi = 0; oi < order.length; oi++) {
+		for (let oi = 0; oi < total; oi++) {
 			// Account for the "\n\n" separator this block would add — otherwise `used` can sit 2 below
 			// maxChars, pass this check, then trip serialize's guard after the `+= 2` and drop silently.
-			if (used + (emitted > 0 ? 2 : 0) >= maxChars) {
-				budgetTruncated = true; // remaining records dropped for lack of budget
+			if (meter.hit || used + (emitted > 0 ? 2 : 0) >= maxChars) {
+				budgetTruncated = true; // remaining records dropped for lack of budget / byte budget
 				depthFlag.coverageDegraded = true;
 				break;
 			}
-			const i = order[oi];
+			const i = order ? order[oi] : oi;
 			const usedBefore = used;
-			cap = reserveMode ? tier3ItemCap(maxChars, used, order.length - oi) : maxChars;
+			cap = reserveMode ? tier3ItemCap(maxChars, used, total - oi) : maxChars;
 			// The scalar sub-budget is an anti-crowd-out reserve — only meaningful in the reserve pass.
 			// In the greedy pass scalars get the full cap, so a record that FITS is reviewed in full
 			// (keys and all) rather than self-inflicting a drop that the estimator-free design can't retry.
@@ -664,16 +721,20 @@ function formatRecordsForTier3(
 			const lines: string[] = [];
 			serialize(record, rootPrefixOf(record, i), lines, 0, false);
 			if (lines.length > 0) {
-				out[i] = lines.join("\n");
+				collected.push({ i, block: lines.join("\n") });
 				emitted++;
 			} else {
 				used = usedBefore; // empty block → roll back the reserved separator
 			}
 		}
-		return out;
+		// Emit in original index order (the reserve pass visits in spread order). O(emitted), not O(n).
+		collected.sort((a, b) => a.i - b.i);
+		return collected.map((c) => c.block);
 	};
 
+	resetMeter();
 	let blocks = runRecords(); // greedy
+	if (meter.hit) sizeLimitHit = true;
 	if (budgetTruncated) {
 		// Something didn't fit at full budget → redo with the per-sibling reserve + spread sampling, so
 		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
@@ -683,15 +744,21 @@ function formatRecordsForTier3(
 		budgetTruncated = false;
 		depthFlag.coverageDegraded = undefined;
 		reserveMode = true;
+		resetMeter();
 		blocks = runRecords();
+		if (meter.hit) sizeLimitHit = true;
 	}
 	// Definitive oversize check, independent of every drop-site flag: compare the string content actually
 	// emitted (final pass) against the input's total string content. Any string leaf dropped or truncated
 	// makes emitted < input → oversize. Positive accounting fails SAFE — a mis-count under-reports emitted
 	// (→ over-flag, harmless: the fitting content is still reviewed) rather than silently missing a drop.
-	if (emittedStringChars < sumInputStringChars(value)) depthFlag.budgetExceeded = true;
+	resetMeter();
+	const inputStringChars = sumInputStringChars(value, meter);
+	if (meter.hit) sizeLimitHit = true;
+	// Oversize when string content was dropped/truncated OR the byte budget was hit anywhere.
+	if (emittedStringChars < inputStringChars || sizeLimitHit) depthFlag.budgetExceeded = true;
 	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
-	return hasString ? blocks.filter((b): b is string => b !== undefined).join("\n\n") : "";
+	return hasString ? blocks.join("\n\n") : "";
 }
 
 /**
@@ -817,6 +884,11 @@ export interface PromptDefenseOptions {
 		 * Default: 10000 (tuned — larger gives no recall gain and worsens
 		 * over-block). Chunking a >10k result (union-of-blocks) costs ~13pp
 		 * benign FPR vs a single review.
+		 *
+		 * This is the LLM review window only — NOT a memory/DoS bound. The
+		 * Tier-3 serializer's resource bound is the shared `traversal.maxSize`
+		 * (10 MB), same as Tier 1/2; a payload exceeding it is treated as
+		 * oversize (see `onOversize`).
 		 */
 		maxTextLength?: number;
 		/**
@@ -1239,7 +1311,7 @@ export class PromptDefense {
 		const ceiling = this.tier3MaxChunks * tier3ContentBudget(perChunk);
 		let joined = "";
 		try {
-			joined = formatRecordsForTier3(value, depthFlag, ceiling);
+			joined = formatRecordsForTier3(value, depthFlag, ceiling, this.config.traversal.maxSize);
 		} catch (err) {
 			payloadError = true;
 			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
