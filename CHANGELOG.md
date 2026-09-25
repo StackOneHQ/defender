@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/StackOneHQ/defender/compare/defender-v0.8.3...defender-v0.9.0) (2026-09-25)
+
+
+### Features
+
+* **ENG-1339:** chunk oversized Tier-3 input instead of truncating ([#96](https://github.com/StackOneHQ/defender/issues/96)) ([7128877](https://github.com/StackOneHQ/defender/commit/71288778ee14bb0d72f825b14c47ae9998afd92c))
+
 ## [0.8.3](https://github.com/StackOneHQ/defender/compare/defender-v0.8.2...defender-v0.8.3) (2026-09-23)
 
 
