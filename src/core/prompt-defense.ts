@@ -383,10 +383,12 @@ function chunkTier3Input(text: string, perChunkChars: number): string[] {
 function tier3SpreadOrder(n: number, maxOut = n): number[] {
 	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
 	if (n > maxOut) {
-		// Even-spread sample of ≤maxOut indices across [0, n), endpoints first — O(maxOut), no O(n) scratch.
-		const sample = new Set<number>([0, n - 1]);
-		for (let k = 1; k < maxOut - 1; k++) sample.add(Math.floor((k * (n - 1)) / (maxOut - 1)));
-		return [...sample];
+		// Even-spread sample of ≤cap indices across [0, n), endpoints first — O(cap), no O(n) scratch.
+		const cap = Math.max(1, maxOut);
+		const sample = new Set<number>([0]);
+		if (cap >= 2) sample.add(n - 1);
+		for (let k = 1; k < cap - 1; k++) sample.add(Math.floor((k * (n - 1)) / (cap - 1)));
+		return [...sample].slice(0, cap);
 	}
 	const order: number[] = [];
 	const seen = new Uint8Array(n);
@@ -523,8 +525,8 @@ function formatRecordsForTier3(
 			depthFlag.hit = true;
 			return;
 		}
-		// Resource bound: meter each visited node's estimated size (an array/object returns its breadth,
-		// so a huge one trips here in O(1)) and stop past the byte budget — bounds the serializer's work.
+		// Resource bound: meter each visited node's estimated size (estimateSize is O(1) for an array —
+		// it returns ~length — and O(keys) for an object) and stop past the byte budget.
 		if (meter.hit) return;
 		meter.bytes += estimateSize(v as never);
 		if (meter.bytes > meter.limit) {
@@ -575,7 +577,9 @@ function formatRecordsForTier3(
 			// protection, so an injection appended to the list was deterministically unreviewed.
 			const arrOrder = reserveMode ? tier3SpreadOrder(v.length, maxChars) : undefined;
 			for (let k = 0; k < v.length; k++) {
-				if (used >= outerCap) {
+				// Stop on the byte budget too — else a meter trip mid-array still costs O(remaining length)
+				// of loop iterations even though each serialize() call bails immediately.
+				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // elements dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
@@ -591,7 +595,7 @@ function formatRecordsForTier3(
 			// Spread the field visitation in the reserve pass too (same reason as the array branch above).
 			const objOrder = reserveMode ? tier3SpreadOrder(entries.length, maxChars) : undefined;
 			for (let k = 0; k < entries.length; k++) {
-				if (used >= outerCap) {
+				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;

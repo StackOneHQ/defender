@@ -1319,6 +1319,26 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 		expect(result.coverageDegraded).toBeUndefined(); // well within maxSize → not flagged
 	});
 
+	it("stops the element loop on a mid-array byte-budget trip and flags oversize (Phase 1)", async () => {
+		// The array's own overhead is under maxSize (so the element loop is entered), but the elements'
+		// cumulative size trips the meter mid-loop — the loop must break on meter.hit, not scan the rest.
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			config: { traversal: { maxSize: 3000 } },
+			tier3: { provider, onOversize: "block" },
+		});
+		const arr = Array.from({ length: 2000 }, () => ({ v: 0 })); // ~2000 array overhead < 3000; elements tip it over
+		const result = await defense.defendToolResult({ arr }, "api_get");
+
+		expect(result.allowed).toBe(false); // block fails closed on the resource-limited payload
+		expect(result.coverageDegraded).toBe(true);
+	});
+
 	it("onOversize 'block': blocks oversize input in strict mode, allows in permissive mode", async () => {
 		const rows = Array.from({ length: 500 }, (_, i) => ({ id: i, note: `row ${i} ${"z".repeat(60)}` }));
 		const strict = makeProvider("allow");
