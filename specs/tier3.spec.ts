@@ -1340,6 +1340,17 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 		expect(result.coverageDegraded).toBe(true);
 	});
 
+	it("frames top-level SharedArrayBuffer list elements with [i]:, matching ArrayBuffer (cubic P3)", async () => {
+		// isKeyedObject must exclude SharedArrayBuffer too, else a top-level [sab, sab] is treated as a keyed
+		// object and emits bare "<binary N bytes>" lines instead of "[i]: <binary N bytes>".
+		const provider = makeProvider("allow");
+		// A string sibling makes the payload reviewable; the SharedArrayBuffer element must still be framed.
+		await mkDefense(provider).defendToolResult([new SharedArrayBuffer(8), "a reviewable note"], "api_get");
+		const input = allChunkInput(provider);
+		expect(input).toContain("[0]: <binary 8 bytes>");
+		expect(input).toContain("[1]: a reviewable note");
+	});
+
 	it("counts a SharedArrayBuffer's bytes against the resource bound, not as an empty object (cubic P2)", async () => {
 		// SharedArrayBuffer is neither a view nor an ArrayBuffer, so without the guard estimateSize treats it
 		// as a plain object (~2 bytes) and its bytes bypass the meter + oversize policy.

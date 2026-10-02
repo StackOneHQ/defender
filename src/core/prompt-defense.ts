@@ -729,7 +729,8 @@ function formatRecordsForTier3(
 		typeof r === "object" &&
 		!Array.isArray(r) &&
 		!ArrayBuffer.isView(r) &&
-		!(r instanceof ArrayBuffer);
+		!(r instanceof ArrayBuffer) &&
+		!(typeof SharedArrayBuffer !== "undefined" && r instanceof SharedArrayBuffer);
 	const rootPrefixOf = (r: unknown, i: number): string => (topIsArray && !isKeyedObject(r) ? `[${i}]` : "");
 	// One pass over the records. Greedy (reserveMode=false): index order, each record at full budget.
 	// Reserve pass (reserveMode=true): spread order (so a budget cutoff samples across the whole list,
