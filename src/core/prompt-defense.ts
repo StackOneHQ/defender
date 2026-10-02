@@ -901,6 +901,12 @@ export interface PromptDefenseOptions {
 		 *    fitting chunk already blocked).
 		 *
 		 * Default: "skip" (favors availability; set block/scan_anyway to fail closed).
+		 *
+		 * Oversize can be triggered by the char ceiling OR the `traversal.maxSize` resource bound. The
+		 * resource bound aborts traversal in visitation order, so a >`maxSize` payload's overflow is
+		 * PREFIX-biased (not spread-sampled like the char path) — a large benign prefix can push later
+		 * content into the unreviewed overflow. Under "skip" that overflow is allowed; use "block"/
+		 * "scan_anyway" for guaranteed fail-closed coverage on oversize input.
 		 */
 		onOversize?: "skip" | "block" | "scan_anyway";
 		/**
