@@ -125,7 +125,11 @@ export function estimateSize(value: SanitizableValue): number {
 		return value ? 4 : 5; // 'true' or 'false'
 	}
 
-	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+	if (
+		ArrayBuffer.isView(value) ||
+		value instanceof ArrayBuffer ||
+		(typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer)
+	) {
 		return (value as { byteLength: number }).byteLength; // O(1); never enumerate a view's indices
 	}
 

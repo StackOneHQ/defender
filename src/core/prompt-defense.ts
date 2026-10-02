@@ -409,6 +409,25 @@ function tier3SpreadOrder(n: number, maxOut = n): number[] {
 	return order;
 }
 
+// Records child line-ranges appended to `lines` at/after `base`, then on apply() reorders them by their
+// original index. The line SET is unchanged — only the order — so `used` (the exact joined length, incl.
+// every inter-line `\n`) is preserved. Lets the reserve pass visit in spread order but emit in index order.
+function reorderByIndex(lines: string[], base: number) {
+	const parts: Array<{ i: number; start: number; end: number }> = [];
+	return {
+		mark(i: number, start: number) {
+			if (lines.length > start) parts.push({ i, start, end: lines.length });
+		},
+		apply() {
+			parts.sort((a, b) => a.i - b.i);
+			const reordered: string[] = [];
+			for (const p of parts) for (let j = p.start; j < p.end; j++) reordered.push(lines[j]);
+			lines.length = base;
+			for (const ln of reordered) lines.push(ln);
+		},
+	};
+}
+
 // Shared byte budget for a Tier-3 traversal: `bytes` accumulates estimated input size across the
 // serializer and the input-sum; `hit` trips once past `limit` (traversal.maxSize) so a huge payload
 // can't drive unbounded CPU/memory here — the resource bound, decoupled from the LLM review cap.
@@ -537,7 +556,11 @@ function formatRecordsForTier3(
 			return;
 		}
 		if (v === null || v === undefined) return;
-		if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+		if (
+			ArrayBuffer.isView(v) ||
+			v instanceof ArrayBuffer ||
+			(typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer)
+		) {
 			// Binary blob: summarize as `<binary N bytes>`, never per-byte.
 			const bytes = (v as { byteLength: number }).byteLength;
 			const limit = Math.min(cap, nonStringCap); // bound the scalar sub-budget by this item's cap
@@ -581,8 +604,10 @@ function formatRecordsForTier3(
 			// v.length would index past it (undefined) and waste O(remaining) no-op calls.
 			const arrTotal = arrOrder ? arrOrder.length : v.length;
 			// Reserve pass visits in spread order (coverage) but emits in index order (context), mirroring
-			// the top-level record loop; greedy pushes straight to `lines` (already index order).
-			const arrCollect: Array<{ i: number; lines: string[] }> | null = arrOrder ? [] : null;
+			// the top-level record loop; greedy is already index order. Serialize straight into `lines`
+			// (so `fits` charges the inter-line `\n`), recording each child's range, then reorder the
+			// ranges by index — the line set is unchanged so `used` stays the exact joined length.
+			const arrParts = arrOrder ? reorderByIndex(lines, lines.length) : undefined;
 			for (let k = 0; k < arrTotal; k++) {
 				// Stop on the byte budget too — else a meter trip mid-array still costs O(remaining length)
 				// of loop iterations even though each serialize() call bails immediately.
@@ -593,15 +618,12 @@ function formatRecordsForTier3(
 				}
 				const i = arrOrder ? arrOrder[k] : k;
 				cap = reserveMode ? tier3ItemCap(outerCap, used, arrTotal - k) : outerCap;
-				const target = arrCollect ? [] : lines;
-				serialize(v[i], `${prefix}[${i}]`, target, depth + 1, true);
-				if (arrCollect && target.length > 0) arrCollect.push({ i, lines: target });
+				const before = lines.length;
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
+				arrParts?.mark(i, before);
 			}
 			cap = outerCap;
-			if (arrCollect) {
-				arrCollect.sort((a, b) => a.i - b.i);
-				for (const c of arrCollect) for (const ln of c.lines) lines.push(ln);
-			}
+			arrParts?.apply();
 		} else if (typeof v === "object") {
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
@@ -610,7 +632,7 @@ function formatRecordsForTier3(
 			// Anchor to the order length (see the array branch): a capped order is shorter than
 			// entries.length, so entries[objOrder[k]] would destructure undefined → TypeError.
 			const objTotal = objOrder ? objOrder.length : entries.length;
-			const objCollect: Array<{ i: number; lines: string[] }> | null = objOrder ? [] : null;
+			const objParts = objOrder ? reorderByIndex(lines, lines.length) : undefined;
 			for (let k = 0; k < objTotal; k++) {
 				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
@@ -622,15 +644,12 @@ function formatRecordsForTier3(
 				const [rawKey, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = rawKey.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
-				const target = objCollect ? [] : lines;
-				serialize(val, prefix ? `${prefix}.${key}` : key, target, depth + 1, true);
-				if (objCollect && target.length > 0) objCollect.push({ i: idx, lines: target });
+				const before = lines.length;
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
+				objParts?.mark(idx, before);
 			}
 			cap = outerCap;
-			if (objCollect) {
-				objCollect.sort((a, b) => a.i - b.i);
-				for (const c of objCollect) for (const ln of c.lines) lines.push(ln);
-			}
+			objParts?.apply();
 		} else {
 			const s = String(v);
 			const isStr = typeof v === "string";

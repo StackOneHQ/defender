@@ -1340,6 +1340,25 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 		expect(result.coverageDegraded).toBe(true);
 	});
 
+	it("counts a SharedArrayBuffer's bytes against the resource bound, not as an empty object (cubic P2)", async () => {
+		// SharedArrayBuffer is neither a view nor an ArrayBuffer, so without the guard estimateSize treats it
+		// as a plain object (~2 bytes) and its bytes bypass the meter + oversize policy.
+		const provider = makeProvider("allow");
+		const defense = createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			config: { traversal: { maxSize: 3000 } },
+			tier3: { provider, onOversize: "block" },
+		});
+		const result = await defense.defendToolResult({ buf: new SharedArrayBuffer(5000) }, "api_get");
+
+		expect(result.allowed).toBe(false); // 5000 bytes > maxSize → oversize → block fails closed
+		expect(result.coverageDegraded).toBe(true);
+	});
+
 	it("a nested object with more fields than the ceiling routes to oversize, not a serialization error (cubic P1)", async () => {
 		// The reserve-pass visitation order is capped at the ceiling. A nested object with MORE keys than
 		// that must iterate the capped order, not entries.length — else entries[undefined] destructures and
