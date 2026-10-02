@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/StackOneHQ/defender/compare/defender-v0.8.3...defender-v0.9.0) (2026-10-02)
+
+
+### Features
+
+* **ENG-1339:** chunk oversized Tier-3 input instead of truncating ([#96](https://github.com/StackOneHQ/defender/issues/96)) ([7128877](https://github.com/StackOneHQ/defender/commit/71288778ee14bb0d72f825b14c47ae9998afd92c))
+* **ENG-2530:** decouple Tier-3 resource bound from the review cap (Phase 1) ([#98](https://github.com/StackOneHQ/defender/issues/98)) ([ff83e70](https://github.com/StackOneHQ/defender/commit/ff83e70981099f9261520e0e9bc6cb85bb9789da))
+
 ## [0.8.3](https://github.com/StackOneHQ/defender/compare/defender-v0.8.2...defender-v0.8.3) (2026-09-23)
 
 
