@@ -379,16 +379,17 @@ function chunkTier3Input(text: string, perChunkChars: number): string[] {
 // indices, not a contiguous tail (items still emit in index order). Deterministic, so an over-budget
 // list stays evadable at a computable slot — the real fix (chunk, don't sample) is ENG-1339.
 // `maxOut` caps the output (and the O(n) `seen` scratch): a list too large to review within the budget
-// is sampled with a bounded even spread, so a huge list can't force an O(n) allocation here.
+// is sampled down to ≤maxOut indices, so a huge list can't force an O(n) allocation here.
 function tier3SpreadOrder(n: number, maxOut = n): number[] {
 	if (n <= 2) return Array.from({ length: n }, (_, i) => i);
 	if (n > maxOut) {
-		// Even-spread sample of ≤cap indices across [0, n), endpoints first — O(cap), no O(n) scratch.
+		// Sample ≤cap indices across [0, n), but keep the COARSE-TO-FINE order (map the full path's order
+		// over `cap` slots into [0, n)) so a budget cutoff still drops a SPREAD, not a mid-list tail. O(cap).
 		const cap = Math.max(1, maxOut);
-		const sample = new Set<number>([0]);
-		if (cap >= 2) sample.add(n - 1);
-		for (let k = 1; k < cap - 1; k++) sample.add(Math.floor((k * (n - 1)) / (cap - 1)));
-		return [...sample].slice(0, cap);
+		if (cap === 1) return [0];
+		const sample = new Set<number>();
+		for (const j of tier3SpreadOrder(cap)) sample.add(Math.floor((j * (n - 1)) / (cap - 1)));
+		return [...sample];
 	}
 	const order: number[] = [];
 	const seen = new Uint8Array(n);
