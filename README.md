@@ -112,7 +112,7 @@ Authoritative LLM-based classification for the cases Tier 2 finds ambiguous. Def
 
 Two modes selectable via `defenderMode`:
 - **`"cascade"`** (default): T1 → T2 → T3, with T3 invoked only when the Tier 2 effective score is in the configured gray band (default `[0.3, 0.85)`). The T3 verdict authoritatively overrides T2 on the escalated chunk: a `"block"` forces a block, an `"allow"` rescues the chunk back to allowed. Outside the band defender skips the round trip.
-- **`"tier3_only"`**: skip T1 + T2 entirely. T1 detection still runs to populate `detections` metadata, but content is not rewritten (detect-and-gate) and the block/allow decision is the T3 verdict alone.
+- **`"tier3_only"`**: skip T1 + T2 entirely; the LLM reviews the tool result directly. T1 detection still runs to populate `detections` metadata, but content is not rewritten (detect-and-gate) and the block/allow decision is the T3 verdict alone. The serialized result is reviewed in boundary-aware chunks (≤ `maxTextLength` each, up to `maxChunks`) with union-of-blocks aggregation. Content beyond the coverage ceiling — or beyond the shared `traversal.maxSize` resource bound — is routed to `onOversize` (`'skip'` allows it, `'block'`/`'scan_anyway'` fail closed).
 
 Register a provider once at app startup:
 
@@ -137,8 +137,10 @@ const defense = createPromptDefense({
   enableTier3: true,
   defenderMode: 'cascade',                // or 'tier3_only'
   tier3: {
-    escalationBand: { lower: 0.3, upper: 0.85 },  // [lower, upper), defaults shown
-    maxTextLength: 10000,                          // caps input passed to the provider
+    escalationBand: { lower: 0.3, upper: 0.85 },  // cascade only — [lower, upper), defaults shown
+    maxTextLength: 10000,                          // per-call LLM review window (per-chunk cap in tier3_only)
+    maxChunks: 5,                                  // tier3_only — max chunks reviewed in parallel
+    onOversize: 'skip',                            // tier3_only — 'skip' | 'block' | 'scan_anyway'
     blockThreshold: 0.622,                         // optional; decide on score instead of the model's word
   },
 });
@@ -210,7 +212,9 @@ const defense = createPromptDefense({
   tier3: {
     provider: myProvider,                          // overrides the registry-default provider for this instance
     escalationBand: { lower: 0.3, upper: 0.85 },   // cascade-mode gray band; [lower, upper)
-    maxTextLength: 10000,                          // caps text passed to the provider
+    maxTextLength: 10000,                          // per-call LLM review window (per-chunk cap in tier3_only)
+    maxChunks: 5,                                  // (default: 5) tier3_only — target chunks reviewed in parallel
+    onOversize: 'skip',                            // (default: 'skip') tier3_only — 'skip' | 'block' | 'scan_anyway'
     blockThreshold: 0.622,                         // (default: unset) decide on score >= threshold, not the model's word
   },
 });
@@ -242,6 +246,8 @@ interface DefenseResult {
   // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
   tier3?: { decision: 'block' | 'allow'; score?: number; raw?: unknown; latencyMs?: number }
        | { skipReason: string };
+  // tier3_only chunk telemetry — present only when the chunk-review path ran.
+  tier3ChunkSummary?: { chunks: number; blocked: number; blockingChunk?: number; oversize?: boolean };
 
   // SFE preprocessor output (present when `useSfe: true`; empty array otherwise)
   fieldsDropped: string[];
