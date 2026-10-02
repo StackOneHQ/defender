@@ -577,7 +577,13 @@ function formatRecordsForTier3(
 			// common `{data:[...]}` list-envelope shape) otherwise got NONE of tier3SpreadOrder's
 			// protection, so an injection appended to the list was deterministically unreviewed.
 			const arrOrder = reserveMode ? tier3SpreadOrder(v.length, maxChars) : undefined;
-			for (let k = 0; k < v.length; k++) {
+			// Anchor the loop to the order length — when capped it is shorter than v.length, so iterating
+			// v.length would index past it (undefined) and waste O(remaining) no-op calls.
+			const arrTotal = arrOrder ? arrOrder.length : v.length;
+			// Reserve pass visits in spread order (coverage) but emits in index order (context), mirroring
+			// the top-level record loop; greedy pushes straight to `lines` (already index order).
+			const arrCollect: Array<{ i: number; lines: string[] }> | null = arrOrder ? [] : null;
+			for (let k = 0; k < arrTotal; k++) {
 				// Stop on the byte budget too — else a meter trip mid-array still costs O(remaining length)
 				// of loop iterations even though each serialize() call bails immediately.
 				if (meter.hit || used >= outerCap) {
@@ -586,29 +592,45 @@ function formatRecordsForTier3(
 					break;
 				}
 				const i = arrOrder ? arrOrder[k] : k;
-				cap = reserveMode ? tier3ItemCap(outerCap, used, v.length - k) : outerCap;
-				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
+				cap = reserveMode ? tier3ItemCap(outerCap, used, arrTotal - k) : outerCap;
+				const target = arrCollect ? [] : lines;
+				serialize(v[i], `${prefix}[${i}]`, target, depth + 1, true);
+				if (arrCollect && target.length > 0) arrCollect.push({ i, lines: target });
 			}
 			cap = outerCap;
+			if (arrCollect) {
+				arrCollect.sort((a, b) => a.i - b.i);
+				for (const c of arrCollect) for (const ln of c.lines) lines.push(ln);
+			}
 		} else if (typeof v === "object") {
 			const entries = Object.entries(v as Record<string, unknown>);
 			const outerCap = cap;
 			// Spread the field visitation in the reserve pass too (same reason as the array branch above).
 			const objOrder = reserveMode ? tier3SpreadOrder(entries.length, maxChars) : undefined;
-			for (let k = 0; k < entries.length; k++) {
+			// Anchor to the order length (see the array branch): a capped order is shorter than
+			// entries.length, so entries[objOrder[k]] would destructure undefined → TypeError.
+			const objTotal = objOrder ? objOrder.length : entries.length;
+			const objCollect: Array<{ i: number; lines: string[] }> | null = objOrder ? [] : null;
+			for (let k = 0; k < objTotal; k++) {
 				if (meter.hit || used >= outerCap) {
 					budgetTruncated = true; // fields dropped for lack of budget → retry with reserve
 					depthFlag.coverageDegraded = true;
 					break;
 				}
 				const idx = objOrder ? objOrder[k] : k;
-				cap = reserveMode ? tier3ItemCap(outerCap, used, entries.length - k) : outerCap;
+				cap = reserveMode ? tier3ItemCap(outerCap, used, objTotal - k) : outerCap;
 				const [rawKey, val] = entries[idx];
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = rawKey.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
-				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
+				const target = objCollect ? [] : lines;
+				serialize(val, prefix ? `${prefix}.${key}` : key, target, depth + 1, true);
+				if (objCollect && target.length > 0) objCollect.push({ i: idx, lines: target });
 			}
 			cap = outerCap;
+			if (objCollect) {
+				objCollect.sort((a, b) => a.i - b.i);
+				for (const c of objCollect) for (const ln of c.lines) lines.push(ln);
+			}
 		} else {
 			const s = String(v);
 			const isStr = typeof v === "string";

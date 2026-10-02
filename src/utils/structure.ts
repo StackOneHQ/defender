@@ -125,6 +125,10 @@ export function estimateSize(value: SanitizableValue): number {
 		return value ? 4 : 5; // 'true' or 'false'
 	}
 
+	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+		return (value as { byteLength: number }).byteLength; // O(1); never enumerate a view's indices
+	}
+
 	if (Array.isArray(value)) {
 		// Brackets + commas (rough estimate, actual content counted separately)
 		return 2 + Math.max(0, value.length - 1);

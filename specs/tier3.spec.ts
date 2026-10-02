@@ -1321,7 +1321,8 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 
 	it("stops the element loop on a mid-array byte-budget trip and flags oversize (Phase 1)", async () => {
 		// The array's own overhead is under maxSize (so the element loop is entered), but the elements'
-		// cumulative size trips the meter mid-loop — the loop must break on meter.hit, not scan the rest.
+		// cumulative size trips the meter mid-loop, so oversize must be flagged. (The loop's own byte-budget
+		// break is unobservable here — a removed break yields identical results — so guard it separately if needed.)
 		const provider = makeProvider("allow");
 		const defense = createPromptDefense({
 			enableTier1: false,
@@ -1337,6 +1338,42 @@ describe("PromptDefense tier3_only chunking (ENG-1339)", () => {
 
 		expect(result.allowed).toBe(false); // block fails closed on the resource-limited payload
 		expect(result.coverageDegraded).toBe(true);
+	});
+
+	it("a nested object with more fields than the ceiling routes to oversize, not a serialization error (cubic P1)", async () => {
+		// The reserve-pass visitation order is capped at the ceiling. A nested object with MORE keys than
+		// that must iterate the capped order, not entries.length — else entries[undefined] destructures and
+		// throws TypeError, which the call site catches as payloadError and treats as un-analyzable,
+		// bypassing onOversize. Mostly-null fields keep `used` low so the loop runs to the order's end.
+		const provider = makeProvider("allow");
+		const data: Record<string, unknown> = {};
+		for (let i = 0; i < 2010; i++) data[`k${i}`] = null; // > ceiling (1498) fields, emit nothing
+		for (let i = 0; i < 10; i++) data[`big${i}`] = "z".repeat(300); // force the reserve pass
+		const defense = mkDefense(provider, { maxTextLength: 1000, maxChunks: 2, onOversize: "block" });
+		const result = await defense.defendToolResult({ data }, "api_get");
+
+		expect(result.allowed).toBe(false); // oversize + block fails closed
+		expect(result.tier3.skipReason ?? "").toContain("too large"); // the oversize path, NOT a serialization error
+		expect(result.tier3.skipReason ?? "").not.toContain("serialization error");
+	});
+
+	it("emits nested-array elements in index order even when the reserve pass samples them in spread order (cubic P2)", async () => {
+		// The reserve pass visits a nested array in spread order (coverage), but must EMIT in index order so
+		// chronological/positional context isn't scrambled for the reviewer — mirroring the top-level records.
+		const provider = makeProvider("allow");
+		const data = Array.from({ length: 200 }, (_, i) => `IDX${String(i).padStart(3, "0")} ${"y".repeat(60)}`);
+		const defense = mkDefense(provider, { maxTextLength: 1000, maxChunks: 2 }); // forces the reserve pass
+		await defense.defendToolResult({ data }, "api_get");
+
+		// Each chunk is a contiguous slice of the serialized blob (overlap carries adjacent lines), so an
+		// index-ordered blob yields ascending markers within every chunk; a spread-ordered blob does not.
+		const chunks = chunkInputs(provider);
+		const seen = chunks.flatMap((c) => (c.match(/IDX\d{3}/g) ?? []).map((m) => Number(m.slice(3))));
+		expect(seen.length).toBeGreaterThan(2); // a spread of elements was reviewed
+		for (const c of chunks) {
+			const idx = (c.match(/IDX\d{3}/g) ?? []).map((m) => Number(m.slice(3)));
+			expect(idx).toEqual([...idx].sort((a, b) => a - b)); // ascending within the chunk
+		}
 	});
 
 	it("samples a huge (>maxOut) list coarse-to-fine, so a MID-index injection is still reviewed (round-3)", async () => {
