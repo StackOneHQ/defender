@@ -11,6 +11,7 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertNotLfsPointer } from "../utils/lfs";
 
 /**
  * Default path to the bundled ONNX model directory (relative to dist/).
@@ -345,6 +346,7 @@ export class OnnxClassifier {
 				};
 				const OrtTensor = ort.Tensor;
 				const onnxPath = resolve(modelPath, "model_quantized.onnx");
+				assertNotLfsPointer(onnxPath); // clear error instead of a cryptic protobuf parse failure
 				const session = await ort.InferenceSession.create(onnxPath);
 
 				_sessionCache.set(modelPath, { session, OrtTensor, tokenizer });

@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DANGEROUS_KEYS, MAX_TRAVERSAL_DEPTH } from "../config";
+import { assertNotLfsPointer } from "../utils/lfs";
 
 /** Predicate returned by the FastText classifier for each field. */
 type DropDecision = { label: "drop" | "pass"; prob: number };
@@ -123,6 +124,10 @@ async function loadPredictor(modelPath: string): Promise<SfePredictor | null> {
 		);
 		return null;
 	}
+
+	// A pointer here (checkout without `git lfs pull`) would surface as a cryptic read error;
+	// this throws a clear message instead, which getDefaultPredictor's catch logs before failing open.
+	assertNotLfsPointer(modelPath);
 
 	// Model read + WASM init errors propagate — getDefaultPredictor's
 	// catch cleans the cache entry and returns null, so the preprocessor
