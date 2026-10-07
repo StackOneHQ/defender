@@ -18,16 +18,20 @@ const ROOT = resolve(__dirname, "..");
 const LFS_POINTER_MAGIC = "version https://git-lfs.github.com/spec/v1";
 const MIN_MODEL_BYTES = { ".onnx": 1_000_000, ".ftz": 100_000 };
 
-function assertRealModel(file) {
+function isLfsPointerFile(file) {
 	const fd = openSync(file, "r");
 	try {
 		const buf = Buffer.alloc(LFS_POINTER_MAGIC.length);
 		const n = readSync(fd, buf, 0, buf.length, 0);
-		if (n >= LFS_POINTER_MAGIC.length && buf.toString("utf8") === LFS_POINTER_MAGIC) {
-			throw new Error(`${file} is a Git LFS pointer, not the model — run \`git lfs pull\` before building/publishing.`);
-		}
+		return n >= LFS_POINTER_MAGIC.length && buf.toString("utf8") === LFS_POINTER_MAGIC;
 	} finally {
 		closeSync(fd);
+	}
+}
+
+function assertRealModel(file) {
+	if (isLfsPointerFile(file)) {
+		throw new Error(`${file} is a Git LFS pointer, not the model — run \`git lfs pull\` before building/publishing.`);
 	}
 	const min = MIN_MODEL_BYTES[extname(file)] ?? 0;
 	const size = statSync(file).size;
@@ -60,30 +64,35 @@ const MODEL_DIRS = [
 	"minilm-multihead-v5",
 ];
 
-let copied = 0;
-for (const name of MODEL_DIRS) {
-	const src = resolve(ROOT, "src", "classifiers", "models", name);
-	const dst = resolve(ROOT, "dist", "models", name);
-	if (!existsSync(src)) {
-		throw new Error(`[copy-models] missing model source: ${src}`);
+function run() {
+	let copied = 0;
+	for (const name of MODEL_DIRS) {
+		const src = resolve(ROOT, "src", "classifiers", "models", name);
+		const dst = resolve(ROOT, "dist", "models", name);
+		if (!existsSync(src)) {
+			throw new Error(`[copy-models] missing model source: ${src}`);
+		}
+		validateModelsUnder(src); // fail BEFORE copying so a pointer/truncated binary never reaches dist
+		mkdirSync(dst, { recursive: true });
+		cpSync(src, dst, { recursive: true });
+		console.log(`[copy-models] copied ${name}`);
+		copied++;
 	}
-	mkdirSync(dst, { recursive: true });
-	cpSync(src, dst, { recursive: true });
-	validateModelsUnder(dst); // fail the build on a pointer/truncated binary rather than ship it
-	console.log(`[copy-models] copied ${name}`);
-	copied++;
-}
 
-/** SFE FastText model (single file). */
-const sfeSrc = resolve(ROOT, "src", "sfe", "model.ftz");
-const sfeDst = resolve(ROOT, "dist", "sfe", "model.ftz");
-if (existsSync(sfeSrc)) {
+	// SFE FastText model (single file).
+	const sfeSrc = resolve(ROOT, "src", "sfe", "model.ftz");
+	const sfeDst = resolve(ROOT, "dist", "sfe", "model.ftz");
+	if (!existsSync(sfeSrc)) {
+		throw new Error(`[copy-models] missing model source: ${sfeSrc}`);
+	}
+	assertRealModel(sfeSrc);
 	mkdirSync(resolve(ROOT, "dist", "sfe"), { recursive: true });
 	copyFileSync(sfeSrc, sfeDst);
-	assertRealModel(sfeDst);
 	console.log("[copy-models] copied sfe/model.ftz");
-} else {
-	throw new Error(`[copy-models] missing model source: ${sfeSrc}`);
+
+	console.log(`[copy-models] done (${copied} model dir(s) + sfe).`);
 }
 
-console.log(`[copy-models] done (${copied} model dir(s) + sfe).`);
+module.exports = { assertRealModel, validateModelsUnder, isLfsPointerFile, LFS_POINTER_MAGIC, MIN_MODEL_BYTES };
+
+if (require.main === module) run();
