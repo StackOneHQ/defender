@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -75,6 +75,15 @@ describe("build guard (scripts/copy-models.cjs)", () => {
 		writeFileSync(join(sub, "tokenizer.json"), "{}"); // tiny non-model file must be ignored
 		writeFileSync(join(sub, "model_quantized.onnx"), POINTER);
 		expect(() => validateModelsUnder(sub)).toThrow(/git lfs pull/);
+	});
+
+	it("run() fails when a model dir is missing the required ONNX entirely (partial checkout)", () => {
+		const { run } = require("../scripts/copy-models.cjs");
+		// Model dir exists with configs but NO model_quantized.onnx — validateModelsUnder alone wouldn't catch it.
+		const modelDir = join(dir, "src", "classifiers", "models", "minilm-multihead-v5");
+		mkdirSync(modelDir, { recursive: true });
+		writeFileSync(join(modelDir, "config.json"), "{}");
+		expect(() => run(dir)).toThrow(/missing required model file/);
 	});
 });
 
