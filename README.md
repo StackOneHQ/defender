@@ -377,6 +377,8 @@ Fields like `id`, `url`, `created_at` are outside the Tier 1 risky-field list, s
 
 ### Local Development
 
+The bundled models (`*.onnx`, `*.ftz`) are stored with [Git LFS](https://git-lfs.com). Install it before cloning, or run `git lfs install && git lfs pull` in an existing clone — otherwise the model files are ~130-byte pointers and the build fails with a "Git LFS pointer" error (Tier 2 / SFE won't load).
+
 This repo uses [pnpm](https://pnpm.io). The pnpm version is pinned in `package.json` under `packageManager` (Corepack picks it up automatically), and the Node.js version is pinned under `devEngines.runtime` in `package.json` (not `.npmrc`).
 
 pnpm itself needs an existing Node.js to run (unless you installed it via the [standalone installer](https://pnpm.io/installation#using-a-standalone-script)). Once running, pnpm downloads the pinned Node.js version on demand and uses it for `pnpm run` scripts regardless of which Node.js is on your system.

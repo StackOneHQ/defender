@@ -6,10 +6,46 @@
  * src/classifiers/models/<name> → dist/models/<name>. Tier 2 callers resolve
  * models via paths relative to the compiled file (which lives at dist/).
  */
-const { cpSync, mkdirSync, existsSync, copyFileSync } = require("node:fs");
-const { resolve } = require("node:path");
+const { cpSync, mkdirSync, existsSync, copyFileSync, openSync, readSync, closeSync, statSync, readdirSync } = require("node:fs");
+const { resolve, extname } = require("node:path");
 
 const ROOT = resolve(__dirname, "..");
+
+// Models are tracked with Git LFS. A build from a checkout without `git lfs pull` leaves ~130-byte
+// pointers in place of the real binaries; copying those would publish a broken package with no error.
+// Guard the output so the build FAILS loudly instead (covers manual publishes + any CI regression
+// that drops `lfs: true`).
+const LFS_POINTER_MAGIC = "version https://git-lfs.github.com/spec/v1";
+const MIN_MODEL_BYTES = { ".onnx": 1_000_000, ".ftz": 100_000 };
+
+function isLfsPointerFile(file) {
+	const fd = openSync(file, "r");
+	try {
+		const buf = Buffer.alloc(LFS_POINTER_MAGIC.length);
+		const n = readSync(fd, buf, 0, buf.length, 0);
+		return n >= LFS_POINTER_MAGIC.length && buf.toString("utf8") === LFS_POINTER_MAGIC;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function assertRealModel(file) {
+	if (isLfsPointerFile(file)) {
+		throw new Error(`${file} is a Git LFS pointer, not the model — run \`git lfs pull\` before building/publishing.`);
+	}
+	const min = MIN_MODEL_BYTES[extname(file)] ?? 0;
+	const size = statSync(file).size;
+	if (size < min) {
+		throw new Error(`${file} is ${size} bytes (< ${min}) — model looks truncated/unmaterialized; run \`git lfs pull\`.`);
+	}
+}
+
+function validateModelsUnder(dir) {
+	for (const entry of readdirSync(dir, { recursive: true })) {
+		const name = entry.toString();
+		if (name.endsWith(".onnx") || name.endsWith(".ftz")) assertRealModel(resolve(dir, name));
+	}
+}
 
 /**
  * ONNX model directories to mirror under dist/models/. Each entry must exist
@@ -28,29 +64,55 @@ const MODEL_DIRS = [
 	"minilm-multihead-v5",
 ];
 
-let copied = 0;
-for (const name of MODEL_DIRS) {
-	const src = resolve(ROOT, "src", "classifiers", "models", name);
-	const dst = resolve(ROOT, "dist", "models", name);
-	if (!existsSync(src)) {
-		console.warn(`[copy-models] missing: ${src} — skipping`);
-		continue;
+// Tier 2 loads this exact filename from each model dir (see onnx-classifier.ts).
+const REQUIRED_MODEL_FILE = "model_quantized.onnx";
+
+// Assert a model source dir is complete and materialized before it's copied. A partial checkout can
+// leave the dir present but the ONNX gone; validateModelsUnder only checks binaries that EXIST, so the
+// required-file check catches a fully-missing model too (else Tier 2 ships broken).
+function assertModelDirComplete(srcDir) {
+	if (!existsSync(resolve(srcDir, REQUIRED_MODEL_FILE))) {
+		throw new Error(`[copy-models] missing required model file: ${resolve(srcDir, REQUIRED_MODEL_FILE)}`);
 	}
-	mkdirSync(dst, { recursive: true });
-	cpSync(src, dst, { recursive: true });
-	console.log(`[copy-models] copied ${name}`);
-	copied++;
+	validateModelsUnder(srcDir);
 }
 
-/** SFE FastText model (single file). */
-const sfeSrc = resolve(ROOT, "src", "sfe", "model.ftz");
-const sfeDst = resolve(ROOT, "dist", "sfe", "model.ftz");
-if (existsSync(sfeSrc)) {
+function run() {
+	let copied = 0;
+	for (const name of MODEL_DIRS) {
+		const src = resolve(ROOT, "src", "classifiers", "models", name);
+		const dst = resolve(ROOT, "dist", "models", name);
+		if (!existsSync(src)) {
+			throw new Error(`[copy-models] missing model source: ${src}`);
+		}
+		assertModelDirComplete(src); // fail BEFORE copying so nothing broken reaches dist
+		mkdirSync(dst, { recursive: true });
+		cpSync(src, dst, { recursive: true });
+		console.log(`[copy-models] copied ${name}`);
+		copied++;
+	}
+
+	// SFE FastText model (single file).
+	const sfeSrc = resolve(ROOT, "src", "sfe", "model.ftz");
+	const sfeDst = resolve(ROOT, "dist", "sfe", "model.ftz");
+	if (!existsSync(sfeSrc)) {
+		throw new Error(`[copy-models] missing model source: ${sfeSrc}`);
+	}
+	assertRealModel(sfeSrc);
 	mkdirSync(resolve(ROOT, "dist", "sfe"), { recursive: true });
 	copyFileSync(sfeSrc, sfeDst);
 	console.log("[copy-models] copied sfe/model.ftz");
-} else {
-	console.warn(`[copy-models] missing: ${sfeSrc} — skipping`);
+
+	console.log(`[copy-models] done (${copied} model dir(s) + sfe).`);
 }
 
-console.log(`[copy-models] done (${copied} model dir(s) + sfe).`);
+module.exports = {
+	assertModelDirComplete,
+	assertRealModel,
+	validateModelsUnder,
+	isLfsPointerFile,
+	LFS_POINTER_MAGIC,
+	MIN_MODEL_BYTES,
+};
+
+if (require.main === module) run();
