@@ -11,7 +11,6 @@
         "allowSyntheticDefaultImports": true,
         "target": "es2021",
         "sourceMap": true,
-        "baseUrl": "./",
         "skipLibCheck": true,
         "strictNullChecks": true,
         "noImplicitAny": false,

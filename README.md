@@ -397,6 +397,14 @@ Use the pnpm version from `packageManager`. Older pnpm releases ran the strict `
 pnpm build
 ```
 
+### Typechecking
+
+```bash
+pnpm test:typecheck
+```
+
+This script explicitly invokes the native TypeScript 7 compiler through the `@typescript/native` alias. TypeScript 5.9 remains installed for tsdown declaration generation and compiler API compatibility. Both packages expose `tsc`, so use the script rather than bare `tsc` or `pnpm exec tsc`.
+
 ### Testing
 
 ```bash

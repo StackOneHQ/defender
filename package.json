@@ -37,7 +37,7 @@
         "lint:fix": "pnpm code:check:fix",
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
-        "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
+        "test:typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit --project tsconfig.tests.json",
         "prepublishOnly": "pnpm build",
         "publish-release": "pnpm publish --access=public --no-git-checks"
     },
@@ -67,6 +67,7 @@
     "devDependencies": {
         "@biomejs/biome": "^2.4.5",
         "@huggingface/transformers": "3.8.1",
+        "@typescript/native": "npm:typescript@7.0.2",
         "fasttext.wasm": "^1.0.1",
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",
