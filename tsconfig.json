@@ -21,7 +21,7 @@
         "resolveJsonModule": true,
         "strict": true,
         "outDir": "./dist",
-        "declarationDir": "./dist/types",
+        "declarationDir": null,
         "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo"
     },
     "include": [

@@ -23,9 +23,9 @@
     "scripts": {
         "clean": "rimraf dist",
         "prebuild": "pnpm clean",
-        "build": "tsdown --env.NODE_ENV=production --minify && pnpm copy-models",
+        "build": "tsc --noEmit --project tsconfig.json && tsdown --env.NODE_ENV=production --minify && pnpm copy-models",
         "prebuild:dev": "pnpm clean",
-        "build:dev": "tsdown --env.NODE_ENV=development && pnpm copy-models",
+        "build:dev": "tsc --noEmit --project tsconfig.json && tsdown --env.NODE_ENV=development && pnpm copy-models",
         "copy-models": "node scripts/copy-models.cjs",
         "code:format": "biome format ./src",
         "code:format:fix": "biome format --write ./src",
@@ -37,7 +37,7 @@
         "lint:fix": "pnpm code:check:fix",
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
-        "test:typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit --project tsconfig.tests.json",
+        "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
         "prepublishOnly": "pnpm build",
         "publish-release": "pnpm publish --access=public --no-git-checks"
     },
@@ -67,12 +67,11 @@
     "devDependencies": {
         "@biomejs/biome": "^2.4.5",
         "@huggingface/transformers": "3.8.1",
-        "@typescript/native": "npm:typescript@7.0.2",
         "fasttext.wasm": "^1.0.1",
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",
         "tsdown": "^0.21.0-beta.2",
-        "typescript": "^5.9.3",
+        "typescript": "7.0.2",
         "vitest": "^4.0.18"
     },
     "peerDependencies": {

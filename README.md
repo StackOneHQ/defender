@@ -403,7 +403,7 @@ pnpm build
 pnpm test:typecheck
 ```
 
-This script explicitly invokes the native TypeScript 7 compiler through the `@typescript/native` alias. TypeScript 5.9 remains installed for tsdown declaration generation and compiler API compatibility. Both packages expose `tsc`, so use the script rather than bare `tsc` or `pnpm exec tsc`.
+TypeScript 7 is the compiler for type checks and declaration builds. Both build commands run the source check before tsdown, which uses its native declaration option with the installed compiler’s platform-specific executable. The declaration option is experimental; the separate source check preserves semantic checking because the declaration subprocess uses `--noCheck`.
 
 ### Testing
 
