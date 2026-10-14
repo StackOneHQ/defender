@@ -2,7 +2,7 @@
     "name": "@stackone/defender",
     "version": "0.9.0",
     "description": "Prompt injection defense framework for AI tool-calling",
-    "homepage": "https://www.stackone.com/defender?utm_source=npm&utm_medium=listing&utm_campaign=homepage",
+    "homepage": "https://www.stackone.com/platform/prompt-injection-guard/?utm_source=npm&utm_medium=listing&utm_campaign=homepage",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/StackOneHQ/defender.git"

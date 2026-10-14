@@ -1,6 +1,6 @@
 <div align="center">
 
-  <a href="https://www.stackone.com/defender?utm_source=npm&utm_medium=readme&utm_campaign=banner">
+  <a href="https://www.stackone.com/platform/prompt-injection-guard/?utm_source=npm&utm_medium=readme&utm_campaign=banner">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/banner-dark.svg" />
       <img src="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/banner-light.svg" alt="Defender by StackOne — Indirect prompt injection protection for MCP tool calls" width="800" />
@@ -411,7 +411,7 @@ pnpm test
 Defender is built and maintained by [StackOne](https://www.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about), the enterprise integration platform for AI agents. We run Defender in production to protect agent tool calls against indirect prompt injection.
 
 - **Defender site** — [defender.stackone.com](https://defender.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about)
-- **Overview & benchmarks** — [stackone.com/defender](https://www.stackone.com/defender?utm_source=npm&utm_medium=readme&utm_campaign=about)
+- **Overview & benchmarks** — [stackone.com/platform/prompt-injection-guard](https://www.stackone.com/platform/prompt-injection-guard/?utm_source=npm&utm_medium=readme&utm_campaign=about)
 - **StackOne platform** — [stackone.com](https://www.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about)
 
 ## License
