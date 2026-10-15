@@ -31,9 +31,9 @@
     "scripts": {
         "clean": "rimraf dist",
         "prebuild": "pnpm clean",
-        "build": "tsdown --env.NODE_ENV=production --minify && pnpm copy-models",
+        "build": "tsc --noEmit --project tsconfig.json && tsdown --env.NODE_ENV=production --minify && pnpm copy-models",
         "prebuild:dev": "pnpm clean",
-        "build:dev": "tsdown --env.NODE_ENV=development && pnpm copy-models",
+        "build:dev": "tsc --noEmit --project tsconfig.json && tsdown --env.NODE_ENV=development && pnpm copy-models",
         "copy-models": "node scripts/copy-models.cjs",
         "code:format": "biome format ./src",
         "code:format:fix": "biome format --write ./src",
@@ -79,7 +79,7 @@
         "onnxruntime-node": "1.21.0",
         "rimraf": "^6.1.3",
         "tsdown": "^0.21.0-beta.2",
-        "typescript": "^5.9.3",
+        "typescript": "7.0.2",
         "vitest": "^4.0.18"
     },
     "peerDependencies": {

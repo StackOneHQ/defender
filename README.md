@@ -400,6 +400,14 @@ Use the pnpm version from `packageManager`. Older pnpm releases ran the strict `
 pnpm build
 ```
 
+### Typechecking
+
+```bash
+pnpm test:typecheck
+```
+
+TypeScript 7 is the compiler for type checks and declaration builds. Both build commands run the source check before tsdown, which uses its native declaration option with the installed compiler’s platform-specific executable. The declaration option is experimental; the separate source check preserves semantic checking because the declaration subprocess uses `--noCheck`.
+
 ### Testing
 
 ```bash
