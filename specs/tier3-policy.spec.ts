@@ -693,6 +693,22 @@ describe("tier3 result hygiene", () => {
 		const refusing = tier3Only({ classify: async () => ({ decision: "block", refused: true }) });
 		for (let i = 0; i < 25; i++) await refusing.defendToolResult({ body: "x" }, "t");
 		expect(warn.mock.calls.filter((c) => String(c[0]).includes("consecutive Tier 3 refusals"))).toHaveLength(1);
+
+		// A real failure breaks the run: 19 refusals, a failure, 19 refusals don't warn.
+		let mode: "refuse" | "fail" = "refuse";
+		const mixed = tier3Only({
+			classify: async () => {
+				if (mode === "fail") throw new Error("boom");
+				return { decision: "block", refused: true };
+			},
+		});
+		warn.mockClear();
+		for (let i = 0; i < 19; i++) await mixed.defendToolResult({ body: "x" }, "t");
+		mode = "fail";
+		await mixed.defendToolResult({ body: "x" }, "t");
+		mode = "refuse";
+		for (let i = 0; i < 19; i++) await mixed.defendToolResult({ body: "x" }, "t");
+		expect(warn.mock.calls.filter((c) => String(c[0]).includes("consecutive Tier 3 refusals"))).toHaveLength(0);
 		warn.mockRestore();
 	});
 

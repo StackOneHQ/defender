@@ -1435,6 +1435,9 @@ export class PromptDefense {
 	}
 
 	private noteTier3Failure(errorCode: string): void {
+		// A failure breaks a run of refusals, so the refusal warning stays "consecutive".
+		this.tier3ConsecutiveRefusals = 0;
+		this.tier3RefusalStreakWarned = false;
 		this.tier3ConsecutiveFailures++;
 		if (this.tier3ConsecutiveFailures >= TIER3_FAILURE_STREAK_WARN && !this.tier3FailureStreakWarned) {
 			this.tier3FailureStreakWarned = true;
