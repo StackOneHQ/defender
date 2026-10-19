@@ -133,7 +133,7 @@ export interface Tier3Verdict {
 	score?: number;
 	/** Model explanation. Untrusted: it can quote attacker text. Never feed it back to an agent. */
 	reason?: string;
-	/** True when the model refused or a provider content filter fired. `decision` is then "block". */
+	/** The model refused, a content filter fired, or the reply was unusable. `decision` is then "block". */
 	refused?: boolean;
 	/** Prompt version used by a `createLlmTier3Provider` provider ("custom" for a user prompt). */
 	promptVersion?: string;
@@ -222,7 +222,14 @@ export interface Tier3DecisionInput {
 		multihead: boolean;
 	};
 	tier3:
-		| { ran: true; decision: "block" | "allow"; score?: number; refused: boolean }
+		| {
+				ran: true;
+				decision: "block" | "allow";
+				score?: number;
+				refused: boolean;
+				/** tier3_only: chunks that failed or were aborted by stopOnFirstBlock. */
+				unreviewedChunks?: number;
+		  }
 		| { ran: false; errored: boolean; skipReason: string };
 	toolName?: string;
 }

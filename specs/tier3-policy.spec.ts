@@ -100,6 +100,24 @@ describe("tier3.allowOverride (cascade)", () => {
 		expect(r.tier3?.overrideSuppressed).toBe(true);
 	});
 
+	it("multihead: applies to multihead blocks, compared with the top blocking main score", async () => {
+		// auxThreshold 1 never vetoes, so the multihead rule blocks at main >= 0.5.
+		const mh = (tier3: PromptDefenseOptions["tier3"]) =>
+			cascade(allowing(), tier3, { tier2Config: { multihead: { mainThreshold: 0.5, auxThreshold: 1 } } });
+		const base = await cascade(undefined, {}, {
+			enableTier3: false,
+			tier2Config: { multihead: { mainThreshold: 0.5, auxThreshold: 1 } },
+		}).defendToolResult({ body: INJ }, "t");
+		expect(base.tier2MultiheadBlocked).toBe(true);
+		const s = base.tier2Score as number;
+		const suppressed = await mh({ allowOverride: { maxTier2Score: s - 0.01 } }).defendToolResult({ body: INJ }, "t");
+		expect(suppressed.allowed).toBe(false);
+		expect(suppressed.tier3?.overrideSuppressed).toBe(true);
+		const applied = await mh({ allowOverride: { maxTier2Score: s + 0.01 } }).defendToolResult({ body: INJ }, "t");
+		expect(applied.allowed).toBe(true);
+		expect(applied.tier3?.overrideApplied).toBe(true);
+	});
+
 	it("an invalid value warns and falls back to true", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const r = await cascade(allowing(), { allowOverride: { maxTier2Score: 2 } }).defendToolResult({ body: INJ }, "t");
@@ -238,6 +256,20 @@ describe("tier3.decide", () => {
 		expect(s).not.toMatch(/REASON_TEXT|RAW_TEXT/);
 	});
 
+	it("runs on a missing provider too, and can fail closed there", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		let seen: Tier3DecisionInput | undefined;
+		const r = await cascade(undefined, {
+			decide: (input) => {
+				seen = input;
+				return "block";
+			},
+		}, { tier2Config: { highRiskThreshold: 1 } }).defendToolResult({ body: "The meeting moved to 3pm." }, "t");
+		expect(seen?.tier3).toMatchObject({ ran: false, errored: false, skipReason: "No Tier 3 provider registered" });
+		expect(r.allowed).toBe(false);
+		warn.mockRestore();
+	});
+
 	it("sees failures as ran:false", async () => {
 		let seen: Tier3DecisionInput | undefined;
 		await cascade(throwing(), {
@@ -351,35 +383,116 @@ describe("tier3.timeoutMs, cancellation and concurrency", () => {
 		expect(peak).toBeGreaterThan(0);
 	});
 
-	it("queue wait doesn't count against the timeout", async () => {
+	it("a slot wait shorter than the timeout doesn't count against the call's own timeout", async () => {
+		// Two chunks, one slot: chunk 2 waits ~150ms, then runs ~150ms. Each part is under 250ms; the total isn't.
 		const provider: Tier3Provider = {
 			classify: async () => {
-				await new Promise((res) => setTimeout(res, 25));
+				await new Promise((res) => setTimeout(res, 150));
 				return { decision: "allow" };
 			},
 		};
-		const r = await tier3Only(provider, { maxTextLength: 4000, maxConcurrency: 1, timeoutMs: 60 }).defendToolResult(MULTI, "t");
-		expect(r.tier3ChunkSummary?.chunks).toBeGreaterThan(2);
+		const twoChunks = { records: [{ text: "a ".repeat(600) }, { text: "b ".repeat(600) }] };
+		const r = await tier3Only(provider, { maxTextLength: 2000, maxConcurrency: 1, timeoutMs: 250 }).defendToolResult(twoChunks, "t");
+		expect(r.tier3ChunkSummary?.chunks).toBe(2);
 		expect(r.tier3?.errored).toBeUndefined();
 	});
 
-	it("stopOnFirstBlock aborts the rest without counting them as failures", async () => {
-		let calls = 0;
+	it("waiting for a slot is bounded by timeoutMs, so a hung provider can't stall callers", async () => {
+		const provider: Tier3Provider = { classify: () => new Promise(() => {}) };
+		const t0 = performance.now();
+		const r = await tier3Only(provider, { maxTextLength: 4000, maxConcurrency: 1, timeoutMs: 40 }).defendToolResult(MULTI, "t");
+		expect(performance.now() - t0).toBeLessThan(400);
+		expect(r.tier3?.errored).toBe(true);
+	});
+
+	it("a timed-out call keeps its slot until the provider settles, so maxConcurrency holds", async () => {
+		let inFlight = 0;
+		let peak = 0;
 		const provider: Tier3Provider = {
-			classify: async (_t, ctx) => {
-				calls++;
-				if (ctx?.chunk?.index === 0) return { decision: "block" };
-				await new Promise((res) => setTimeout(res, 200));
+			classify: async () => {
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				await new Promise((res) => setTimeout(res, 120)); // ignores the abort signal
+				inFlight--;
 				return { decision: "allow" };
 			},
 		};
-		const t0 = performance.now();
+		const defense = tier3Only(provider, { maxConcurrency: 1, timeoutMs: 20 });
+		await defense.defendToolResults(Array.from({ length: 3 }, () => ({ value: { body: "x" }, toolName: "t" })));
+		await new Promise((res) => setTimeout(res, 300));
+		expect(peak).toBe(1);
+	});
+
+	it("stopOnFirstBlock aborts the rest without counting them as failures", async () => {
+		const abortedChunks: number[] = [];
+		const provider: Tier3Provider = {
+			classify: (_t, ctx) => {
+				if (ctx?.chunk?.index === 0) return Promise.resolve({ decision: "block" });
+				// Resolves only when aborted, so the test proves the abort happened.
+				return new Promise((res) =>
+					ctx?.signal?.addEventListener("abort", () => {
+						abortedChunks.push(ctx.chunk?.index ?? -1);
+						res({ decision: "allow" });
+					}),
+				);
+			},
+		};
 		const r = await tier3Only(provider, { maxTextLength: 4000, stopOnFirstBlock: true, onError: "block" }).defendToolResult(MULTI, "t");
-		expect(performance.now() - t0).toBeLessThan(150);
 		expect(r.allowed).toBe(false);
+		expect(abortedChunks.length).toBe((r.tier3ChunkSummary?.chunks ?? 0) - 1);
 		expect(r.tier3?.errored).toBeUndefined();
 		expect(r.coverageDegraded).toBeUndefined();
-		expect(calls).toBeGreaterThan(1);
+	});
+
+	it("stopOnFirstBlock + decide: decide sees the unreviewed chunks, and allowing them flags coverage", async () => {
+		let seen: Tier3DecisionInput | undefined;
+		const provider: Tier3Provider = {
+			classify: (_t, ctx) =>
+				ctx?.chunk?.index === 0
+					? Promise.resolve({ decision: "block" })
+					: new Promise((res) => ctx?.signal?.addEventListener("abort", () => res({ decision: "allow" }))),
+		};
+		const r = await tier3Only(provider, {
+			maxTextLength: 4000,
+			stopOnFirstBlock: true,
+			decide: (input) => {
+				seen = input;
+				return "allow";
+			},
+		}).defendToolResult(MULTI, "t");
+		expect(seen?.tier3).toMatchObject({ ran: true, decision: "block" });
+		expect((seen?.tier3 as { unreviewedChunks?: number }).unreviewedChunks).toBeGreaterThan(0);
+		expect(r.allowed).toBe(true);
+		expect(r.coverageDegraded).toBe(true);
+	});
+
+	it("a verdict with a throwing getter is a failure, not a crash", async () => {
+		const provider: Tier3Provider = {
+			classify: async () =>
+				({
+					decision: "allow",
+					get reason() {
+						throw new Error("getter");
+					},
+				}) as never,
+		};
+		const r = await tier3Only(provider).defendToolResult({ body: "x" }, "t");
+		expect(r.tier3?.errored).toBe(true);
+		expect(r.tier3?.skipReason).toMatch(/unreadable verdict/);
+	});
+
+	it("caller context can't overwrite toolName, mode or chunk", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		await tier3Only(provider).defendToolResult({ body: "x" }, "gmail", {
+			context: { userGoal: "g", toolName: "evil", mode: "cascade", chunk: { index: 9, total: 9 } } as never,
+		});
+		expect(seen[0]).toMatchObject({ toolName: "gmail", mode: "tier3_only", chunk: { index: 0, total: 1 }, userGoal: "g" });
 	});
 
 	it("passes mode, chunk and caller context to the provider", async () => {
@@ -449,16 +562,54 @@ describe("tier3 result hygiene", () => {
 		expect(JSON.stringify(events)).not.toContain("SECRET_BODY");
 	});
 
-	it("warns once after 20 consecutive failures, and re-arms after a success", async () => {
+	it("warns once after 20 consecutive failures on an instance, re-arms after a success, and ignores caller cancels", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-		await tier3Only(allowing()).defendToolResult({ body: "x" }, "t"); // reset the streak
-		const failing = tier3Only(throwing());
-		for (let i = 0; i < 25; i++) await failing.defendToolResult({ body: "x" }, "t");
+		let fail = true;
+		const provider: Tier3Provider = {
+			classify: async () => {
+				if (fail) throw new Error("bad key");
+				return { decision: "allow" };
+			},
+		};
+		const defense = tier3Only(provider);
 		const streak = () => warn.mock.calls.filter((c) => String(c[0]).includes("consecutive Tier 3 provider failures"));
+		for (let i = 0; i < 19; i++) await defense.defendToolResult({ body: "x" }, "t");
+		// Other instances don't share the streak.
+		await tier3Only(throwing()).defendToolResult({ body: "x" }, "t");
+		expect(streak()).toHaveLength(0);
+		await defense.defendToolResult({ body: "x" }, "t");
 		expect(streak()).toHaveLength(1);
-		await tier3Only(allowing()).defendToolResult({ body: "x" }, "t");
-		for (let i = 0; i < 20; i++) await failing.defendToolResult({ body: "x" }, "t");
+		fail = false;
+		await defense.defendToolResult({ body: "x" }, "t");
+		fail = true;
+		for (let i = 0; i < 20; i++) await defense.defendToolResult({ body: "x" }, "t");
+		expect(streak()).toHaveLength(2);
+
+		const cancelled = tier3Only({ classify: () => new Promise(() => {}) });
+		const aborted = AbortSignal.abort();
+		for (let i = 0; i < 25; i++) await cancelled.defendToolResult({ body: "x" }, "t", { signal: aborted });
 		expect(streak()).toHaveLength(2);
 		warn.mockRestore();
+	});
+
+	it("redacts header, JSON, Basic, Google-key and URL-userinfo secrets in error text", async () => {
+		const r = await tier3Only(
+			throwing('x-api-key: abc123SECRET api-key=def456SECRET {"apiKey":"ghi789SECRET"} Basic dXNlcjpwYXNz AIzaSyA1234567890abcdefghijk https://u:p4ss@host.com/x'),
+		).defendToolResult({ body: "x" }, "t");
+		const reason = r.tier3?.skipReason ?? "";
+		expect(reason).not.toMatch(/SECRET|dXNlcjpwYXNz|AIzaSyA1234|p4ss/);
+		expect(reason).toContain("https://host.com");
+	});
+
+	it("redacts attacker-chosen serialization error text", async () => {
+		const value = {
+			get body(): string {
+				throw new Error(`token=SECRETTOKEN ${"y".repeat(500)}`);
+			},
+		};
+		const r = await tier3Only(allowing()).defendToolResult(value, "t");
+		const reason = r.tier3?.skipReason ?? "";
+		expect(reason).not.toContain("SECRETTOKEN");
+		expect(reason.length).toBeLessThan(260);
 	});
 });

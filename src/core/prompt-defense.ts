@@ -300,6 +300,15 @@ function isNonStringScalar(v: unknown): boolean {
 // Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
 // (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
 // throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
+/** Copy only the caller-context fields, so a caller object can't overwrite toolName, mode or chunk. */
+function pickCallerContext(context: Tier3CallerContext | undefined): Tier3CallerContext {
+	if (!context) return {};
+	return {
+		...(typeof context.userGoal === "string" ? { userGoal: context.userGoal } : {}),
+		...(typeof context.toolDescription === "string" ? { toolDescription: context.toolDescription } : {}),
+	};
+}
+
 /** One signal that aborts when any input aborts. `undefined` when there are no inputs. */
 function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
 	const present = signals.filter((s): s is AbortSignal => s !== undefined);
@@ -1096,9 +1105,8 @@ let tier2UnavailableWarned = false;
 
 // Module-scoped for the same reason: hosts that build an instance per request.
 let tier3GenericOverrideWarned = false;
-let tier3ConsecutiveFailures = 0;
-let tier3FailureStreakWarned = false;
 const TIER3_FAILURE_STREAK_WARN = 20;
+const TIER3_CANCELLED = "Tier 3 call cancelled by caller";
 
 type Tier3AllowOverride = boolean | { maxTier2Score: number };
 type Tier3Decision = "block" | "allow" | "default";
@@ -1140,6 +1148,8 @@ export class PromptDefense {
 	private tier3OnEvent: ((event: Tier3Event) => void) | undefined = undefined;
 	private tier3IncludeRaw: boolean = true;
 	private tier3DecideWarned: boolean = false;
+	private tier3ConsecutiveFailures: number = 0;
+	private tier3FailureStreakWarned: boolean = false;
 	private tier2Required: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
@@ -1411,18 +1421,18 @@ export class PromptDefense {
 	}
 
 	private noteTier3Failure(errorCode: string): void {
-		tier3ConsecutiveFailures++;
-		if (tier3ConsecutiveFailures >= TIER3_FAILURE_STREAK_WARN && !tier3FailureStreakWarned) {
-			tier3FailureStreakWarned = true;
+		this.tier3ConsecutiveFailures++;
+		if (this.tier3ConsecutiveFailures >= TIER3_FAILURE_STREAK_WARN && !this.tier3FailureStreakWarned) {
+			this.tier3FailureStreakWarned = true;
 			console.warn(
-				`[defender] ${tier3ConsecutiveFailures} consecutive Tier 3 provider failures. Tier 3 may be misconfigured. Last error: ${errorCode}`,
+				`[defender] ${this.tier3ConsecutiveFailures} consecutive Tier 3 provider failures. Tier 3 may be misconfigured. Last error: ${errorCode}`,
 			);
 		}
 	}
 
 	private noteTier3Success(): void {
-		tier3ConsecutiveFailures = 0;
-		tier3FailureStreakWarned = false;
+		this.tier3ConsecutiveFailures = 0;
+		this.tier3FailureStreakWarned = false;
 	}
 
 	private warnIfRiskyOverride(provider: Tier3Provider): void {
@@ -1453,11 +1463,32 @@ export class PromptDefense {
 		stopSignal?: AbortSignal,
 	): Promise<Tier3CallOutcome> {
 		const waitSignal = anySignal([callerSignal, stopSignal]);
-		const release = this.tier3Semaphore ? await this.tier3Semaphore.acquire(waitSignal) : () => {};
-		if (!release || waitSignal?.aborted) {
-			release?.();
+		const notNeeded = (): Tier3CallOutcome | undefined => {
 			if (stopSignal?.aborted && !callerSignal?.aborted) return { kind: "aborted" };
-			return this.tier3Failed(ctx, "error", "Tier 3 call cancelled by caller");
+			if (callerSignal?.aborted) return this.tier3Failed(ctx, "error", TIER3_CANCELLED, false);
+			return undefined;
+		};
+		let release: () => void = () => {};
+		if (this.tier3Semaphore) {
+			// Waiting for a slot is bounded by timeoutMs too, so a hung provider can't stall every call.
+			const waitTimeout =
+				this.tier3TimeoutMs !== undefined ? AbortSignal.timeout(this.tier3TimeoutMs) : undefined;
+			const granted = await this.tier3Semaphore.acquire(anySignal([waitSignal, waitTimeout]));
+			if (!granted) {
+				return (
+					notNeeded() ??
+					this.tier3Failed(
+						ctx,
+						"timeout",
+						`Tier 3 call timed out after ${this.tier3TimeoutMs}ms waiting for a slot`,
+					)
+				);
+			}
+			release = granted;
+		}
+		if (waitSignal?.aborted) {
+			release();
+			return notNeeded() ?? { kind: "aborted" };
 		}
 		const controller = new AbortController();
 		let stopReason: "timeout" | "stopped" | "cancelled" | undefined;
@@ -1479,6 +1510,7 @@ export class PromptDefense {
 		const timer =
 			this.tier3TimeoutMs !== undefined ? setTimeout(() => stop("timeout"), this.tier3TimeoutMs) : undefined;
 		const t0 = performance.now();
+		let callStarted = false;
 		try {
 			const call = Promise.resolve().then(() =>
 				provider.classify(text, {
@@ -1487,8 +1519,10 @@ export class PromptDefense {
 					...(deadline !== undefined ? { deadline } : {}),
 				}),
 			);
-			// A provider that ignores the signal may reject after we stopped waiting.
-			call.catch(() => {});
+			callStarted = true;
+			// Hold the slot until the provider really settles, even after we stop waiting, so a slow
+			// provider can't push in-flight calls past maxConcurrency. Also swallows a late rejection.
+			call.then(release, release);
 			const settled = await Promise.race([
 				call.then(
 					(value) => ({ ok: true as const, value }),
@@ -1501,7 +1535,7 @@ export class PromptDefense {
 				if (settled === "timeout") {
 					return this.tier3Failed(ctx, "timeout", `Tier 3 provider timed out after ${this.tier3TimeoutMs}ms`);
 				}
-				return this.tier3Failed(ctx, "error", "Tier 3 call cancelled by caller");
+				return this.tier3Failed(ctx, "error", TIER3_CANCELLED, false);
 			}
 			if (!settled.ok) {
 				return this.tier3Failed(
@@ -1523,11 +1557,18 @@ export class PromptDefense {
 				...(verdict.usage ? { usage: verdict.usage } : {}),
 			});
 			return { kind: "verdict", verdict };
+		} catch (err) {
+			// A verdict with throwing getters (or any other surprise) is a provider failure, not a crash.
+			return this.tier3Failed(
+				ctx,
+				"error",
+				`Tier 3 provider returned an unreadable verdict: ${redactErrorText(describeError(err))}`,
+			);
 		} finally {
 			if (timer !== undefined) clearTimeout(timer);
 			callerSignal?.removeEventListener("abort", onCaller);
 			stopSignal?.removeEventListener("abort", onStop);
-			release();
+			if (!callStarted) release();
 		}
 	}
 
@@ -1535,8 +1576,10 @@ export class PromptDefense {
 		ctx: { mode: "cascade" | "tier3_only"; chunk?: { index: number; total: number } },
 		kind: "error" | "timeout",
 		skipReason: string,
+		countTowardStreak = true,
 	): Tier3CallOutcome {
-		this.noteTier3Failure(skipReason);
+		// A caller's own cancellation says nothing about provider health.
+		if (countTowardStreak) this.noteTier3Failure(skipReason);
 		this.emitTier3Event({
 			kind,
 			mode: ctx.mode,
@@ -1708,7 +1751,12 @@ export class PromptDefense {
 					const outcome = await this.callTier3(
 						provider,
 						c,
-						{ toolName, mode: "tier3_only", chunk: { index, total: chunks.length }, ...callOpts.context },
+						{
+							...pickCallerContext(callOpts.context),
+							toolName,
+							mode: "tier3_only",
+							chunk: { index, total: chunks.length },
+						},
 						callOpts.signal,
 						stopController?.signal,
 					);
@@ -1752,6 +1800,7 @@ export class PromptDefense {
 		let chunkFailures = 0;
 		let reviewRan = false;
 		let overflowChunks: number | undefined;
+		let abortedChunks = 0;
 
 		const perChunk = this.tier3MaxTextLength;
 		// Ceiling uses the per-chunk CONTENT budget (perChunk minus the carried overlap) so the content
@@ -1762,7 +1811,7 @@ export class PromptDefense {
 			joined = formatRecordsForTier3(value, depthFlag, ceiling, this.config.traversal.maxSize);
 		} catch (err) {
 			payloadError = true;
-			skipReason = `Tier 3 serialization error: ${describeError(err)}`;
+			skipReason = `Tier 3 serialization error: ${redactErrorText(describeError(err))}`;
 		}
 		// A depth cut also drops content the reviewer can't see (and it's invisible to the emitted-vs-input
 		// check, which stops at the same depth on both sides), so treat it as oversize → onOversize governs it.
@@ -1796,6 +1845,7 @@ export class PromptDefense {
 			const r = await reviewChunks(chunkTier3Input(joined, perChunk));
 			reviewRan = true;
 			chunkFailures = r.failed;
+			abortedChunks = r.aborted;
 			verdict = r.rep;
 			chunkSummary = {
 				chunks: r.total,
@@ -1840,7 +1890,7 @@ export class PromptDefense {
 				sanitized.metadata.sizeMetrics.sizeLimitHit;
 		} catch (err) {
 			analysisDegraded = true;
-			skipReason ??= `Tier 1 metadata error: ${describeError(err)}`;
+			skipReason ??= `Tier 1 metadata error: ${redactErrorText(describeError(err))}`;
 		}
 
 		// The Tier 3 part of the decision: a chunk verdict, onError, or the decide policy.
@@ -1857,6 +1907,7 @@ export class PromptDefense {
 							decision: verdictBlock ? "block" : "allow",
 							score: verdict.score,
 							refused: verdict.refused === true,
+							unreviewedChunks: chunkFailures + abortedChunks,
 						}
 					: { ran: false, errored: chunkFailures > 0, skipReason: skipReason ?? "Tier 3 skipped" },
 				toolName,
@@ -1871,6 +1922,8 @@ export class PromptDefense {
 			skipReason = `Tool result exceeds review ceiling; ${overflowChunks} chunks scanned, overflow unreviewed`;
 		}
 		const blocked = oversizeBlock || tier3Blocks;
+		// Chunks aborted by stopOnFirstBlock went unreviewed; that only matters if the call is allowed.
+		if (!blocked && abortedChunks > 0) depthFlag.coverageDegraded = true;
 		const meta: Tier3ResultMeta = {
 			...(chunkFailures > 0 ? { errored: true } : {}),
 			...(decidedBy ? { decidedBy } : {}),
@@ -2364,7 +2417,7 @@ export class PromptDefense {
 				outcome = await this.callTier3(
 					provider,
 					boundedChunk,
-					{ toolName, mode: "cascade", ...options.context },
+					{ ...pickCallerContext(options.context), toolName, mode: "cascade" },
 					options.signal,
 				);
 			} else {

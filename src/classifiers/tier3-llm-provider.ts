@@ -125,15 +125,13 @@ function capped(text: string, max: number): string {
 	return text.length > max ? text.slice(0, max) : text;
 }
 
-/** Strip control characters and newlines, neutralize markers, cap length. */
+/**
+ * Keep identifier characters only and cap the length. The tool name comes from the tool or MCP
+ * server and sits unwrapped in the prompt, so it must not be able to carry a sentence.
+ */
 export function sanitizeToolName(name: string | undefined): string {
 	if (!name) return "unknown";
-	const cleaned = neutralizeMarkers(
-		name
-			.replace(/[\p{Cc}\p{Cf}]/gu, " ")
-			.replace(/\s+/g, " ")
-			.trim(),
-	);
+	const cleaned = name.replace(/[^A-Za-z0-9_.:/-]+/g, "_").replace(/_+/g, "_");
 	return capped(cleaned, MAX_TOOL_NAME_CHARS) || "unknown";
 }
 
@@ -220,6 +218,10 @@ export function parseVerdictJson(text: string): { decision: "block" | "allow"; r
 	if (!body.startsWith("{") || !body.endsWith("}")) {
 		throw new Error("Tier 3 reply is not a single JSON object");
 	}
+	// JSON.parse keeps the last duplicate key, so two "decision" keys could flip the verdict.
+	if ((body.match(/"decision"\s*:/g) ?? []).length > 1) {
+		throw new Error("Tier 3 reply has more than one decision");
+	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(body);
@@ -254,15 +256,29 @@ export function createLlmTier3Provider(opts: LlmTier3ProviderOptions): Tier3Prov
 				json: { schema: VERDICT_JSON_SCHEMA },
 			});
 			const c = typeof completion === "string" ? { text: completion } : completion;
-			if (c === null || typeof c !== "object" || typeof c.text !== "string") {
-				throw new Error("Tier 3 completion must be a string or { text }");
-			}
+			if (c === null || typeof c !== "object") throw new Error("Tier 3 completion must be a string or { text }");
 			const latencyMs = performance.now() - t0;
 			const usage = c.usage ? { usage: c.usage } : {};
 			if (c.refused === true) {
 				return { decision: "block", refused: true, promptVersion, latencyMs, ...usage };
 			}
-			const verdict = parse(c.text);
+			if (typeof c.text !== "string") throw new Error("Tier 3 completion must be a string or { text }");
+			// An unusable reply (plain-text refusal, prose, two objects, truncation) is something the
+			// attacker can cause on purpose, so it blocks instead of failing open.
+			let verdict: { decision: "block" | "allow"; reason?: string };
+			try {
+				verdict = parse(c.text);
+			} catch {
+				return {
+					decision: "block",
+					refused: true,
+					reason: "unusable reply",
+					promptVersion,
+					raw: c.text,
+					latencyMs,
+					...usage,
+				};
+			}
 			const score =
 				typeof c.score === "number" && Number.isFinite(c.score) && c.score >= 0 && c.score <= 1
 					? { score: c.score }

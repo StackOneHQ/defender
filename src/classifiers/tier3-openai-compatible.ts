@@ -52,17 +52,18 @@ class HttpError extends Error {
 	}
 }
 
-const sleep = (ms: number, signal?: AbortSignal) =>
+const sleep = (ms: number, signal: AbortSignal) =>
 	new Promise<void>((resolve) => {
-		const t = setTimeout(resolve, ms);
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(t);
-				resolve();
-			},
-			{ once: true },
-		);
+		if (signal.aborted) return resolve();
+		const onAbort = () => {
+			clearTimeout(t);
+			resolve();
+		};
+		const t = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", onAbort, { once: true });
 	});
 
 /** Remove one leading reasoning block; reasoning can quote the content, including planted JSON. */
@@ -134,6 +135,7 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 			try {
 				parsed = await resp.json();
 			} catch {
+				if (signal.aborted) throw new Error("request aborted");
 				parsed = undefined;
 			}
 			if (!resp.ok) {
@@ -152,14 +154,17 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 					choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown; refusal?: unknown } }>;
 				}
 			)?.choices?.[0];
+			// Refusals, content filters, truncated and empty replies are unusable verdicts the attacker
+			// can cause, so they block rather than fail open.
+			const content = typeof choice?.message?.content === "string" ? stripThinking(choice.message.content) : "";
 			if (
 				choice?.finish_reason === "content_filter" ||
-				(typeof choice?.message?.refusal === "string" && choice.message.refusal.length > 0)
+				choice?.finish_reason === "length" ||
+				(typeof choice?.message?.refusal === "string" && choice.message.refusal.length > 0) ||
+				!content.trim()
 			) {
 				return { text: "", refused: true };
 			}
-			const content = typeof choice?.message?.content === "string" ? stripThinking(choice.message.content) : "";
-			if (!content.trim()) throw new Error("empty reply");
 			const u = (
 				parsed as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } }
 			).usage;

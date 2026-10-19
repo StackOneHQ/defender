@@ -368,7 +368,7 @@ interface Tier3DecisionInput {
 
   These are the package's hard guarantees. A policy function shouldn't be able to switch them off by accident.
 - **Synchronous only.** It runs on the hot path, and keeping it sync keeps the timeout and concurrency rules simple. A user who needs async data can precompute it.
-- **If it throws or returns anything else,** the package uses `"default"`, warns once, and emits an `onEvent` of kind `"error"`. A buggy policy then falls back to the documented behavior instead of failing open.
+- **If it throws or returns anything else,** the package uses `"default"`, warns once, and emits an `onEvent` of kind `"policy_error"`. A buggy policy then falls back to the documented behavior instead of failing open.
 - **The input is metadata only.** It never includes the content, `reason` or `raw`. The policy can't be steered by attacker text, and it isn't tempted to parse that text.
 - **Reporting:** the result says what decided the outcome, as `result.tier3.decidedBy: "policy" | "options"`.
 
@@ -509,3 +509,26 @@ A shared test corpus of prompts, delimiting cases and parse cases is checked int
 1. **Should `allowOverride` default to `false` in the next major?** It's the safer default for new users with general-purpose judges, but it changes behavior for existing users.
 2. **Is the strict JSON parser too strict for small local models?** If so, the docs could ship a "lenient" parser recipe and keep strict as the default.
 3. **Should `stopOnFirstBlock` default to `true` in the next major?** It's cheaper and gives the same verdict; only the counts change.
+
+## Changes after the PR review (#106)
+
+Two adversarial reviews of the implementation led to these changes. The sections above describe the original plan; where they differ, this list wins.
+
+- **Unusable replies block.** A parse failure, an empty reply, `finish_reason: "length"`, or a plain-text refusal becomes `decision: "block"`, `refused: true`. They no longer go through `onError`. The attacker could cause any of them on purpose, and in `tier3_only` the default `onError` would have allowed them.
+- **Duplicate `decision` keys are rejected.** `JSON.parse` keeps the last one.
+- **`toolName` is cut down to identifier characters** (`[A-Za-z0-9_.:/-]`) instead of being free text.
+- **Concurrency slots.** A timed-out call keeps its slot until the provider settles, so `maxConcurrency` holds even with providers that ignore the abort signal. Waiting for a slot is also limited to `timeoutMs`. That bounds a call at about 2 × `timeoutMs` and stops a hung provider from stalling every caller.
+- **`callTier3` never throws.** A verdict with throwing getters is a provider failure.
+- **The failure streak is per instance.** Caller cancellations don't count toward it.
+- **`stopOnFirstBlock` with `decide`.** `decide` gets `tier3.unreviewedChunks`. If the call ends up allowed with aborted chunks, `coverageDegraded` is set.
+- **Caller context can't overwrite `toolName`, `mode` or `chunk`.** Only `userGoal` and `toolDescription` are copied.
+- **Redaction covers more patterns:**
+  - header and JSON secrets
+  - `Basic` auth
+  - Google `AIza` keys
+  - URL userinfo
+  - serialization and Tier-1 error text
+
+  Input is capped before matching.
+- **No separate startup warning.** The existing one-time missing-provider warning covers that case.
+

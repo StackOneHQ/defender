@@ -166,8 +166,9 @@ The same shape works with the Vercel AI SDK, LangChain or plain `fetch`. Return 
 
 What defender does for you:
 - **Prompt.** `DEFAULT_TIER3_PROMPT` is used unless you pass `prompt`, either `{ system, user }` with `{{content}}`, `{{toolName}}`, `{{userGoal}}` and `{{toolDescription}}` placeholders (`{{content}}` exactly once, in `user`), or a function that returns messages. `result.tier3.promptVersion` reports which prompt ran.
-- **Delimiting.** The tool output is wrapped in marker lines with a random id per call, so it can't close its own wrapper. Look-alike markers inside it are rewritten. The tool name, `userGoal` and `toolDescription` are treated as untrusted too.
-- **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`. Anything else is a failure and goes to `onError`. This stops JSON planted in the tool output from choosing the verdict.
+- **Delimiting.** The tool output is wrapped in marker lines with a random id per call, so it can't close its own wrapper. Look-alike markers inside it are rewritten. `userGoal` and `toolDescription` are wrapped the same way, and the tool name is cut down to identifier characters.
+- **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`, with one `decision` key. This stops JSON planted in the tool output from choosing the verdict.
+- **Unusable replies block.** The attacker can cause these on purpose: a plain-text refusal, prose, two objects, or a reply cut off by the token limit. So they count as a block (`refused: true`), not as a failure. Give reasoning models enough `maxTokens`, or they get cut off and block.
 
 #### Write your own provider
 
@@ -201,7 +202,7 @@ It returns a `Tier3Verdict`:
 |---|---|---|
 | `decision` | yes | `"block"` or `"allow"` |
 | `score` | no | P(block) in [0, 1]. Used by `blockThreshold`. Must be a real probability, not "confidence in my decision" |
-| `refused` | no | The model refused. Always counts as a block |
+| `refused` | no | The model refused, or the reply was unusable. Always counts as a block |
 | `reason` | no | Short explanation. Untrusted: it can quote attacker text |
 | `raw`, `latencyMs`, `usage` | no | For logs and metrics |
 
@@ -217,7 +218,7 @@ const defense = createPromptDefense({
     escalationBand: { lower: 0.3, upper: 0.85 },  // cascade: when Tier 3 runs
     allowOverride: true,                          // cascade: can an "allow" undo a Tier 2 block?
     onError: 'tier2',                             // what a failure does
-    timeoutMs: 5000,                              // per call; default none
+    timeoutMs: 5000,                              // per call, and per wait for a slot; default none
     maxConcurrency: 8,                            // in-flight calls per instance; default unbounded
     maxTextLength: 10000,                         // per call (per chunk in tier3_only)
     maxChunks: 5,                                 // tier3_only
@@ -286,7 +287,8 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
 - `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.
-- Defender logs one warning after 20 consecutive provider failures, which usually means a bad key or model name. Use `onEvent` for proper alerting.
+- Defender logs one warning after 20 consecutive provider failures on one instance, which usually means a bad key or model name. Caller cancellations don't count. Use `onEvent` for proper alerting.
+- `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. Waiting for a slot is limited to `timeoutMs`, so one call takes at most about 2 × `timeoutMs`.
 
 **Data handling:** Tier 3 sends tool output to the endpoint you configure. Don't log `reason` or `raw` where tool content mustn't go, and don't show them to the agent; set `includeRaw: false` if needed.
 
