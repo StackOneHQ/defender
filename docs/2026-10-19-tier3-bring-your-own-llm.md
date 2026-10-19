@@ -561,7 +561,7 @@ Two adversarial reviews of the implementation led to these changes. The sections
 
 ### Changes after the fourth adversarial review
 
-- **Layer 3 never follows redirects** (`redirect: "error"`). Fetch keeps custom auth headers such as Azure's `api-key` across origins, and resends the tool content.
+- **Layer 3 never follows redirects** (`redirect: "manual"`). Fetch keeps custom auth headers such as Azure's `api-key` across origins, and resends the tool content. A 3xx is returned unfollowed and reported as `HTTP 3xx`, with no retry.
 - **Providers can't set result meta fields.** `skipReason`, `errored`, `overrideApplied`, `overrideSuppressed` and `decidedBy` are stripped from provider verdicts.
 - **A refusal resets the failure streak**, and a failure resets the refusal streak, so both warnings mean what "consecutive" says.
 - **`maxConcurrency` without `timeoutMs` logs a warning**, because a call that never settles would hold its slot forever.
