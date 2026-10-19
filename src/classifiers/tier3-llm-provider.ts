@@ -6,6 +6,7 @@
  * untrusted text, strict reply parsing, and refusal handling.
  */
 import type { Tier3Context, Tier3Provider, Tier3Verdict } from "../types";
+import { truncate } from "../utils/text";
 import { GENERIC_LLM_PROVIDER } from "./tier3-orchestrator";
 
 export type LlmMessage = { role: "system" | "user"; content: string };
@@ -122,7 +123,7 @@ function wrap(name: string, text: string): { wrapped: string; open: string; clos
 }
 
 function capped(text: string, max: number): string {
-	return text.length > max ? text.slice(0, max) : text;
+	return truncate(text, max);
 }
 
 /**
@@ -238,7 +239,7 @@ export function parseVerdictJson(text: string): { decision: "block" | "allow"; r
 	const { decision, reason } = parsed as { decision?: unknown; reason?: unknown };
 	const d = typeof decision === "string" ? decision.toLowerCase() : undefined;
 	if (d !== "block" && d !== "allow") throw new Error("Tier 3 reply has no valid decision");
-	return typeof reason === "string" ? { decision: d, reason: reason.slice(0, MAX_REASON_CHARS) } : { decision: d };
+	return typeof reason === "string" ? { decision: d, reason: truncate(reason, MAX_REASON_CHARS) } : { decision: d };
 }
 
 /** Decoded top-level member names of a valid JSON object, in order, duplicates kept. */

@@ -119,6 +119,124 @@
 			"expect": {
 				"skipReason": "Tier 3 provider error: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
 			}
+		},
+		{
+			"id": "authorization-scheme-and-credential",
+			"input": {
+				"message": "Authorization: Token abc123SECRET rejected"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: Authorization: [redacted] [redacted] rejected"
+			}
+		},
+		{
+			"id": "password-with-spaces",
+			"input": {
+				"message": "password=my secret pass&next=1"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: password=[redacted]&next=1"
+			}
+		},
+		{
+			"id": "python-repr-dict",
+			"input": {
+				"message": "{'api_key': 'abcSECRET', 'model': 'm'}"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {'api_key': '[redacted]', 'model': 'm'}"
+			}
+		},
+		{
+			"id": "non-http-url-userinfo",
+			"input": {
+				"message": "ftp://user:pw@host.example.com/x and wss://user:pw@ws.example.com/y"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: ftp://host.example.com and wss://ws.example.com"
+			}
+		},
+		{
+			"id": "provider-token-shapes",
+			"input": {
+				"message": "sk_live_abcdefghijkl1234 ghp_abcdefghijklmnopqrstu1234 AKIAABCDEFGHIJKLMNOP xoxb-1234-5678-abcdefgh"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: sk_[redacted] ghp_[redacted] AKIA[redacted] xox-[redacted]"
+			}
+		},
+		{
+			"id": "jwt",
+			"input": {
+				"message": "rejected credential eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: rejected credential [redacted-jwt]"
+			}
+		},
+		{
+			"id": "cookie-header",
+			"input": {
+				"message": "Cookie: session=SECRETVAL; other=1"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: Cookie: [redacted]"
+			}
+		},
+		{
+			"id": "unquoted-name-quoted-value",
+			"input": {
+				"message": "password: 'hunter2' and token=\"abcSECRETvalue\""
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: password: '[redacted]' and token=\"[redacted]\""
+			}
+		},
+		{
+			"id": "more-provider-token-shapes",
+			"input": {
+				"message": "hf_abcdefghijklmnopqrstuv glpat-abcdefghijklmnopqrst npm_abcdefghijklmnopqrstuvwxyz0123456789 SG.abcdefghijklmnopqr.abcdefghijklmnopqrstu"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: hf_[redacted] glpat-[redacted] npm_[redacted] SG.[redacted]"
+			}
+		},
+		{
+			"id": "password-like-names",
+			"input": {
+				"message": "pwd: hunter2 credentials=abcSECRET passphrase: my long phrase"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: pwd: [redacted]"
+			}
+		},
+		{
+			"id": "private-key-block",
+			"input": {
+				"message": "bad key -----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: bad key [redacted-private-key]"
+			}
+		},
+		{
+			"id": "prose-not-over-redacted",
+			"input": {
+				"message": "Token limit exceeded: 8192 > 4096; invalid token supplied; Cookie: header too large; passed: 3 tests"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: Token limit exceeded: 8192 > 4096; invalid token supplied; Cookie: header too large; passed: 3 tests"
+			}
+		},
+		{
+			"id": "astral-cap-no-split",
+			"description": "The length cap never leaves half of a surrogate pair.",
+			"input": {
+				"message": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀…"
+			}
 		}
 	]
 }

@@ -23,6 +23,22 @@ import {
 } from "../src/index";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance");
+const FORMAT_VERSION = 1;
+const MARKER_RE = /(<<<(?:END_)?[A-Z_]+ id=)([0-9a-f]{16})(>>>)/g;
+
+/**
+ * Replace each real marker id with <ID1>, <ID2>… by first appearance across all messages, so the
+ * fixture still pins that an open/close pair shares an id and that separate blocks get separate ids.
+ */
+function normalizeIds(contents: string[]): string[] {
+	const ids = new Map<string, string>();
+	return contents.map((c) =>
+		c.replace(MARKER_RE, (_m, pre: string, id: string, post: string) => {
+			if (!ids.has(id)) ids.set(id, `<ID${ids.size + 1}>`);
+			return `${pre}${ids.get(id)}${post}`;
+		}),
+	);
+}
 const UPDATE = process.env.CONFORMANCE_UPDATE === "1";
 
 // biome-ignore lint/suspicious/noExplicitAny: fixture input is untyped JSON, shaped per area
@@ -34,9 +50,10 @@ type JudgeVerdict = Record<string, unknown> | { throw: string };
 type Judge = { default: JudgeVerdict; rules?: Array<{ ifContains: string; then: JudgeVerdict }> };
 
 /** A provider that answers from a declarative script, so fixtures stay language-neutral. */
-function scriptedJudge(judge: Judge): Tier3Provider {
+function scriptedJudge(judge: Judge, counter?: { calls: number }): Tier3Provider {
 	return {
 		classify: async (text) => {
+			if (counter) counter.calls++;
 			const v = judge.rules?.find((r) => text.includes(r.ifContains))?.then ?? judge.default;
 			if ("throw" in v) throw new Error(String(v.throw));
 			return v as never;
@@ -57,6 +74,7 @@ const pickTier3 = (t: DefenseResult["tier3"]) => {
 		"overrideSuppressed",
 		"decidedBy",
 		"skipReason",
+		"note",
 	] as const) {
 		if (t[k] !== undefined) out[k] = t[k];
 	}
@@ -94,12 +112,8 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 		try {
 			if (prompt) createLlmTier3Provider({ complete: async () => "", prompt });
 			const msgs = buildTier3Messages(prompt ?? DEFAULT_TIER3_PROMPT, input.text, input.ctx);
-			return {
-				messages: msgs.map((m) => ({
-					role: m.role,
-					content: m.content.replace(/(<<<(?:END_)?[A-Z_]+ id=)[0-9a-f]{16}(>>>)/g, "$1<ID>$2"),
-				})),
-			};
+			const contents = normalizeIds(msgs.map((m) => m.content));
+			return { messages: msgs.map((m, i) => ({ role: m.role, content: contents[i] })) };
 		} catch {
 			return { error: true };
 		}
@@ -127,7 +141,8 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 	// payload + options + scripted judge (+ decide) → the decision.
 	"tier3-policy": async (input) => {
 		const tier3: NonNullable<PromptDefenseOptions["tier3"]> = { ...input.tier3 };
-		if (input.judge) tier3.provider = scriptedJudge(input.judge);
+		const counter = { calls: 0 };
+		if (input.judge) tier3.provider = scriptedJudge(input.judge, counter);
 		if (input.decide) {
 			const d = input.decide as string;
 			tier3.decide = () => {
@@ -162,6 +177,8 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 			tier3: pickTier3(r.tier3),
 			coverageDegraded: r.coverageDegraded === true,
 			...(r.tier3ChunkSummary ? { chunkSummary: r.tier3ChunkSummary } : {}),
+			// How many chunks the judge was actually asked about (stopOnFirstBlock skips the rest).
+			...(input.judge ? { judgeCalls: counter.calls } : {}),
 		};
 	},
 };
@@ -169,11 +186,26 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 const files = readdirSync(DIR).filter((f) => f.endsWith(".json"));
 
 describe("conformance fixtures", () => {
-	it("every fixture file has a known area", () => {
+	it("every fixture file has a known area and format version", () => {
 		for (const f of files) {
 			const fx = JSON.parse(readFileSync(join(DIR, f), "utf8")) as Fixture;
 			expect(Object.keys(ADAPTERS), f).toContain(fx.area);
+			expect(fx.version, f).toBe(FORMAT_VERSION);
 		}
+	});
+
+	// Not expressible as a fixture: marker ids are random per call. A port's runner should check the same.
+	it("marker ids are random per call and distinct per block", () => {
+		const render = () =>
+			buildTier3Messages(DEFAULT_TIER3_PROMPT, "c", { userGoal: "g", toolDescription: "d" })
+				.map((m) => m.content)
+				.join("\n");
+		const idsOf = (text: string) => [...text.matchAll(MARKER_RE)].map((m) => m[2]);
+		const a = idsOf(render());
+		const b = idsOf(render());
+		expect(a).toHaveLength(6); // 3 blocks × open/close
+		expect(new Set(a).size).toBe(3);
+		expect(a.some((id) => b.includes(id))).toBe(false);
 	});
 
 	for (const file of files) {
