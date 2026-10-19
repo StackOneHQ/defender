@@ -153,7 +153,9 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 				attempt < retries && !signal.aborted && (req.deadline === undefined || Date.now() + 250 < req.deadline);
 			let resp: Response;
 			try {
-				resp = await doFetch(url, { method: "POST", headers, body, signal });
+				// Never follow redirects: fetch keeps custom auth headers (e.g. Azure `api-key`) and sends
+				// the tool content to whatever origin a 3xx points at.
+				resp = await doFetch(url, { method: "POST", headers, body, signal, redirect: "error" });
 			} catch (err) {
 				if (signal.aborted) throw new Error("request aborted");
 				if (canRetry()) {

@@ -57,7 +57,12 @@ const defense = createPromptDefense({
 	blockHighRisk: true,
 	enableTier3: true,
 	defenderMode: "tier3_only",
-	tier3: { provider, timeoutMs: 15_000 },
+	tier3: {
+		provider,
+		timeoutMs: 15_000,
+		// tier3_only fails open on a judge outage by default; "block" fails closed.
+		onError: "block",
+	},
 });
 
 const record = {
@@ -76,4 +81,5 @@ const r = await defense.defendToolResult(record, "hris_list_employees", {
 });
 console.log(`Judge: ${model}`);
 console.log(`allowed=${r.allowed} decision=${r.tier3?.decision} promptVersion=${r.tier3?.promptVersion}`);
+// `reason` is model text that can quote the attacker. Fine for a log line, never feed it to the agent.
 console.log(`reason: ${r.tier3?.reason ?? r.tier3?.skipReason}`);

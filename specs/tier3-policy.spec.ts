@@ -615,6 +615,47 @@ describe("tier3.timeoutMs, cancellation and concurrency", () => {
 describe("tier3 result hygiene", () => {
 	afterEach(() => setDefaultTier3Provider(null));
 
+	it("a provider can't set defender's result meta fields", async () => {
+		const provider: Tier3Provider = {
+			classify: async () =>
+				({ decision: "allow", errored: true, decidedBy: "policy", overrideApplied: true, skipReason: "x" }) as never,
+		};
+		const r = await cascade(provider, { allowOverride: false }).defendToolResult({ body: INJ }, "t");
+		expect(r.tier3).toMatchObject({ decision: "allow", overrideSuppressed: true });
+		expect(r.tier3?.overrideApplied).toBeUndefined();
+		expect(r.tier3?.errored).toBeUndefined();
+		expect(r.tier3?.decidedBy).toBeUndefined();
+		expect(r.tier3?.skipReason).toBeUndefined();
+	});
+
+	it("warns when maxConcurrency is set without timeoutMs", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		tier3Only(allowing(), { maxConcurrency: 2 });
+		expect(warn.mock.calls.some((c) => String(c[0]).includes("without tier3.timeoutMs"))).toBe(true);
+		warn.mockClear();
+		tier3Only(allowing(), { maxConcurrency: 2, timeoutMs: 1000 });
+		expect(warn.mock.calls.some((c) => String(c[0]).includes("without tier3.timeoutMs"))).toBe(false);
+		warn.mockRestore();
+	});
+
+	it("a refusal breaks a run of provider failures", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		let mode: "fail" | "refuse" = "fail";
+		const defense = tier3Only({
+			classify: async () => {
+				if (mode === "fail") throw new Error("boom");
+				return { decision: "block", refused: true };
+			},
+		});
+		for (let i = 0; i < 19; i++) await defense.defendToolResult({ body: "x" }, "t");
+		mode = "refuse";
+		await defense.defendToolResult({ body: "x" }, "t");
+		mode = "fail";
+		await defense.defendToolResult({ body: "x" }, "t");
+		expect(warn.mock.calls.filter((c) => String(c[0]).includes("consecutive Tier 3 provider failures"))).toHaveLength(0);
+		warn.mockRestore();
+	});
+
 	it("includeRaw:false drops raw", async () => {
 		const r = await tier3Only(allowing(), { includeRaw: false }).defendToolResult({ body: "x" }, "t");
 		expect(r.tier3).not.toHaveProperty("raw");

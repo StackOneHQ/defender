@@ -155,7 +155,7 @@ const provider = createLlmTier3Provider({
   complete: async ({ messages, signal }) => {
     const system = messages.find((m) => m.role === 'system')?.content;
     const r = await anthropic.messages.create(
-      { model: 'claude-haiku-4-5', max_tokens: 300, system, messages: messages.filter((m) => m.role !== 'system') },
+      { model: 'claude-haiku-5-5', max_tokens: 300, system, messages: messages.filter((m) => m.role !== 'system') },
       { signal },
     );
     const text = r.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
@@ -228,7 +228,7 @@ const defense = createPromptDefense({
     stopOnFirstBlock: false,                      // tier3_only: abort the other chunks after a block
     blockThreshold: 0.622,                        // optional; decide on score instead of the decision word
     includeRaw: true,                             // keep result.tier3.raw
-    onEvent: (e) => metrics.record(e),            // one event per call; no content
+    onEvent: (e) => metrics.record(e),            // one event per call; no content, reason or raw
   },
 });
 ```
@@ -290,9 +290,9 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.
 - Defender logs one warning after 20 consecutive provider failures on one instance, which usually means a bad key or model name. Caller cancellations don't count. A separate warning fires after 20 consecutive refusals or unusable replies, which usually means the model doesn't follow the JSON format or runs out of `maxTokens`. Use `onEvent` for proper alerting.
-- `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. A call that never finishes gives its slot back after 10 × `timeoutMs`. Waiting for a slot is limited to 10 × `timeoutMs` too, so a deep queue of healthy calls doesn't fail, and a hung provider can't stall callers forever. When the queue is overloaded, `onError` decides: use `"block"` to fail closed.
+- `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. A call that never finishes gives its slot back after 10 × `timeoutMs`. Waiting for a slot is limited to 10 × `timeoutMs` too, so a deep queue of healthy calls doesn't fail, and a hung provider can't stall callers forever. When the queue is overloaded, `onError` decides: use `"block"` to fail closed. Set `timeoutMs` whenever you set `maxConcurrency`: without it, a call that never settles holds its slot forever (defender warns about this).
 
-**Data handling:** Tier 3 sends tool output to the endpoint you configure. Don't log `reason` or `raw` where tool content mustn't go, and don't show them to the agent; set `includeRaw: false` if needed.
+**Data handling:** Tier 3 sends tool output to the endpoint you configure. `skipReason` and event `errorCode` carry provider error text after best-effort redaction, so a custom `complete` should throw short, fixed messages. Don't log `reason` or `raw` where tool content mustn't go, and don't show them to the agent; set `includeRaw: false` if needed.
 
 ### Understanding `allowed` vs `riskLevel`
 
@@ -366,7 +366,12 @@ interface DefenseResult {
 
   // Tier 3 verdict — present only when Tier 3 ran (use `"tier3" in result` to probe).
   // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
-  tier3?: { decision: 'block' | 'allow'; score?: number; raw?: unknown; latencyMs?: number }
+  tier3?: {
+    decision?: 'block' | 'allow'; score?: number; reason?: string; refused?: boolean; promptVersion?: string;
+    raw?: unknown; latencyMs?: number; usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    skipReason?: string;        // set instead of decision when Tier 3 didn't produce a verdict
+    errored?: boolean; overrideApplied?: boolean; overrideSuppressed?: boolean; decidedBy?: 'policy' | 'options';
+  };
        | { skipReason: string };
   // tier3_only chunk telemetry — present only when the chunk-review path ran.
   tier3ChunkSummary?: { chunks: number; blocked: number; blockingChunk?: number; oversize?: boolean };

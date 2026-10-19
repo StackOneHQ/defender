@@ -224,6 +224,8 @@ describe("createOpenAICompatibleTier3Provider", () => {
 		expect(body.max_completion_tokens).toBe(300);
 		expect(body).not.toHaveProperty("temperature");
 		expect(body.response_format.type).toBe("json_schema");
+		// Redirects would carry custom auth headers and the tool content to another origin.
+		expect(init?.redirect).toBe("error");
 		expect(v).toMatchObject({ decision: "allow", usage: { totalTokens: 5 } });
 	});
 

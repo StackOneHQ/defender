@@ -22,7 +22,7 @@ function pickEndpoint(): { baseURL: string; apiKey?: string; model: string } | u
 			model: TIER3_MODEL ?? "gemini-3.8-flash",
 		};
 	}
-	if (OLLAMA) return { baseURL: "http://localhost:11434/v1", model: TIER3_MODEL ?? "qwen2.5:3b" };
+	if (OLLAMA === "1") return { baseURL: "http://localhost:11434/v1", model: TIER3_MODEL ?? "qwen2.5:3b" };
 	return undefined;
 }
 
@@ -71,5 +71,6 @@ for (const { label, value } of samples) {
 		context: { userGoal: "Summarize my unread email" },
 	});
 	console.log(`\n${label}: allowed=${r.allowed}`);
+	// `reason` is model text that can quote the attacker. Fine for a log line, never feed it to the agent.
 	console.log(`  judge said: ${r.tier3?.decision ?? "-"} (${r.tier3?.reason ?? r.tier3?.skipReason})`);
 }

@@ -40,8 +40,16 @@ const plannedCalls: ToolCall[] = [
 	{ name: "gmail_get_message", args: { id: "msg_42" } },
 ];
 
+const messages: string[] = [];
 for (const call of plannedCalls) {
 	console.log(`model calls ${call.name}`);
 	const toolMessage = await runTool(call);
+	messages.push(toolMessage);
 	console.log(`  → tool message to model: ${toolMessage.slice(0, 100)}`);
+}
+
+// Self-check so `pnpm examples:smoke` fails if behavior regresses.
+if (messages[0].includes("withheld") || !messages[1].includes("withheld")) {
+	console.error("unexpected result: the calendar result must pass and the poisoned email must be withheld");
+	process.exit(1);
 }

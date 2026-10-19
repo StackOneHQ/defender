@@ -245,7 +245,7 @@ First the package computes `tier2WouldBlock`: whether Tier 2 alone would block t
 - **When `tier2WouldBlock` is false,** Tier 2 wasn't going to block. A Tier-3 `allow` changes nothing, and a Tier-3 `block` adds a block under every setting.
 - **Which score `x` is compared with.** In single-head mode, it's the top chunk's score before density damping. In multihead mode, it's the main-head score of the top blocking chunk; multihead has no damping. When the aux head vetoes the block, `tier2WouldBlock` is false and the setting doesn't come into play.
 - **Damping is skipped on purpose.** Density damping can be pushed down by padding the payload with benign strings. Comparing with the damped score would let an attacker move a confident Tier-2 block into the range the judge is allowed to undo.
-- **Validation:** `x` must satisfy `0 < x <= 1`. An invalid value warns and falls back to `true`, the same pattern as `escalationBand`.
+- **Validation:** `x` must satisfy `0 < x <= 1`. An invalid value warns and falls back to `false` (the restrictive setting), so a typo can't widen what an allow undoes.
 - **No "this is a no-op" warning.** In multihead mode blocks start at `mainThreshold`, not `highRiskThreshold`, so a warning keyed to either would be wrong in some setups.
 - **`tier3_only`:** the setting doesn't apply. The package warns once if it's set there.
 - **New result fields** say what happened:
@@ -326,7 +326,7 @@ onEvent?: (e: Tier3Event) => void;
 
 - The hook is called synchronously and its exceptions are swallowed.
 - It lets operators alert on a broken Tier 3, such as a wrong key or an exhausted quota. Today that looks the same as "everything allowed".
-- Event payloads never include the content, `reason` or `raw`.
+- Event payloads never include the content, `reason` or `raw`. `errorCode` is provider error text after best-effort redaction.
 - **Loud log without a hook:** after 20 consecutive Tier-3 failures on one instance, the package logs one warning with the latest `errorCode`, and a success re-arms it. That catches a setup that never works, such as a model that rejects every request.
 - **No circuit breaker that stops calling the provider.** Skipping Tier 3 changes verdicts, so that's the operator's call, made through `onEvent`.
 
@@ -558,4 +558,16 @@ Two adversarial reviews of the implementation led to these changes. The sections
 - **Loopback means `localhost`, `::1`, or a dotted-quad `127.x.x.x`.** `127.evil.com` is rejected. Credentials in `baseURL` are rejected. An existing `/chat/completions` path isn't doubled.
 - **Redaction handles escaped quotes,** and no longer redacts `max_tokens`-style names.
 - **`tier3_only` + `onError: "block"` with no provider warns once and emits `missing_provider`.**
+
+### Changes after the fourth adversarial review
+
+- **Layer 3 never follows redirects** (`redirect: "error"`). Fetch keeps custom auth headers such as Azure's `api-key` across origins, and resends the tool content.
+- **Providers can't set result meta fields.** `skipReason`, `errored`, `overrideApplied`, `overrideSuppressed` and `decidedBy` are stripped from provider verdicts.
+- **A refusal resets the failure streak**, and a failure resets the refusal streak, so both warnings mean what "consecutive" says.
+- **`maxConcurrency` without `timeoutMs` logs a warning**, because a call that never settles would hold its slot forever.
+- **Examples:**
+  - 04 sets `onError: "block"`.
+  - 01, 05 and 06 check their own results, so `examples:smoke` fails on a behavior regression.
+  - 03 needs `OLLAMA=1`.
+  - Both LLM examples note that `reason` is untrusted.
 

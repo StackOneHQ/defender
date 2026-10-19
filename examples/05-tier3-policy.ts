@@ -11,6 +11,14 @@
  */
 import { createPromptDefense, type Tier3Event, type Tier3Provider } from "@stackone/defender";
 
+// Self-check so `pnpm examples:smoke` fails if behavior regresses.
+const expect = (ok: boolean, what: string) => {
+	if (!ok) {
+		console.error(`unexpected result: ${what}`);
+		process.exit(1);
+	}
+};
+
 // A judge that always says "allow": what a judge fooled by the attacker would do.
 const fooledJudge: Tier3Provider = { classify: async () => ({ decision: "allow", reason: "looks fine" }) };
 // A judge that is down.
@@ -35,6 +43,7 @@ for (const allowOverride of [true, false, { maxTier2Score: 0.8 }] as const) {
 		tier3: { provider: fooledJudge, allowOverride, escalationBand: { lower: 0.3, upper: 1 } },
 	});
 	const r = await defense.defendToolResult(injection, "gmail_get_message");
+	expect(r.allowed === (allowOverride === true), `allowOverride ${JSON.stringify(allowOverride)}`);
 	console.log(
 		`   ${JSON.stringify(allowOverride).padEnd(22)} allowed=${r.allowed} applied=${!!r.tier3?.overrideApplied} suppressed=${!!r.tier3?.overrideSuppressed}`,
 	);
@@ -50,6 +59,7 @@ for (const onError of ["allow", "block"] as const) {
 		tier3: { provider: brokenJudge, onError },
 	});
 	const r = await defense.defendToolResult({ body: "hello" }, "gmail_get_message");
+	expect(r.allowed === (onError === "allow"), `onError ${onError}`);
 	console.log(`   ${onError.padEnd(6)} allowed=${r.allowed} errored=${!!r.tier3?.errored} (${r.tier3?.skipReason})`);
 }
 
@@ -69,6 +79,7 @@ const decideDefense = createPromptDefense({
 });
 for (const tool of ["internal_wiki_search", "gmail_get_message"]) {
 	const r = await decideDefense.defendToolResult(injection, tool);
+	expect(r.allowed === (tool === "internal_wiki_search"), `decide for ${tool}`);
 	console.log(`   ${tool.padEnd(22)} allowed=${r.allowed} decidedBy=${r.tier3?.decidedBy}`);
 }
 
@@ -107,6 +118,11 @@ for (const stopOnFirstBlock of [false, true]) {
 	});
 	const t0 = performance.now();
 	const r = await defense.defendToolResult(bigPayload, "crm_list_customers");
+	expect(!r.allowed, "the large payload with an injection must block");
+	expect(
+		!stopOnFirstBlock || events.length < (r.tier3ChunkSummary?.chunks ?? 0),
+		"stopOnFirstBlock must skip chunks",
+	);
 	console.log(
 		`   stopOnFirstBlock=${String(stopOnFirstBlock).padEnd(5)} allowed=${r.allowed} chunks=${r.tier3ChunkSummary?.chunks} verdicts=${events.length} ${Math.round(performance.now() - t0)}ms`,
 	);

@@ -1108,6 +1108,8 @@ let tier2UnavailableWarned = false;
 let tier3GenericOverrideWarned = false;
 const TIER3_FAILURE_STREAK_WARN = 20;
 const TIER3_CANCELLED = "Tier 3 call cancelled by caller";
+// Result fields only defender may set; stripped from provider verdicts.
+const META_KEYS = ["skipReason", "errored", "overrideApplied", "overrideSuppressed", "decidedBy"] as const;
 // A call that never settles keeps its concurrency slot for at most this many timeouts.
 const TIER3_SLOT_CEILING_FACTOR = 10;
 const TIER3_MAX_TIMEOUT_MS = Math.floor(2_147_483_647 / TIER3_SLOT_CEILING_FACTOR);
@@ -1416,6 +1418,11 @@ export class PromptDefense {
 				);
 			}
 		}
+		if (this.tier3Semaphore && this.tier3TimeoutMs === undefined) {
+			console.warn(
+				"[defender] tier3.maxConcurrency is set without tier3.timeoutMs: one provider call that never settles holds its slot forever and queued calls wait with it. Set timeoutMs.",
+			);
+		}
 		this.tier3StopOnFirstBlock = t3?.stopOnFirstBlock === true;
 		if (typeof t3?.onEvent === "function") this.tier3OnEvent = t3.onEvent;
 		this.tier3IncludeRaw = t3?.includeRaw !== false;
@@ -1456,6 +1463,9 @@ export class PromptDefense {
 	}
 
 	private noteTier3Refusal(): void {
+		// A refusal is a reply, so it breaks a run of provider failures.
+		this.tier3ConsecutiveFailures = 0;
+		this.tier3FailureStreakWarned = false;
 		this.tier3ConsecutiveRefusals++;
 		if (this.tier3ConsecutiveRefusals >= TIER3_FAILURE_STREAK_WARN && !this.tier3RefusalStreakWarned) {
 			this.tier3RefusalStreakWarned = true;
@@ -1703,6 +1713,11 @@ export class PromptDefense {
 		// A refusal is attacker-triggerable, so it never reads as an allow.
 		if (normalized.refused === true && normalized.decision !== "block") {
 			normalized = { ...normalized, decision: "block" };
+		}
+		// Defender owns the result meta fields; a provider can't set them.
+		if (META_KEYS.some((k) => k in normalized)) {
+			normalized = { ...normalized };
+			for (const k of META_KEYS) delete (normalized as unknown as Record<string, unknown>)[k];
 		}
 		verdict = normalized;
 		// Normalize `score` here, before it can reach either the decision path or
