@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.1](https://github.com/StackOneHQ/defender/compare/defender-v0.9.0...defender-v0.9.1) (2026-10-19)
+
+
+### Features
+
+* **ENG-3495:** bring-your-own-LLM Tier 3 with policy options and examples ([#106](https://github.com/StackOneHQ/defender/issues/106)) ([1057078](https://github.com/StackOneHQ/defender/commit/1057078d35e5369a32fa49e3f66ecdf2697b2e6b))
+
+
+### Performance Improvements
+
+* **deps-dev:** use native TypeScript for checks and declaration builds ([#102](https://github.com/StackOneHQ/defender/issues/102)) ([d6846e8](https://github.com/StackOneHQ/defender/commit/d6846e80a76e626fcc31531ea8e75daeeeebc217))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.9.1 ([#107](https://github.com/StackOneHQ/defender/issues/107)) ([80cecb0](https://github.com/StackOneHQ/defender/commit/80cecb072026e21fed53b0a41cee7d40a31fda07))
+
 ## [0.9.0](https://github.com/StackOneHQ/defender/compare/defender-v0.8.3...defender-v0.9.0) (2026-10-09)
 
 
