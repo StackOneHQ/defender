@@ -36,13 +36,13 @@ const provider = createLlmTier3Provider({
 				messages: messages.filter((m) => m.role !== "system"),
 			}),
 		});
-		const json = (await res.json()) as {
-			content?: Array<{ type: string; text?: string }>;
-			stop_reason?: string;
-			error?: { type?: string };
-		};
-		// Keep error text short: it ends up in result.tier3.skipReason.
-		if (!res.ok) throw new Error(`HTTP ${res.status} ${json.error?.type ?? ""}`);
+		// Check the status before parsing: an error page may not be JSON. Keep error text short,
+		// it ends up in result.tier3.skipReason.
+		if (!res.ok) {
+			const err = (await res.json().catch(() => undefined)) as { error?: { type?: string } } | undefined;
+			throw new Error(`HTTP ${res.status} ${err?.error?.type ?? ""}`.trim());
+		}
+		const json = (await res.json()) as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
 		const text = (json.content ?? []).map((b) => (b.type === "text" ? (b.text ?? "") : "")).join("");
 		return { text, refused: json.stop_reason === "refusal" };
 	},
