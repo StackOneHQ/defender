@@ -196,7 +196,7 @@ setDefaultTier3Provider(myProvider);   // or pass it as tier3.provider
 - `chunk` (tier3_only)
 - `userGoal` / `toolDescription` (when the caller passes them)
 
-In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines).
+In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines). Keys are reviewed too: an object whose values are only numbers, booleans or `null` still gets one review, because its keys can carry injected text.
 
 It returns a `Tier3Verdict`:
 
@@ -286,6 +286,7 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - `result.tier3` is present when Tier 3 ran or was skipped. Use `"tier3" in result` to check.
 - With a verdict, `result.tier3` holds `decision`, `score`, `reason` and the other verdict fields. Otherwise it holds `skipReason`, which is short and redacted.
 - `errored: true` marks a real failure, not a planned skip.
+- `note` (tier3_only) says why the outcome isn't the verdict's alone, for example an oversize block or failed chunks.
 - In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
 - `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.

@@ -30,6 +30,7 @@ import { generateDataBoundary } from "../utils/boundary";
 import { redactErrorText } from "../utils/redact";
 import { Semaphore } from "../utils/semaphore";
 import { estimateSize } from "../utils/structure";
+import { safeEnd, safeStart, truncate } from "../utils/text";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
@@ -374,11 +375,13 @@ function splitLongLine(line: string, max: number, overlap: number): string[] {
 		let end = Math.min(start + max, line.length);
 		if (end < line.length) {
 			const sp = line.lastIndexOf(" ", end);
-			if (sp > start) end = sp; // cut on a word boundary when one is in range
+			if (sp > start)
+				end = sp; // cut on a word boundary when one is in range
+			else end = Math.max(safeEnd(line, end), start + 1); // never split a surrogate pair
 		}
 		out.push(line.slice(start, end));
 		if (end >= line.length) break;
-		start = Math.max(end - overlap, start + 1); // overlap back (but always advance)
+		start = safeStart(line, Math.max(end - overlap, start + 1)); // overlap back (but always advance)
 	}
 	return out;
 }
@@ -411,7 +414,8 @@ function chunkTier3Input(text: string, perChunkChars: number): string[] {
 		}
 		const chunk = carry ? `${carry}\n${content}` : content; // carry on its own line — no framing glue
 		chunks.push(chunk);
-		carry = chunk.slice(-overlap); // character tail → next chunk overlaps this one even if it was one unit
+		// Character tail → next chunk overlaps this one even if it was one unit (never half a surrogate pair).
+		carry = chunk.slice(safeStart(chunk, Math.max(0, chunk.length - overlap)));
 	}
 	return chunks;
 }
@@ -550,6 +554,11 @@ function formatRecordsForTier3(
 		meter.hit = false;
 	};
 	let hasString = false;
+	// A non-string scalar emitted under an object key (`key: 5`, `key: null`). Keys are attacker-
+	// controllable text, so such a payload is reviewed even with no string value. Index-only paths
+	// (`[0]: 1`) carry no free text and don't count.
+	let hasKeyedScalar = false;
+	const isKeyedPath = (prefix: string) => prefix.length > 0 && !/^(\[\d+\])+$/.test(prefix);
 	// Total STRING-leaf content actually emitted (excludes `key:` prefixes and separators). Compared
 	// against the input's string content below to flag oversize independently of any drop-site logic.
 	let emittedStringChars = 0;
@@ -596,7 +605,17 @@ function formatRecordsForTier3(
 			depthFlag.coverageDegraded = true;
 			return;
 		}
-		if (v === null || v === undefined) return;
+		if (v === null || v === undefined) {
+			// Keep the key: `{"<text>": null}` must not hide `<text>` from the reviewer.
+			if (isKeyedPath(prefix)) {
+				if (fits(lines, `${prefix}: null`, Math.min(cap, nonStringCap))) hasKeyedScalar = true;
+				else {
+					budgetTruncated = true;
+					depthFlag.coverageDegraded = true;
+				}
+			}
+			return;
+		}
 		if (
 			ArrayBuffer.isView(v) ||
 			v instanceof ArrayBuffer ||
@@ -608,7 +627,7 @@ function formatRecordsForTier3(
 			if (!fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit)) {
 				budgetTruncated = true; // line (incl. its key) dropped for budget → retry with reserve / flag
 				depthFlag.coverageDegraded = true;
-			}
+			} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -631,7 +650,7 @@ function formatRecordsForTier3(
 					if (!fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit)) {
 						budgetTruncated = true; // summary line (incl. its key) dropped for budget → retry / flag
 						depthFlag.coverageDegraded = true;
-					}
+					} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
 					return;
 				}
 			}
@@ -711,7 +730,7 @@ function formatRecordsForTier3(
 						}
 					} else if (isStr) {
 						const sep = lines.length > 0 ? 1 : 0;
-						const room = limit - used - sep;
+						const room = safeEnd(line, limit - used - sep);
 						if (room > 0) {
 							lines.push(line.slice(0, room));
 							used += sep + room;
@@ -736,11 +755,11 @@ function formatRecordsForTier3(
 					if (isStr) {
 						hasString = true;
 						emittedStringChars += line.length;
-					}
+					} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
 				} else if (isStr) {
 					// String too big for the remaining share: truncate to it, keeping the `key:` prefix.
 					const sep = lines.length > 0 ? 1 : 0;
-					const room = cap - used - sep;
+					const room = safeEnd(full, cap - used - sep);
 					if (room > prefix.length + 2) {
 						lines.push(full.slice(0, room));
 						used += sep + room;
@@ -824,6 +843,7 @@ function formatRecordsForTier3(
 		// an early item can't starve a later one. Depth cuts (depthFlag.hit) persist across the retry.
 		used = 0;
 		hasString = false;
+		hasKeyedScalar = false;
 		emittedStringChars = 0;
 		budgetTruncated = false;
 		depthFlag.coverageDegraded = undefined;
@@ -841,8 +861,8 @@ function formatRecordsForTier3(
 	if (meter.hit) sizeLimitHit = true;
 	// Oversize when string content was dropped/truncated OR the byte budget was hit anywhere.
 	if (emittedStringChars < inputStringChars || sizeLimitHit) depthFlag.budgetExceeded = true;
-	// No string leaf → nothing to review → skip the provider (empty input). Emit in original order.
-	return hasString ? blocks.join("\n\n") : "";
+	// Nothing reviewable (no string leaf and no keyed scalar) → skip the provider. Emit in original order.
+	return hasString || hasKeyedScalar ? blocks.join("\n\n") : "";
 }
 
 /**
@@ -1074,6 +1094,11 @@ export interface DefendToolResultOptions {
 export interface Tier3ResultMeta {
 	/** A real Tier 3 failure (not a planned skip). */
 	errored?: boolean;
+	/**
+	 * Why the outcome differs from the verdict alone: oversize content (onOversize) or failed chunks
+	 * in tier3_only. Redacted, like `skipReason`.
+	 */
+	note?: string;
 	/** Cascade: the `allow` removed a Tier-2 threat. */
 	overrideApplied?: boolean;
 	/** Cascade: the `allow` was ignored because of `allowOverride`. */
@@ -1501,6 +1526,8 @@ export class PromptDefense {
 		ctx: Omit<Tier3Context, "signal" | "deadline"> & { mode: "cascade" | "tier3_only" },
 		callerSignal: AbortSignal | undefined,
 		stopSignal?: AbortSignal,
+		// Runs on a verdict before the slot is released, so a stop it triggers reaches queued calls first.
+		onVerdict?: (verdict: Tier3Verdict) => void,
 	): Promise<Tier3CallOutcome> {
 		const waitSignal = anySignal([callerSignal, stopSignal]);
 		const notNeeded = (): Tier3CallOutcome | undefined => {
@@ -1549,6 +1576,10 @@ export class PromptDefense {
 			this.tier3TimeoutMs !== undefined ? setTimeout(() => stop("timeout"), this.tier3TimeoutMs) : undefined;
 		const t0 = performance.now();
 		let callStarted = false;
+		let holds = 2; // provider settled + outcome handled
+		const releaseOne = () => {
+			if (--holds === 0) release();
+		};
 		try {
 			const call = Promise.resolve().then(() =>
 				provider.classify(text, {
@@ -1558,11 +1589,11 @@ export class PromptDefense {
 				}),
 			);
 			callStarted = true;
-			// Hold the slot until the provider really settles, even after we stop waiting, so a slow
-			// provider can't push in-flight calls past maxConcurrency. Also swallows a late rejection.
-			// A provider that never settles gets its slot back after a ceiling, so hangs can't use up
-			// the pool for good.
-			call.then(release, release);
+			// Hold the slot until both the provider has settled (even after we stop waiting, so a slow
+			// provider can't push in-flight calls past maxConcurrency) and this call's outcome is handled
+			// (so a stopOnFirstBlock abort lands before a queued call can take the slot). Also swallows a
+			// late rejection. A provider that never settles gets its slot back after a ceiling.
+			call.then(releaseOne, releaseOne);
 			if (this.tier3Semaphore && this.tier3TimeoutMs !== undefined) {
 				const ceiling = setTimeout(release, this.tier3TimeoutMs * TIER3_SLOT_CEILING_FACTOR);
 				(ceiling as { unref?: () => void }).unref?.();
@@ -1596,6 +1627,7 @@ export class PromptDefense {
 			if ("skipReason" in validated) return this.tier3Failed(ctx, "error", validated.skipReason);
 			const verdict: Tier3Verdict = { ...validated };
 			if (!this.tier3IncludeRaw) delete verdict.raw;
+			onVerdict?.(verdict);
 			// A refusal or unusable reply blocks. It counts toward its own streak (every call refusing
 			// usually means a broken setup: prose-only model, too few tokens) and breaks a failure run.
 			if (verdict.refused) this.noteTier3Refusal();
@@ -1620,6 +1652,7 @@ export class PromptDefense {
 			callerSignal?.removeEventListener("abort", onCaller);
 			stopSignal?.removeEventListener("abort", onStop);
 			if (!callStarted) release();
+			else releaseOne();
 		}
 	}
 
@@ -1701,7 +1734,7 @@ export class PromptDefense {
 		const extra = verdict as { reason?: unknown; refused?: unknown };
 		let normalized = verdict as Tier3Verdict;
 		if (extra.reason !== undefined) {
-			const reason = typeof extra.reason === "string" ? extra.reason.slice(0, 500) : undefined;
+			const reason = typeof extra.reason === "string" ? truncate(extra.reason, 500) : undefined;
 			normalized = { ...normalized, reason };
 			if (reason === undefined) delete normalized.reason;
 		}
@@ -1815,10 +1848,12 @@ export class PromptDefense {
 						},
 						callOpts.signal,
 						stopController?.signal,
+						stopController
+							? (v) => {
+									if (this.isTier3Block(v)) stopController.abort();
+								}
+							: undefined,
 					);
-					if (stopController && outcome.kind === "verdict" && this.isTier3Block(outcome.verdict)) {
-						stopController.abort();
-					}
 					return outcome;
 				}),
 			);
@@ -1854,6 +1889,8 @@ export class PromptDefense {
 			return { rep, blockedCount, blockingChunk, reviewed, failed, aborted, firstSkip, total: chunks.length };
 		};
 		let chunkFailures = 0;
+		let chunkTotal = 0;
+		let firstChunkFailure: string | undefined;
 		let reviewRan = false;
 		let overflowChunks: number | undefined;
 		let abortedChunks = 0;
@@ -1901,6 +1938,8 @@ export class PromptDefense {
 			const r = await reviewChunks(chunkTier3Input(joined, perChunk));
 			reviewRan = true;
 			chunkFailures = r.failed;
+			chunkTotal = r.total;
+			firstChunkFailure = r.firstSkip;
 			abortedChunks = r.aborted;
 			verdict = r.rep;
 			chunkSummary = {
@@ -1984,6 +2023,11 @@ export class PromptDefense {
 			...(chunkFailures > 0 ? { errored: true } : {}),
 			...(decidedBy ? { decidedBy } : {}),
 		};
+		// With a verdict, `skipReason` isn't reported, so say why the outcome isn't the verdict's.
+		if (oversizeBlock && skipReason) meta.note = skipReason;
+		else if (chunkFailures > 0) {
+			meta.note = `${chunkFailures} of ${chunkTotal} chunks failed${firstChunkFailure ? `: ${firstChunkFailure}` : ""}`;
+		}
 		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
 		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
 		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when the payload
@@ -2477,10 +2521,7 @@ export class PromptDefense {
 			let outcome: Tier3CallOutcome | undefined;
 			if (provider) {
 				this.warnIfRiskyOverride(provider);
-				const boundedChunk =
-					maxSentence.length > this.tier3MaxTextLength
-						? maxSentence.slice(0, this.tier3MaxTextLength)
-						: maxSentence;
+				const boundedChunk = truncate(maxSentence, this.tier3MaxTextLength);
 				outcome = await this.callTier3(
 					provider,
 					boundedChunk,
