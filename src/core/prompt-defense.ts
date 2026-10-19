@@ -156,7 +156,8 @@ export interface DefenseResult {
 	 */
 	tier3?:
 		| (Tier3Verdict & Tier3ResultMeta & { skipReason?: undefined })
-		| (Tier3ResultMeta & { skipReason: string; decision?: undefined });
+		// Verdict fields are declared (as undefined) so `result.tier3?.reason` reads without narrowing.
+		| (Tier3ResultMeta & { [K in keyof Tier3Verdict]?: undefined } & { skipReason: string });
 	/**
 	 * True if any recursive payload walk hit `MAX_TRAVERSAL_DEPTH` —
 	 * analysis is complete only to that depth, deeper fields passed through

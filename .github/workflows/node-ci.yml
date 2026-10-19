@@ -29,3 +29,7 @@ jobs:
         run: pnpm test:typecheck
       - name: Test
         run: pnpm test
+      - name: Examples typecheck
+        run: pnpm examples:typecheck
+      - name: Examples smoke
+        run: pnpm examples:smoke

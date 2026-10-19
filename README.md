@@ -51,6 +51,8 @@ If they're missing, Defender does **not** silently run unprotected. It logs a wa
 
 ## Quick Start
 
+Runnable examples, including Tier 3 with OpenAI, Gemini, Anthropic or a local model, are in [`examples/`](./examples).
+
 ```typescript
 import { createPromptDefense } from '@stackone/defender';
 
