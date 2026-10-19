@@ -1,8 +1,8 @@
 /**
  * Tier 3 provider registry.
  *
- * The defender package ships no Tier 3 implementations — proprietary model
- * endpoints (SageMaker, OpenAI, etc.) live in consumer code. Consumers call
+ * Providers are built with `createLlmTier3Provider` /
+ * `createOpenAICompatibleTier3Provider` or written by hand. Consumers call
  * `setDefaultTier3Provider(provider)` once at app startup; `PromptDefense`
  * picks the registered provider up when callers opt into Tier 3 via the
  * `enableTier3: true` option on `PromptDefenseOptions`.
@@ -21,6 +21,13 @@
 import type { Tier3Provider } from "../types";
 
 let _defaultProvider: Tier3Provider | null = null;
+
+/** Marks providers built by createLlmTier3Provider, so defender can warn on a risky allowOverride. */
+export const GENERIC_LLM_PROVIDER: unique symbol = Symbol.for("@stackone/defender/generic-llm-provider");
+
+export function isGenericLlmProvider(provider: Tier3Provider): boolean {
+	return (provider as unknown as Record<symbol, unknown>)[GENERIC_LLM_PROVIDER] === true;
+}
 
 /**
  * Register the process-wide default Tier 3 provider. Pass `null` to clear

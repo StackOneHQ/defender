@@ -11,11 +11,24 @@ import {
 	type Tier2Classifier,
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
-import { getDefaultTier3Provider } from "../classifiers/tier3-orchestrator";
+import { getDefaultTier3Provider, isGenericLlmProvider } from "../classifiers/tier3-orchestrator";
 import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
-import type { DataBoundary, PromptDefenseConfig, RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "../types";
+import type {
+	DataBoundary,
+	PromptDefenseConfig,
+	RiskLevel,
+	Tier1Result,
+	Tier3CallerContext,
+	Tier3Context,
+	Tier3DecisionInput,
+	Tier3Event,
+	Tier3Provider,
+	Tier3Verdict,
+} from "../types";
 import { generateDataBoundary } from "../utils/boundary";
+import { redactErrorText } from "../utils/redact";
+import { Semaphore } from "../utils/semaphore";
 import { estimateSize } from "../utils/structure";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
@@ -141,7 +154,9 @@ export interface DefenseResult {
 	 * `skipReason` is set instead of `decision` when defender wanted to run
 	 * Tier 3 but couldn't (no provider registered, provider error, timeout).
 	 */
-	tier3?: (Tier3Verdict & { skipReason?: undefined }) | { skipReason: string; decision?: undefined };
+	tier3?:
+		| (Tier3Verdict & Tier3ResultMeta & { skipReason?: undefined })
+		| (Tier3ResultMeta & { skipReason: string; decision?: undefined });
 	/**
 	 * True if any recursive payload walk hit `MAX_TRAVERSAL_DEPTH` —
 	 * analysis is complete only to that depth, deeper fields passed through
@@ -285,6 +300,22 @@ function isNonStringScalar(v: unknown): boolean {
 // Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
 // (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
 // throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
+/** One signal that aborts when any input aborts. `undefined` when there are no inputs. */
+function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+	const present = signals.filter((s): s is AbortSignal => s !== undefined);
+	if (present.length <= 1) return present[0];
+	if (typeof AbortSignal.any === "function") return AbortSignal.any(present);
+	const controller = new AbortController();
+	for (const s of present) {
+		if (s.aborted) {
+			controller.abort();
+			break;
+		}
+		s.addEventListener("abort", () => controller.abort(), { once: true });
+	}
+	return controller.signal;
+}
+
 function describeError(err: unknown): string {
 	try {
 		if (err instanceof Error) return err.message;
@@ -899,8 +930,8 @@ export interface PromptDefenseOptions {
 	 */
 	defenderMode?: DefenderMode;
 	/**
-	 * Tier 3 configuration (orchestration only — the provider itself owns
-	 * model-specific concerns like prompts, endpoints, and timeouts).
+	 * Tier 3 configuration: the provider plus the policy applied to its verdicts
+	 * (when it runs, what an allow can undo, failures, timeouts, concurrency).
 	 */
 	tier3?: {
 		/**
@@ -977,7 +1008,68 @@ export interface PromptDefenseOptions {
 		 * Default: unset — the provider's `decision` is authoritative.
 		 */
 		blockThreshold?: number;
+		/**
+		 * Cascade only. Whether a Tier-3 `allow` can undo a block Tier 2 alone would make:
+		 *  - `true` (default): it can (today's behavior).
+		 *  - `false`: it can't; Tier 3 only adds blocks.
+		 *  - `{ maxTier2Score }`: it can only when Tier 2's top-chunk score, before density
+		 *    damping, is below `maxTier2Score`.
+		 * A general-purpose LLM judge reads attacker text and can be talked into `allow`;
+		 * prefer `false` or `{ maxTier2Score }` until the judge is tested against that.
+		 */
+		allowOverride?: boolean | { maxTier2Score: number };
+		/**
+		 * What a Tier 3 failure does (throw, timeout, invalid verdict, cancellation; a missing
+		 * provider too when set to "block"):
+		 *  - `"tier2"` (cascade default): keep Tier 2's verdict.
+		 *  - `"allow"`: cascade treats it as a Tier-3 `allow` (subject to `allowOverride`);
+		 *    tier3_only drops the failed chunks (tier3_only default).
+		 *  - `"block"`: cascade blocks when Tier 2 rated the payload medium or higher;
+		 *    tier3_only blocks when any chunk failed, and `onOversize` defaults to "scan_anyway".
+		 * Never blocks when `blockHighRisk` is false.
+		 */
+		onError?: "tier2" | "allow" | "block";
+		/**
+		 * Custom policy, called once per call after Tier 3 ran or failed (cascade: only when
+		 * escalated). Return "block", "allow", or "default" to use the typed options. Sync only.
+		 * Replaces `allowOverride` and `onError` for that call. Tier-1 detections, `onOversize`
+		 * and `blockHighRisk: false` still apply. A throw or invalid return means "default".
+		 */
+		decide?: (input: Tier3DecisionInput) => "block" | "allow" | "default";
+		/** Per provider call, measured from when the call gets a concurrency slot. Default: none. */
+		timeoutMs?: number;
+		/**
+		 * Max in-flight provider calls across this instance (all calls, both modes).
+		 * Default: unbounded.
+		 */
+		maxConcurrency?: number;
+		/** tier3_only: abort the remaining chunk calls once one blocks. Default: false. */
+		stopOnFirstBlock?: boolean;
+		/** Called once per provider call. Exceptions are swallowed. Payloads carry no content. */
+		onEvent?: (event: Tier3Event) => void;
+		/** Keep `raw` in `result.tier3`. `raw` can quote tool content. Default: true. */
+		includeRaw?: boolean;
 	};
+}
+
+/** Per-call options for `defendToolResult`. */
+export interface DefendToolResultOptions {
+	/** Passed to the Tier 3 provider as `ctx.userGoal` / `ctx.toolDescription`. */
+	context?: Tier3CallerContext;
+	/** Cancels in-flight Tier 3 calls. A cancelled call counts as a Tier 3 failure. */
+	signal?: AbortSignal;
+}
+
+/** Extra fields on `DefenseResult.tier3`. */
+export interface Tier3ResultMeta {
+	/** A real Tier 3 failure (not a planned skip). */
+	errored?: boolean;
+	/** Cascade: the `allow` removed a Tier-2 threat. */
+	overrideApplied?: boolean;
+	/** Cascade: the `allow` was ignored because of `allowOverride`. */
+	overrideSuppressed?: boolean;
+	/** Which policy produced the Tier 3 outcome. */
+	decidedBy?: "policy" | "options";
 }
 
 /**
@@ -1002,6 +1094,21 @@ export interface PromptDefenseOptions {
 // (e.g. connect-sdk), where an instance flag would log at full request volume.
 let tier2UnavailableWarned = false;
 
+// Module-scoped for the same reason: hosts that build an instance per request.
+let tier3GenericOverrideWarned = false;
+let tier3ConsecutiveFailures = 0;
+let tier3FailureStreakWarned = false;
+const TIER3_FAILURE_STREAK_WARN = 20;
+
+type Tier3AllowOverride = boolean | { maxTier2Score: number };
+type Tier3Decision = "block" | "allow" | "default";
+
+/** Outcome of one provider call. `aborted` = no longer needed (stopOnFirstBlock), not a failure. */
+type Tier3CallOutcome =
+	| { kind: "verdict"; verdict: Tier3Verdict }
+	| { kind: "failed"; skipReason: string }
+	| { kind: "aborted" };
+
 export class PromptDefense {
 	private config: PromptDefenseConfig;
 	private toolResultSanitizer: ToolResultSanitizer;
@@ -1023,6 +1130,16 @@ export class PromptDefense {
 	private tier3MissingProviderWarned: boolean = false;
 	private tier3BlockThreshold: number | undefined = undefined;
 	private tier3MissingScoreWarned: boolean = false;
+	private tier3OnOversizeExplicit: boolean = false;
+	private tier3AllowOverride: Tier3AllowOverride = true;
+	private tier3OnError: "tier2" | "allow" | "block" | undefined = undefined;
+	private tier3Decide: ((input: Tier3DecisionInput) => Tier3Decision) | undefined = undefined;
+	private tier3TimeoutMs: number | undefined = undefined;
+	private tier3Semaphore: Semaphore | undefined = undefined;
+	private tier3StopOnFirstBlock: boolean = false;
+	private tier3OnEvent: ((event: Tier3Event) => void) | undefined = undefined;
+	private tier3IncludeRaw: boolean = true;
+	private tier3DecideWarned: boolean = false;
 	private tier2Required: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
@@ -1061,9 +1178,7 @@ export class PromptDefense {
 
 		this.patternDetector = createPatternDetector();
 
-		// Tier 3 orchestration — off by default. The actual provider (SageMaker /
-		// OpenAI / etc.) lives outside this package. We only store the flags +
-		// band; the provider is resolved per-call so a runtime
+		// Tier 3 orchestration — off by default. The provider is resolved per call so a
 		// `setDefaultTier3Provider()` registration after construction still works.
 		this.tier3Enabled = options.enableTier3 ?? false;
 		this.defenderMode = options.defenderMode ?? "cascade";
@@ -1086,6 +1201,7 @@ export class PromptDefense {
 			const policy = options.tier3.onOversize;
 			if (policy === "skip" || policy === "block" || policy === "scan_anyway") {
 				this.tier3OnOversize = policy;
+				this.tier3OnOversizeExplicit = true;
 			} else {
 				console.warn(
 					`[defender] invalid tier3.onOversize ${policy} — must be "skip", "block", or "scan_anyway". Falling back to default "skip".`,
@@ -1124,6 +1240,7 @@ export class PromptDefense {
 				);
 			}
 		}
+		this.parseTier3PolicyOptions(options);
 
 		// Initialize Tier 2 classifier if enabled
 		if (options.enableTier2 ?? true) {
@@ -1211,6 +1328,254 @@ export class PromptDefense {
 		}
 	}
 
+	private parseTier3PolicyOptions(options: PromptDefenseOptions): void {
+		const t3 = options.tier3;
+		if (t3?.allowOverride !== undefined) {
+			const ao = t3.allowOverride;
+			if (typeof ao === "boolean") {
+				this.tier3AllowOverride = ao;
+			} else if (
+				ao !== null &&
+				typeof ao === "object" &&
+				Number.isFinite(ao.maxTier2Score) &&
+				ao.maxTier2Score > 0 &&
+				ao.maxTier2Score <= 1
+			) {
+				this.tier3AllowOverride = { maxTier2Score: ao.maxTier2Score };
+			} else {
+				console.warn(
+					"[defender] invalid tier3.allowOverride — must be a boolean or { maxTier2Score } with 0 < maxTier2Score <= 1. Falling back to true.",
+				);
+			}
+			if (this.defenderMode === "tier3_only") {
+				console.warn("[defender] tier3.allowOverride has no effect in tier3_only mode.");
+			}
+		}
+		if (t3?.onError !== undefined) {
+			const oe = t3.onError;
+			if (oe === "tier2" && this.defenderMode === "tier3_only") {
+				console.warn('[defender] tier3.onError "tier2" is not valid in tier3_only mode. Using "allow".');
+				this.tier3OnError = "allow";
+			} else if (oe === "tier2" || oe === "allow" || oe === "block") {
+				this.tier3OnError = oe;
+			} else {
+				console.warn(
+					`[defender] invalid tier3.onError ${String(oe)} — must be "tier2", "allow" or "block". Using the default.`,
+				);
+			}
+		}
+		if (t3?.decide !== undefined) {
+			if (typeof t3.decide === "function") {
+				this.tier3Decide = t3.decide;
+			} else {
+				console.warn("[defender] invalid tier3.decide — must be a function. Ignoring it.");
+			}
+		}
+		if (t3?.timeoutMs !== undefined) {
+			const ms = t3.timeoutMs;
+			if (Number.isFinite(ms) && ms > 0) {
+				this.tier3TimeoutMs = ms;
+			} else {
+				console.warn(
+					`[defender] invalid tier3.timeoutMs ${ms} — must be a finite number > 0. No timeout applied.`,
+				);
+			}
+		}
+		if (t3?.maxConcurrency !== undefined) {
+			const mc = t3.maxConcurrency;
+			if (Number.isFinite(mc) && Math.floor(mc) >= 1) {
+				this.tier3Semaphore = new Semaphore(Math.floor(mc));
+			} else {
+				console.warn(
+					`[defender] invalid tier3.maxConcurrency ${mc} — must be a finite number >= 1. Unbounded.`,
+				);
+			}
+		}
+		this.tier3StopOnFirstBlock = t3?.stopOnFirstBlock === true;
+		if (typeof t3?.onEvent === "function") this.tier3OnEvent = t3.onEvent;
+		this.tier3IncludeRaw = t3?.includeRaw !== false;
+
+		// onError "block" in tier3_only closes the oversize door too, unless onOversize was chosen.
+		if (this.tier3OnError === "block" && this.defenderMode === "tier3_only" && !this.tier3OnOversizeExplicit) {
+			this.tier3OnOversize = "scan_anyway";
+		}
+	}
+
+	private emitTier3Event(event: Tier3Event): void {
+		if (!this.tier3OnEvent) return;
+		try {
+			this.tier3OnEvent(event);
+		} catch {
+			// A broken observability hook must never affect the verdict.
+		}
+	}
+
+	private noteTier3Failure(errorCode: string): void {
+		tier3ConsecutiveFailures++;
+		if (tier3ConsecutiveFailures >= TIER3_FAILURE_STREAK_WARN && !tier3FailureStreakWarned) {
+			tier3FailureStreakWarned = true;
+			console.warn(
+				`[defender] ${tier3ConsecutiveFailures} consecutive Tier 3 provider failures. Tier 3 may be misconfigured. Last error: ${errorCode}`,
+			);
+		}
+	}
+
+	private noteTier3Success(): void {
+		tier3ConsecutiveFailures = 0;
+		tier3FailureStreakWarned = false;
+	}
+
+	private warnIfRiskyOverride(provider: Tier3Provider): void {
+		if (
+			this.tier3AllowOverride === true &&
+			this.defenderMode === "cascade" &&
+			!this.tier3Decide &&
+			!tier3GenericOverrideWarned &&
+			isGenericLlmProvider(provider)
+		) {
+			tier3GenericOverrideWarned = true;
+			console.warn(
+				"[defender] tier3.allowOverride is true with a general-purpose LLM provider: a judge talked into 'allow' can undo Tier 2 blocks. Consider allowOverride: false or { maxTier2Score }.",
+			);
+		}
+	}
+
+	/**
+	 * One provider call with the instance's policy applied: concurrency slot, deadline,
+	 * cancellation, verdict validation, redacted error text, events, failure streak.
+	 * Never throws.
+	 */
+	private async callTier3(
+		provider: Tier3Provider,
+		text: string,
+		ctx: Omit<Tier3Context, "signal" | "deadline"> & { mode: "cascade" | "tier3_only" },
+		callerSignal: AbortSignal | undefined,
+		stopSignal?: AbortSignal,
+	): Promise<Tier3CallOutcome> {
+		const waitSignal = anySignal([callerSignal, stopSignal]);
+		const release = this.tier3Semaphore ? await this.tier3Semaphore.acquire(waitSignal) : () => {};
+		if (!release || waitSignal?.aborted) {
+			release?.();
+			if (stopSignal?.aborted && !callerSignal?.aborted) return { kind: "aborted" };
+			return this.tier3Failed(ctx, "error", "Tier 3 call cancelled by caller");
+		}
+		const controller = new AbortController();
+		let stopReason: "timeout" | "stopped" | "cancelled" | undefined;
+		let resolveStop: (r: "timeout" | "stopped" | "cancelled") => void = () => {};
+		const stopped = new Promise<"timeout" | "stopped" | "cancelled">((resolve) => {
+			resolveStop = resolve;
+		});
+		const stop = (reason: "timeout" | "stopped" | "cancelled") => {
+			if (stopReason) return;
+			stopReason = reason;
+			controller.abort();
+			resolveStop(reason);
+		};
+		const onCaller = () => stop("cancelled");
+		const onStop = () => stop("stopped");
+		callerSignal?.addEventListener("abort", onCaller, { once: true });
+		stopSignal?.addEventListener("abort", onStop, { once: true });
+		const deadline = this.tier3TimeoutMs !== undefined ? Date.now() + this.tier3TimeoutMs : undefined;
+		const timer =
+			this.tier3TimeoutMs !== undefined ? setTimeout(() => stop("timeout"), this.tier3TimeoutMs) : undefined;
+		const t0 = performance.now();
+		try {
+			const call = Promise.resolve().then(() =>
+				provider.classify(text, {
+					...ctx,
+					signal: controller.signal,
+					...(deadline !== undefined ? { deadline } : {}),
+				}),
+			);
+			// A provider that ignores the signal may reject after we stopped waiting.
+			call.catch(() => {});
+			const settled = await Promise.race([
+				call.then(
+					(value) => ({ ok: true as const, value }),
+					(error: unknown) => ({ ok: false as const, error }),
+				),
+				stopped,
+			]);
+			if (typeof settled === "string") {
+				if (settled === "stopped") return { kind: "aborted" };
+				if (settled === "timeout") {
+					return this.tier3Failed(ctx, "timeout", `Tier 3 provider timed out after ${this.tier3TimeoutMs}ms`);
+				}
+				return this.tier3Failed(ctx, "error", "Tier 3 call cancelled by caller");
+			}
+			if (!settled.ok) {
+				return this.tier3Failed(
+					ctx,
+					"error",
+					`Tier 3 provider error: ${redactErrorText(describeError(settled.error))}`,
+				);
+			}
+			const validated = this.validateTier3Verdict(settled.value);
+			if ("skipReason" in validated) return this.tier3Failed(ctx, "error", validated.skipReason);
+			const verdict: Tier3Verdict = { ...validated };
+			if (!this.tier3IncludeRaw) delete verdict.raw;
+			this.noteTier3Success();
+			this.emitTier3Event({
+				kind: verdict.refused ? "refusal" : "verdict",
+				mode: ctx.mode,
+				...(ctx.chunk ? { chunk: ctx.chunk } : {}),
+				latencyMs: performance.now() - t0,
+				...(verdict.usage ? { usage: verdict.usage } : {}),
+			});
+			return { kind: "verdict", verdict };
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			callerSignal?.removeEventListener("abort", onCaller);
+			stopSignal?.removeEventListener("abort", onStop);
+			release();
+		}
+	}
+
+	private tier3Failed(
+		ctx: { mode: "cascade" | "tier3_only"; chunk?: { index: number; total: number } },
+		kind: "error" | "timeout",
+		skipReason: string,
+	): Tier3CallOutcome {
+		this.noteTier3Failure(skipReason);
+		this.emitTier3Event({
+			kind,
+			mode: ctx.mode,
+			...(ctx.chunk ? { chunk: ctx.chunk } : {}),
+			errorCode: skipReason,
+		});
+		return { kind: "failed", skipReason };
+	}
+
+	/** Whether a Tier-3 `allow` may undo a Tier-2 block, given Tier 2's undamped top-chunk score. */
+	private tier3OverridePermitted(tier2UndampedScore: number | undefined): boolean {
+		const ao = this.tier3AllowOverride;
+		if (typeof ao === "boolean") return ao;
+		return tier2UndampedScore !== undefined && tier2UndampedScore < ao.maxTier2Score;
+	}
+
+	/** Run `tier3.decide`; any throw or invalid return means "default". */
+	private runTier3Decide(input: Tier3DecisionInput): Tier3Decision {
+		if (!this.tier3Decide) return "default";
+		try {
+			const out = this.tier3Decide(input);
+			if (out === "block" || out === "allow" || out === "default") return out;
+			throw new Error(`invalid return value ${typeof out}`);
+		} catch (err) {
+			if (!this.tier3DecideWarned) {
+				this.tier3DecideWarned = true;
+				console.warn(
+					`[defender] tier3.decide failed; using the typed options. ${redactErrorText(describeError(err))}`,
+				);
+			}
+			this.emitTier3Event({
+				kind: "policy_error",
+				mode: input.mode,
+				errorCode: redactErrorText(describeError(err)),
+			});
+			return "default";
+		}
+	}
+
 	/**
 	 * Resolve the Tier 3 provider to use for this PromptDefense instance.
 	 * Returns the inline-configured provider when set, otherwise the
@@ -1234,10 +1599,27 @@ export class PromptDefense {
 		}
 		const decision = (verdict as { decision?: unknown }).decision;
 		if (decision !== "block" && decision !== "allow") {
+			// Don't echo the value: it is provider output and may quote content.
 			return {
-				skipReason: `Tier 3 provider returned invalid decision: ${JSON.stringify(decision)} (expected "block" | "allow")`,
+				skipReason: `Tier 3 provider returned invalid decision of type ${typeof decision} (expected "block" | "allow")`,
 			};
 		}
+		const extra = verdict as { reason?: unknown; refused?: unknown };
+		let normalized = verdict as Tier3Verdict;
+		if (extra.reason !== undefined) {
+			const reason = typeof extra.reason === "string" ? extra.reason.slice(0, 500) : undefined;
+			normalized = { ...normalized, reason };
+			if (reason === undefined) delete normalized.reason;
+		}
+		if (extra.refused !== undefined && typeof extra.refused !== "boolean") {
+			normalized = { ...normalized };
+			delete normalized.refused;
+		}
+		// A refusal is attacker-triggerable, so it never reads as an allow.
+		if (normalized.refused === true && normalized.decision !== "block") {
+			normalized = { ...normalized, decision: "block" };
+		}
+		verdict = normalized;
 		// Normalize `score` here, before it can reach either the decision path or
 		// the public `DefenseResult.tier3`. An untyped JS provider can hand back a
 		// string, a bigint, or an out-of-range number, but the exported contract is
@@ -1265,6 +1647,7 @@ export class PromptDefense {
 	 * degrades to today's behavior instead of taking the tier offline.
 	 */
 	private isTier3Block(verdict: Tier3Verdict): boolean {
+		if (verdict.refused === true) return true;
 		if (this.tier3BlockThreshold === undefined) {
 			return verdict.decision === "block";
 		}
@@ -1291,8 +1674,7 @@ export class PromptDefense {
 	 * entire decision. Tier 1 detection still runs to populate `detections`
 	 * metadata, but content is NOT rewritten (detect-and-gate) and Tier 1 risk
 	 * does NOT contribute to the block decision — tier3_only means tier3-decides.
-	 * On provider error we fail open (allowed: true) and record a skipReason;
-	 * the caller's telemetry surfaces the outage.
+	 * Provider failures are dropped per chunk (fail open) unless `tier3.onError` is "block".
 	 */
 	private async runTier3Only(
 		value: unknown,
@@ -1300,6 +1682,7 @@ export class PromptDefense {
 		toolName: string,
 		depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 		startTime: number,
+		callOpts: DefendToolResultOptions = {},
 	): Promise<DefenseResult> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
 		// ENG-1339: serialize up to a coverage ceiling, chunk it, and review every chunk in parallel
@@ -1316,30 +1699,43 @@ export class PromptDefense {
 		// force a bypass; permissive mode still allows. A provider outage stays fail-open.
 		let payloadError = false;
 
-		// Review each chunk in parallel, dropping any that error/skip (per-chunk fail-open, matching the
-		// provider-outage policy). Representative = a blocker if any, else the highest-score allow.
+		// Review each chunk in parallel. Failed chunks are dropped (per-chunk fail-open) unless
+		// onError is "block". Representative = a blocker if any, else the highest-score allow.
 		const reviewChunks = async (chunks: string[]) => {
+			const stopController = this.tier3StopOnFirstBlock ? new AbortController() : undefined;
 			const results = await Promise.all(
-				chunks.map(async (c): Promise<{ verdict?: Tier3Verdict; skip?: string }> => {
-					try {
-						const validated = this.validateTier3Verdict(await provider.classify(c, { toolName }));
-						return "skipReason" in validated ? { skip: validated.skipReason } : { verdict: validated };
-					} catch (err) {
-						return { skip: `Tier 3 provider error: ${describeError(err)}` };
+				chunks.map(async (c, index): Promise<Tier3CallOutcome> => {
+					const outcome = await this.callTier3(
+						provider,
+						c,
+						{ toolName, mode: "tier3_only", chunk: { index, total: chunks.length }, ...callOpts.context },
+						callOpts.signal,
+						stopController?.signal,
+					);
+					if (stopController && outcome.kind === "verdict" && this.isTier3Block(outcome.verdict)) {
+						stopController.abort();
 					}
+					return outcome;
 				}),
 			);
 			let rep: Tier3Verdict | undefined;
 			let blockedCount = 0;
 			let blockingChunk: number | undefined;
 			let reviewed = 0;
+			let failed = 0;
+			let aborted = 0;
 			let firstSkip: string | undefined;
 			results.forEach((res, idx) => {
-				const v = res.verdict;
-				if (!v) {
-					firstSkip ??= res.skip;
+				if (res.kind === "aborted") {
+					aborted++;
 					return;
 				}
+				if (res.kind === "failed") {
+					failed++;
+					firstSkip ??= res.skipReason;
+					return;
+				}
+				const v = res.verdict;
 				reviewed++;
 				const isBlock = this.isTier3Block(v);
 				if (isBlock && blockingChunk === undefined) blockingChunk = idx;
@@ -1351,8 +1747,11 @@ export class PromptDefense {
 					if ((isBlock && !repBlock) || (isBlock === repBlock && (v.score ?? 0) > (rep.score ?? 0))) rep = v;
 				}
 			});
-			return { rep, blockedCount, blockingChunk, reviewed, firstSkip, total: chunks.length };
+			return { rep, blockedCount, blockingChunk, reviewed, failed, aborted, firstSkip, total: chunks.length };
 		};
+		let chunkFailures = 0;
+		let reviewRan = false;
+		let overflowChunks: number | undefined;
 
 		const perChunk = this.tier3MaxTextLength;
 		// Ceiling uses the per-chunk CONTENT budget (perChunk minus the carried overlap) so the content
@@ -1395,6 +1794,8 @@ export class PromptDefense {
 			// fitting content still gets reviewed, so a fitting injection is never silently dropped; only
 			// the genuinely-dropped overflow is unreviewed, and onOversize governs it (below).
 			const r = await reviewChunks(chunkTier3Input(joined, perChunk));
+			reviewRan = true;
+			chunkFailures = r.failed;
 			verdict = r.rep;
 			chunkSummary = {
 				chunks: r.total,
@@ -1403,22 +1804,19 @@ export class PromptDefense {
 				...(oversize ? { oversize: true } : {}),
 			};
 			if (r.reviewed === 0) {
-				// Every chunk errored/skipped → provider outage or malformed verdict → fail open (unchanged
-				// policy). Surface the first chunk's reason (e.g. "invalid decision", provider error text).
+				// Every chunk failed → provider outage or malformed verdict → onError decides (default: fail
+				// open). Surface the first chunk's reason (e.g. "invalid decision", provider error text).
 				skipReason ??= r.firstSkip ?? "Tier 3 skipped: no chunk produced a verdict";
 				depthFlag.coverageDegraded = true;
-			} else if (r.reviewed < r.total) {
-				depthFlag.coverageDegraded = true; // partial coverage: some chunks unreviewed
+			} else if (r.failed > 0) {
+				// Partial coverage: some chunks failed. Chunks aborted by stopOnFirstBlock don't count.
+				depthFlag.coverageDegraded = true;
 			}
 			if (oversize) {
 				depthFlag.coverageDegraded = true;
-				const reviewedBlock = verdict !== undefined && this.isTier3Block(verdict);
-				// The overflow beyond the ceiling went unreviewed. scan_anyway fails closed on it; skip
-				// accepts it (allow — the reviewed verdict stands). A block from the fitting chunks stands either way.
-				if (!reviewedBlock && this.tier3OnOversize === "scan_anyway") {
-					oversizeBlock = true;
-					skipReason = `Tool result exceeds review ceiling; ${r.total} chunks scanned, overflow unreviewed`;
-				}
+				// The overflow beyond the ceiling went unreviewed; onOversize decides it once the
+				// final Tier 3 outcome is known (below), so a policy override can't skip it.
+				overflowChunks = r.total;
 			}
 		}
 
@@ -1429,8 +1827,10 @@ export class PromptDefense {
 		let detections: string[] = [];
 		let sanitizedContent: unknown = value;
 		let analysisDegraded = false;
+		let tier1RiskLevel: RiskLevel = "low";
 		try {
 			const sanitized = this.toolResultSanitizer.sanitize(value, { toolName });
+			tier1RiskLevel = sanitized.metadata.overallRiskLevel;
 			patternsRemovedByField = sanitized.metadata.patternsRemovedByField;
 			detections = [...new Set(Object.values(patternsRemovedByField).flat())];
 			sanitizedContent = sanitized.sanitized;
@@ -1443,8 +1843,38 @@ export class PromptDefense {
 			skipReason ??= `Tier 1 metadata error: ${describeError(err)}`;
 		}
 
-		// A block comes from a chunk verdict OR the onOversize policy (block / scan_anyway overflow).
-		const blocked = oversizeBlock || (verdict !== undefined && this.isTier3Block(verdict));
+		// The Tier 3 part of the decision: a chunk verdict, onError, or the decide policy.
+		const verdictBlock = verdict !== undefined && this.isTier3Block(verdict);
+		let tier3Blocks = verdictBlock || ((this.tier3OnError ?? "allow") === "block" && chunkFailures > 0);
+		let decidedBy: Tier3ResultMeta["decidedBy"];
+		if (this.tier3Decide && reviewRan) {
+			const d = this.runTier3Decide({
+				mode: "tier3_only",
+				tier1: { detected: detections.length > 0, riskLevel: tier1RiskLevel },
+				tier3: verdict
+					? {
+							ran: true,
+							decision: verdictBlock ? "block" : "allow",
+							score: verdict.score,
+							refused: verdict.refused === true,
+						}
+					: { ran: false, errored: chunkFailures > 0, skipReason: skipReason ?? "Tier 3 skipped" },
+				toolName,
+			});
+			decidedBy = d === "default" ? "options" : "policy";
+			if (d !== "default") tier3Blocks = d === "block";
+		}
+		// onOversize still governs the unreviewed overflow whatever the policy says: scan_anyway
+		// fails closed on it unless the reviewed content already blocks; skip accepts it.
+		if (overflowChunks !== undefined && !tier3Blocks && this.tier3OnOversize === "scan_anyway") {
+			oversizeBlock = true;
+			skipReason = `Tool result exceeds review ceiling; ${overflowChunks} chunks scanned, overflow unreviewed`;
+		}
+		const blocked = oversizeBlock || tier3Blocks;
+		const meta: Tier3ResultMeta = {
+			...(chunkFailures > 0 ? { errored: true } : {}),
+			...(decidedBy ? { decidedBy } : {}),
+		};
 		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
 		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
 		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when the payload
@@ -1459,7 +1889,7 @@ export class PromptDefense {
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
-			tier3: verdict ? { ...verdict } : { skipReason: skipReason ?? "Tier 3 skipped" },
+			tier3: verdict ? { ...verdict, ...meta } : { skipReason: skipReason ?? "Tier 3 skipped", ...meta },
 			fieldsDropped: [],
 			// truncatedAtDepth is the depth-limit signal only; budget-driven drops set coverageDegraded.
 			truncatedAtDepth: depthFlag.hit || undefined,
@@ -1500,9 +1930,14 @@ export class PromptDefense {
 	 *
 	 * @param value - The tool result to defend
 	 * @param toolName - Name of the tool that produced this result
+	 * @param options - Optional caller context for Tier 3 and a cancellation signal
 	 * @returns DefenseResult with allowed, riskLevel, detections, and tier2Score
 	 */
-	async defendToolResult(value: unknown, toolName: string): Promise<DefenseResult> {
+	async defendToolResult(
+		value: unknown,
+		toolName: string,
+		options: DefendToolResultOptions = {},
+	): Promise<DefenseResult> {
 		const startTime = performance.now();
 
 		// Shared stack-safety flag — flipped by any walk that hits
@@ -1517,7 +1952,7 @@ export class PromptDefense {
 		if (this.tier3Enabled && this.defenderMode === "tier3_only") {
 			const provider = this.resolveTier3Provider();
 			if (provider) {
-				return this.runTier3Only(value, provider, toolName, depthFlag, startTime);
+				return this.runTier3Only(value, provider, toolName, depthFlag, startTime, options);
 			}
 			if (!this.tier3MissingProviderWarned) {
 				this.tier3MissingProviderWarned = true;
@@ -1891,12 +2326,23 @@ export class PromptDefense {
 			}
 		}
 
-		// Tier 3 cascade escalation: when the operator opted in and Tier 2's
-		// effective score lands in the configured gray band, ask the Tier 3
-		// model for an authoritative verdict on the chunk that drove the
-		// score. The verdict overrides T2 on that chunk only — T1 sanitization
-		// and other T2 outputs are untouched. Outside the band (clearly safe
-		// or clearly dangerous) we skip the round trip.
+		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
+		const tier1Index = riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
+		const tier2Index = riskLevels.indexOf(tier2Risk);
+		// Would Tier 2 alone block? In multi-head mode the rule replaces the threshold check:
+		// a flagged chunk under (main >= mainThr AND aux < auxThr) is a Tier 2 threat; the aux
+		// veto suppresses the threshold-based Tier 2 signal entirely.
+		const tier2HasThreat = tier2MultiheadBlocked
+			? true
+			: tier2MultiheadBlocked === false
+				? false
+				: tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold;
+
+		// Tier 3 cascade escalation: when the operator opted in and Tier 2's effective score lands
+		// in the gray band, ask Tier 3 about the chunk that drove the score. Outside the band
+		// (clearly safe or clearly dangerous) we skip the round trip.
+		// tier3OverrideBlock: true = Tier 3 adds a block; false = Tier 3 removes the Tier 2 threat;
+		// undefined = Tier 2's verdict stands.
 		let tier3Result: DefenseResult["tier3"];
 		let tier3OverrideBlock: boolean | undefined;
 		if (
@@ -1908,25 +2354,19 @@ export class PromptDefense {
 			maxSentence
 		) {
 			const provider = this.resolveTier3Provider();
+			let outcome: Tier3CallOutcome | undefined;
 			if (provider) {
-				try {
-					const boundedChunk =
-						maxSentence.length > this.tier3MaxTextLength
-							? maxSentence.slice(0, this.tier3MaxTextLength)
-							: maxSentence;
-					const raw = await provider.classify(boundedChunk, { toolName });
-					const validated = this.validateTier3Verdict(raw);
-					if ("skipReason" in validated) {
-						tier3Result = { skipReason: validated.skipReason };
-					} else {
-						tier3Result = { ...validated };
-						tier3OverrideBlock = this.isTier3Block(validated);
-					}
-				} catch (err) {
-					tier3Result = {
-						skipReason: `Tier 3 provider error: ${describeError(err)}`,
-					};
-				}
+				this.warnIfRiskyOverride(provider);
+				const boundedChunk =
+					maxSentence.length > this.tier3MaxTextLength
+						? maxSentence.slice(0, this.tier3MaxTextLength)
+						: maxSentence;
+				outcome = await this.callTier3(
+					provider,
+					boundedChunk,
+					{ toolName, mode: "cascade", ...options.context },
+					options.signal,
+				);
 			} else {
 				if (!this.tier3MissingProviderWarned) {
 					this.tier3MissingProviderWarned = true;
@@ -1934,19 +2374,78 @@ export class PromptDefense {
 						"[defender] enableTier3=true but no Tier 3 provider is registered. Cascade will skip Tier 3 escalation. Call setDefaultTier3Provider() at app startup.",
 					);
 				}
-				tier3Result = { skipReason: "No Tier 3 provider registered" };
+				this.emitTier3Event({ kind: "missing_provider", mode: "cascade" });
 			}
+			const verdict = outcome?.kind === "verdict" ? outcome.verdict : undefined;
+			// A missing provider is a failure only when the operator asked to fail closed.
+			const failed = outcome?.kind === "failed" || (outcome === undefined && this.tier3OnError === "block");
+			const skipReason =
+				outcome?.kind === "failed"
+					? outcome.skipReason
+					: outcome === undefined
+						? "No Tier 3 provider registered"
+						: "Tier 3 skipped";
+			const meta: Tier3ResultMeta = failed ? { errored: true } : {};
+
+			let ask: "block" | "allow" | undefined;
+			let viaPolicy = false;
+			if (this.tier3Decide) {
+				const d = this.runTier3Decide({
+					mode: "cascade",
+					tier1: {
+						detected: detections.length > 0 || tier1FlaggedFields.length > 0,
+						riskLevel: sanitized.metadata.overallRiskLevel,
+					},
+					tier2: {
+						wouldBlock: tier2HasThreat,
+						score: tier2Score ?? tier2EffectiveScore,
+						effectiveScore: tier2EffectiveScore,
+						...(tier2AuxScore !== undefined ? { auxScore: tier2AuxScore } : {}),
+						multihead: tier2MultiheadBlocked !== undefined,
+					},
+					tier3: verdict
+						? {
+								ran: true,
+								decision: this.isTier3Block(verdict) ? "block" : "allow",
+								score: verdict.score,
+								refused: verdict.refused === true,
+							}
+						: { ran: false, errored: failed, skipReason },
+					toolName,
+				});
+				viaPolicy = d !== "default";
+				if (viaPolicy) ask = d as "block" | "allow";
+				meta.decidedBy = viaPolicy ? "policy" : "options";
+			}
+			if (!viaPolicy) {
+				if (verdict) {
+					ask = this.isTier3Block(verdict) ? "block" : "allow";
+				} else if (failed) {
+					const onError = this.tier3OnError ?? "tier2";
+					if (onError === "allow") ask = "allow";
+					// Fail closed only on payloads Tier 2 already flagged, so an outage can't block the band.
+					else if (onError === "block" && tier2Index >= riskLevels.indexOf("medium")) ask = "block";
+				}
+			}
+			if (ask === "block") {
+				tier3OverrideBlock = true;
+			} else if (ask === "allow") {
+				if (!tier2HasThreat) {
+					tier3OverrideBlock = false;
+				} else if (viaPolicy || this.tier3OverridePermitted(tier2Score ?? tier2EffectiveScore)) {
+					tier3OverrideBlock = false;
+					meta.overrideApplied = true;
+				} else {
+					meta.overrideSuppressed = true;
+				}
+			}
+			tier3Result = verdict ? { ...verdict, ...meta } : { skipReason, ...meta };
 		}
 
 		// Combine risk levels (take the higher of Tier 1 and Tier 2)
-		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
-		const tier1Index = riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
-		const tier2Index = riskLevels.indexOf(tier2Risk);
 		let riskLevel = riskLevels[Math.max(tier1Index, tier2Index)];
-		// Tier 3 verdict in cascade is authoritative on the escalated chunk:
-		// block → bump to high (if not already higher); allow → drop the
-		// Tier 2 contribution back to low so the chunk isn't blocked by the
-		// stale T2 score that triggered escalation.
+		// Tier 3 in cascade: block → bump to high (if not already higher); allow → drop the
+		// Tier 2 contribution back to the Tier 1 level so the stale T2 score doesn't block.
 		if (tier3OverrideBlock === true && riskLevels.indexOf(riskLevel) < riskLevels.indexOf("high")) {
 			riskLevel = "high";
 		} else if (tier3OverrideBlock === false && tier2Index > tier1Index) {
@@ -1957,21 +2456,8 @@ export class PromptDefense {
 			riskLevel = "high";
 		}
 
-		// Determine whether any threat signals were found (Tier 1 or Tier 2).
-		// fieldsSanitized captures sanitization methods (role stripping, encoding detection, etc.)
-		// that may fire without adding named pattern detections, so we include it here.
-		// In multi-head mode the rule replaces the threshold check: a flagged
-		// chunk under (main >= mainThr AND aux < auxThr) is a Tier 2 threat;
-		// aux veto suppresses the threshold-based Tier 2 signal entirely.
-		const tier2HasThreat = tier2MultiheadBlocked
-			? true
-			: tier2MultiheadBlocked === false
-				? false
-				: tier2EffectiveScore !== undefined && tier2EffectiveScore >= this.config.tier2.highRiskThreshold;
-		// Tier 3 verdict in cascade is authoritative — when it says block it
-		// adds a threat; when it says allow it suppresses the Tier 2 threat
-		// that triggered escalation so the operator's "T3 said allow" path
-		// reads as `allowed: true`.
+		// Threat signals: Tier 1 detections and flagged fields (never undone by Tier 3), the
+		// Tier 2 threat unless Tier 3 removed it, and a Tier 3 block.
 		const tier3OverrodeToAllow = tier3OverrideBlock === false;
 		const tier3OverrodeToBlock = tier3OverrideBlock === true;
 		const hasThreats =
@@ -2069,11 +2555,19 @@ export class PromptDefense {
 	 *
 	 * Runs Tier 1 synchronously per result, then Tier 2 concurrently across all results.
 	 *
-	 * @param items - Array of { value, toolName } pairs to defend
+	 * @param items - Array of { value, toolName, context? } to defend
+	 * @param options - Optional cancellation signal shared by all items
 	 * @returns Array of DefenseResults in the same order as input
 	 */
-	async defendToolResults(items: Array<{ value: unknown; toolName: string }>): Promise<DefenseResult[]> {
-		return Promise.all(items.map(({ value, toolName }) => this.defendToolResult(value, toolName)));
+	async defendToolResults(
+		items: Array<{ value: unknown; toolName: string; context?: Tier3CallerContext }>,
+		options: { signal?: AbortSignal } = {},
+	): Promise<DefenseResult[]> {
+		return Promise.all(
+			items.map(({ value, toolName, context }) =>
+				this.defendToolResult(value, toolName, { ...(context ? { context } : {}), signal: options.signal }),
+			),
+		);
 	}
 
 	/**

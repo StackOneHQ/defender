@@ -79,7 +79,7 @@ if (!result.allowed) {
   <img src="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/demo-light.svg" alt="Defender flow: a poisoned email with an injection payload is intercepted by @stackone/defender and blocked before reaching the LLM, with riskLevel: critical and tier2Score: 0.97" width="900" />
 </picture>
 
-`defendToolResult()` runs a tiered defense pipeline. Tier 1 + Tier 2 are on by default; Tier 3 is opt-in and consumer-supplied.
+`defendToolResult()` runs a tiered defense pipeline. Tier 1 + Tier 2 are on by default; Tier 3 is opt-in and runs the LLM you choose.
 
 ### Tier 1 — Pattern Detection (sync, ~1ms)
 
@@ -109,71 +109,186 @@ Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
 | jayavibhav (adversarial) | 0.9717 | ~1k |
 | **Average** | **0.9079** | ~25k |
 
-### Tier 3 — LLM Classification (opt-in, consumer-supplied)
+### Tier 3 — LLM review (opt-in, bring your own LLM)
 
-Authoritative LLM-based classification for the cases Tier 2 finds ambiguous. Defender ships ONLY the orchestration and the `Tier3Provider` interface — the actual model endpoint (e.g. a hosted LLM, OpenAI, an internal inference service) lives in your code. This keeps proprietary models and credentials out of the OSS package.
+An LLM reviews the cases Tier 2 is unsure about, or every tool result. You choose the LLM: OpenAI, Anthropic, Gemini, a local model, or any endpoint you run. Defender sends it a prompt, reads back a `block` / `allow` verdict, and applies your policy. Defender adds no LLM dependencies.
 
-Two modes selectable via `defenderMode`:
-- **`"cascade"`** (default): T1 → T2 → T3, with T3 invoked only when the Tier 2 effective score is in the configured gray band (default `[0.3, 0.85)`). The T3 verdict authoritatively overrides T2 on the escalated chunk: a `"block"` forces a block, an `"allow"` rescues the chunk back to allowed. Outside the band defender skips the round trip.
-- **`"tier3_only"`**: skip T1 + T2 entirely; the LLM reviews the tool result directly. T1 detection still runs to populate `detections` metadata, but content is not rewritten (detect-and-gate) and the block/allow decision is the T3 verdict alone. The serialized result is reviewed in boundary-aware chunks (≤ `maxTextLength` each, targeting `maxChunks` — uneven lines can add one) with union-of-blocks aggregation. Content beyond the coverage ceiling — or beyond the shared `traversal.maxSize` resource bound — is routed to `onOversize` (`'skip'` allows the unreviewed overflow; `'block'`/`'scan_anyway'` fail closed only when `blockHighRisk: true`, matching defender's allow-by-default invariant).
+Two modes, set with `defenderMode`:
+- **`"cascade"`** (default): T1 → T2 → T3. Tier 3 runs only when the Tier 2 score is in the gray band (default `[0.3, 0.85)`). A `"block"` adds a block. An `"allow"` can undo a Tier 2 block; `allowOverride` controls that.
+- **`"tier3_only"`**: the LLM reviews the whole tool result and makes the decision. Tier 1 still runs to fill `detections`, but doesn't block. Large results are split into chunks (≤ `maxTextLength` each, about `maxChunks` of them), and any blocking chunk blocks the call. Content past that ceiling, or past the shared `traversal.maxSize` bound, goes to `onOversize`.
 
-Register a provider once at app startup:
+#### Use any OpenAI-compatible endpoint
+
+Works with OpenAI, vLLM, Ollama, OpenRouter, LiteLLM and other compatible gateways:
+
+```typescript
+import { createOpenAICompatibleTier3Provider, createPromptDefense } from '@stackone/defender';
+
+const provider = createOpenAICompatibleTier3Provider({
+  baseURL: 'https://api.openai.com/v1',
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'gpt-4.1-mini',
+});
+
+const defense = createPromptDefense({
+  blockHighRisk: true,
+  enableTier3: true,
+  tier3: { provider, allowOverride: false, timeoutMs: 5000 },
+});
+```
+
+Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`.
+
+#### Use any other LLM
+
+`createLlmTier3Provider` takes one function that calls your model and returns its text. Defender builds the prompt and parses the reply. For example, with the Anthropic SDK:
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { createLlmTier3Provider } from '@stackone/defender';
+
+const anthropic = new Anthropic();
+
+const provider = createLlmTier3Provider({
+  complete: async ({ messages, signal }) => {
+    const system = messages.find((m) => m.role === 'system')?.content;
+    const r = await anthropic.messages.create(
+      { model: 'claude-haiku-4-5', max_tokens: 300, system, messages: messages.filter((m) => m.role !== 'system') },
+      { signal },
+    );
+    const text = r.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+    return { text, refused: r.stop_reason === 'refusal' };
+  },
+});
+```
+
+The same shape works with the Vercel AI SDK, LangChain or plain `fetch`. Return `refused: true` when the model refuses or a content filter fires: defender treats that as a block, because an attacker can trigger a refusal on purpose. If you can compute a real P(block), for example from logprobs, return it as `score`.
+
+What defender does for you:
+- **Prompt.** `DEFAULT_TIER3_PROMPT` is used unless you pass `prompt`, either `{ system, user }` with `{{content}}`, `{{toolName}}`, `{{userGoal}}` and `{{toolDescription}}` placeholders (`{{content}}` exactly once, in `user`), or a function that returns messages. `result.tier3.promptVersion` reports which prompt ran.
+- **Delimiting.** The tool output is wrapped in marker lines with a random id per call, so it can't close its own wrapper. Look-alike markers inside it are rewritten. The tool name, `userGoal` and `toolDescription` are treated as untrusted too.
+- **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`. Anything else is a failure and goes to `onError`. This stops JSON planted in the tool output from choosing the verdict.
+
+#### Write your own provider
+
+A provider is one method. Use this when you already have a reviewer endpoint with its own prompt and parsing:
 
 ```typescript
 import { setDefaultTier3Provider, type Tier3Provider } from '@stackone/defender';
 
 const myProvider: Tier3Provider = {
   async classify(text, ctx) {
-    // Call your LLM endpoint here. Return { decision, score?, raw? }.
-    const verdict = await fetchMyLLMEndpoint({ text, toolName: ctx?.toolName });
-    return { decision: verdict.block ? 'block' : 'allow', score: verdict.confidence };
+    const verdict = await callMyReviewer(text, { toolName: ctx?.toolName, signal: ctx?.signal });
+    return { decision: verdict.block ? 'block' : 'allow', score: verdict.pBlock };
   },
 };
-setDefaultTier3Provider(myProvider);
+setDefaultTier3Provider(myProvider);   // or pass it as tier3.provider
 ```
 
-Then opt into Tier 3 per `PromptDefense` instance:
+`classify` gets the text to review and `ctx`:
+- `toolName`
+- `signal` (pass it to your call so timeouts and cancellation stop it)
+- `deadline`
+- `mode`
+- `chunk` (tier3_only)
+- `userGoal` / `toolDescription` (when the caller passes them)
+
+In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines).
+
+It returns a `Tier3Verdict`:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `decision` | yes | `"block"` or `"allow"` |
+| `score` | no | P(block) in [0, 1]. Used by `blockThreshold`. Must be a real probability, not "confidence in my decision" |
+| `refused` | no | The model refused. Always counts as a block |
+| `reason` | no | Short explanation. Untrusted: it can quote attacker text |
+| `raw`, `latencyMs`, `usage` | no | For logs and metrics |
+
+#### Policy
 
 ```typescript
 const defense = createPromptDefense({
   blockHighRisk: true,
   enableTier3: true,
-  defenderMode: 'cascade',                // or 'tier3_only'
+  defenderMode: 'cascade',                        // or 'tier3_only'
   tier3: {
-    escalationBand: { lower: 0.3, upper: 0.85 },  // cascade only — [lower, upper), defaults shown
-    maxTextLength: 10000,                          // per-call LLM review window (per-chunk cap in tier3_only)
-    maxChunks: 5,                                  // tier3_only — max chunks reviewed in parallel
-    onOversize: 'skip',                            // tier3_only — 'skip' | 'block' | 'scan_anyway'
-    blockThreshold: 0.622,                         // optional; decide on score instead of the model's word
+    provider,                                     // or setDefaultTier3Provider(...)
+    escalationBand: { lower: 0.3, upper: 0.85 },  // cascade: when Tier 3 runs
+    allowOverride: true,                          // cascade: can an "allow" undo a Tier 2 block?
+    onError: 'tier2',                             // what a failure does
+    timeoutMs: 5000,                              // per call; default none
+    maxConcurrency: 8,                            // in-flight calls per instance; default unbounded
+    maxTextLength: 10000,                         // per call (per chunk in tier3_only)
+    maxChunks: 5,                                 // tier3_only
+    onOversize: 'skip',                           // tier3_only: 'skip' | 'block' | 'scan_anyway'
+    stopOnFirstBlock: false,                      // tier3_only: abort the other chunks after a block
+    blockThreshold: 0.622,                        // optional; decide on score instead of the decision word
+    includeRaw: true,                             // keep result.tier3.raw
+    onEvent: (e) => metrics.record(e),            // one event per call; no content
   },
+});
+```
+
+**`allowOverride`** (cascade). The judge reads attacker text, so a general-purpose LLM can be talked into `allow`. This setting limits what that `allow` can do:
+
+| Setting | A Tier 3 `allow` when Tier 2 would block |
+|---|---|
+| `true` (default) | undoes the Tier 2 block |
+| `false` | is ignored; Tier 3 can only add blocks |
+| `{ maxTier2Score: 0.75 }` | undoes the block only when Tier 2's score (before density damping) is below 0.75 |
+
+Use `false` or `{ maxTier2Score }` until you've tested your judge against text written to fool it. Defender logs a one-time warning when `allowOverride` is `true` with a provider from `createLlmTier3Provider` or `createOpenAICompatibleTier3Provider`.
+
+**`onError`**. A failure is a throw, a timeout, an invalid or unparseable verdict, or a caller cancellation:
+
+| Setting | Cascade | tier3_only |
+|---|---|---|
+| `"tier2"` (cascade default) | keep Tier 2's verdict | not allowed; uses `"allow"` |
+| `"allow"` (tier3_only default) | treat as an `allow` (subject to `allowOverride`) | drop failed chunks; other chunks decide |
+| `"block"` | block if Tier 2 rated the payload medium or higher | block if any chunk failed; `onOversize` defaults to `"scan_anyway"` |
+
+Under `"block"`, a missing provider also counts as a failure. `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
+
+**`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated), and returns `"block"`, `"allow"` or `"default"` (use the options above):
+
+```typescript
+tier3: {
+  decide: ({ tier2, tier3 }) =>
+    tier3.ran && tier3.decision === 'allow' && tier2 && tier2.score < 0.9 ? 'allow' : 'default',
+}
+```
+
+It receives scores and verdict metadata only, never the content, `reason` or `raw`. It must be synchronous. A throw or invalid return falls back to `"default"` and warns once. It can't undo a Tier 1 detection, override `onOversize`, or block when `blockHighRisk` is false.
+
+**Caller context.** A judge decides better when it knows the user's task. Pass it per call:
+
+```typescript
+await defense.defendToolResult(toolOutput, 'gmail_get_message', {
+  context: { userGoal: 'Summarize my unread mail', toolDescription: 'Returns one email' },
+  signal,                                        // optional: cancels in-flight Tier 3 calls
 });
 ```
 
 #### Choosing the operating point (`blockThreshold`)
 
-By default the model's generated `decision` word is authoritative. That word is
-the model's argmax, which means an implicit 0.5 cut that nobody chose — and one
-that moves on its own whenever the model is retrained.
+By default the model's `decision` word decides. That word is the model's argmax, an implicit 0.5 cut that nobody chose, and one that moves whenever the model is retrained.
 
-Set `tier3.blockThreshold` to decide on `verdict.score` (P(block)) instead. The
-cut becomes an explicit config value: raise it to trade recall for fewer false
-positives, lower it for the reverse. `0.5` reproduces argmax exactly.
+Set `tier3.blockThreshold` to decide on `verdict.score` (P(block)) instead. The cut becomes an explicit config value: raise it for fewer false positives, lower it for more recall. `0.5` reproduces argmax.
 
-```typescript
-tier3: { blockThreshold: 0.622 }   // e.g. matched to a target false-positive rate
-```
+This needs a provider that reports `score` as a real P(block). A model's self-reported "confidence" is not one, so `createLlmTier3Provider` only sets `score` when your `complete` returns it. When `score` is missing, the `decision` is used and defender warns once.
 
-Requires a provider that reports `score` as P(block) — not as "confidence in
-whichever decision I made", since those invert on allows. If `score` is missing
-or out of range the verdict's `decision` is used instead and defender warns
-once, so a provider that cannot report a score degrades to the default behavior
-rather than failing.
+#### What you get back
 
-Fail-open semantics:
-- Provider error or timeout in either mode records a `skipReason` on `result.tier3`; in cascade defender falls back to the Tier 2 decision, in `tier3_only` defender allows the request.
-- `enableTier3: true` with no registered provider falls back to the standard T1 + T2 cascade and logs one warning per instance. T3 misconfiguration never silently disables defense.
+- `result.tier3` is present when Tier 3 ran or was skipped. Use `"tier3" in result` to check.
+- With a verdict, `result.tier3` holds `decision`, `score`, `reason` and the other verdict fields. Otherwise it holds `skipReason`, which is short and redacted.
+- `errored: true` marks a real failure, not a planned skip.
+- In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
+- `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
+- `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.
+- Defender logs one warning after 20 consecutive provider failures, which usually means a bad key or model name. Use `onEvent` for proper alerting.
 
-When Tier 3 runs, the result carries a `result.tier3` field with the verdict. When it doesn't run, the key is absent — use `"tier3" in result` to probe.
+**Data handling:** Tier 3 sends tool output to the endpoint you configure. Don't log `reason` or `raw` where tool content mustn't go, and don't show them to the agent; set `includeRaw: false` if needed.
 
 ### Understanding `allowed` vs `riskLevel`
 
@@ -312,17 +427,17 @@ await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
 
 ### Tier 3 Setup
 
-Register one Tier 3 provider per process at app startup. Defender resolves it lazily on every `defendToolResult()` call that opts in via `enableTier3: true`, so a later `setDefaultTier3Provider()` registration is picked up automatically. Pass `null` to clear (useful in tests).
+Register one Tier 3 provider per process at app startup, or pass one per instance as `tier3.provider`. Defender looks up the registered provider on every call, so registering after construction still works. Pass `null` to clear it (useful in tests).
 
 ```typescript
 import { setDefaultTier3Provider, getDefaultTier3Provider } from '@stackone/defender';
 
-setDefaultTier3Provider(myProvider);
+setDefaultTier3Provider(provider);
 // ...later, in tests:
 setDefaultTier3Provider(null);
 ```
 
-`PromptDefenseOptions.tier3.provider` overrides the registry default for a specific `PromptDefense` instance — useful when you want different providers for different code paths.
+`enableTier3: true` with no provider registered skips Tier 3 and logs one warning per instance. In `tier3_only` it falls back to the T1 + T2 cascade. See [Tier 3](#tier-3--llm-review-opt-in-bring-your-own-llm) for providers and policy.
 
 ## Integration Example
 
