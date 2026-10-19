@@ -131,7 +131,13 @@ export interface Tier3Verdict {
 	 * "confidence in whichever decision I made" — the two invert on allows.
 	 */
 	score?: number;
-	/** Raw provider output for logging / debugging. Opaque to defender. */
+	/** Model explanation. Untrusted: it can quote attacker text. Never feed it back to an agent. */
+	reason?: string;
+	/** The model refused, a content filter fired, or the reply was unusable. `decision` is then "block". */
+	refused?: boolean;
+	/** Prompt version used by a `createLlmTier3Provider` provider ("custom" for a user prompt). */
+	promptVersion?: string;
+	/** Raw provider output for logging / debugging. Opaque to defender. Dropped when `tier3.includeRaw` is false. */
 	raw?: unknown;
 	/** Round-trip latency to the provider in milliseconds. */
 	latencyMs?: number;
@@ -144,16 +150,36 @@ export interface Tier3Verdict {
 }
 
 /**
+ * Optional caller context for one `defendToolResult` call. Passed through to
+ * the Tier 3 provider; defender itself does not read it. Both fields can carry
+ * untrusted text (a poisoned MCP tool description, earlier untrusted turns).
+ */
+export interface Tier3CallerContext {
+	/** What the user asked the agent to do. */
+	userGoal?: string;
+	/** Description of the tool that produced the result. */
+	toolDescription?: string;
+}
+
+/** Context passed to `Tier3Provider.classify`. All fields are optional. */
+export interface Tier3Context extends Tier3CallerContext {
+	toolName?: string;
+	/** Aborted at the deadline, on caller cancellation, or when the result is no longer needed. */
+	signal?: AbortSignal;
+	/** Absolute deadline (ms since epoch), set when `tier3.timeoutMs` is configured. */
+	deadline?: number;
+	mode?: "cascade" | "tier3_only";
+	/** tier3_only: which chunk this call reviews. */
+	chunk?: { index: number; total: number };
+}
+
+/**
  * Tier 3 classifier interface.
  *
- * Implementations live OUTSIDE the defender package — defender ships only the
- * interface and orchestration. Register a default provider at app startup via
- * `setDefaultTier3Provider(...)`; `createPromptDefense` will pick it up when
- * `enableTier3: true` is set on options.
- *
- * Implementations are responsible for: prompt formatting, model invocation
- * (e.g. SageMaker, OpenAI, local LLM), result parsing, and their own
- * timeout/retry policy.
+ * Register a default provider at app startup via `setDefaultTier3Provider(...)`,
+ * or pass one as `tier3.provider`. `createLlmTier3Provider` and
+ * `createOpenAICompatibleTier3Provider` build one around any LLM; a hand-written
+ * provider owns its own prompt, parsing and transport.
  */
 export interface Tier3Provider {
 	/**
@@ -164,10 +190,48 @@ export interface Tier3Provider {
 	 *   result serialized as record-oriented `field: value` blocks (nested keys
 	 *   dotted, arrays indexed, records blank-line separated), capped to
 	 *   `tier3.maxTextLength`, so structured values keep their field context.
-	 * @param ctx - Optional context (e.g. originating tool name) the provider
-	 *   may include in its prompt.
+	 * @param ctx - Optional context the provider may use. Pass `ctx.signal` to
+	 *   the model call so a timeout or cancellation stops it.
 	 */
-	classify(text: string, ctx?: { toolName?: string }): Promise<Tier3Verdict>;
+	classify(text: string, ctx?: Tier3Context): Promise<Tier3Verdict>;
+}
+
+/** Event emitted to `tier3.onEvent` once per Tier 3 provider call (or missing provider). */
+export interface Tier3Event {
+	kind: "verdict" | "refusal" | "error" | "timeout" | "missing_provider" | "policy_error";
+	mode: "cascade" | "tier3_only";
+	chunk?: { index: number; total: number };
+	latencyMs?: number;
+	usage?: Tier3Verdict["usage"];
+	/** Short, redacted error text. Never includes content, `reason` or `raw`. */
+	errorCode?: string;
+}
+
+/** Input to the `tier3.decide` policy function. Metadata only: never content, `reason` or `raw`. */
+export interface Tier3DecisionInput {
+	mode: "cascade" | "tier3_only";
+	tier1: { detected: boolean; riskLevel: RiskLevel };
+	tier2?: {
+		/** Whether Tier 2 alone would block this payload. */
+		wouldBlock: boolean;
+		/** Top-chunk score before density damping (multihead: top blocking main score). */
+		score: number;
+		/** Score used for escalation and blocking. */
+		effectiveScore: number;
+		auxScore?: number;
+		multihead: boolean;
+	};
+	tier3:
+		| {
+				ran: true;
+				decision: "block" | "allow";
+				score?: number;
+				refused: boolean;
+				/** tier3_only: chunks that failed or were aborted by stopOnFirstBlock. */
+				unreviewedChunks?: number;
+		  }
+		| { ran: false; errored: boolean; skipReason: string };
+	toolName?: string;
 }
 
 /**

@@ -17,9 +17,25 @@
  * ```
  */
 
-// Tier 3 provider registry — consumers register a proprietary provider
-// (e.g. a SageMaker-hosted LLM) once at app startup; defender ships only
-// the interface and orchestration.
+// Tier 3: build a provider around any LLM, or register a hand-written one once at startup.
+export {
+	buildTier3Messages,
+	createLlmTier3Provider,
+	DEFAULT_TIER3_PROMPT,
+	type LlmCompletion,
+	type LlmCompletionRequest,
+	type LlmMessage,
+	type LlmTier3ProviderOptions,
+	type PromptInput,
+	parseVerdictJson,
+	TIER3_PROMPT_VERSION,
+	type Tier3PromptTemplate,
+	VERDICT_JSON_SCHEMA,
+} from "./classifiers/tier3-llm-provider";
+export {
+	createOpenAICompatibleTier3Provider,
+	type OpenAICompatibleTier3Options,
+} from "./classifiers/tier3-openai-compatible";
 export {
 	getDefaultTier3Provider,
 	setDefaultTier3Provider,
@@ -28,9 +44,11 @@ export {
 export {
 	createPromptDefense,
 	type DefenderMode,
+	type DefendToolResultOptions,
 	type DefenseResult,
 	PromptDefense,
 	type PromptDefenseOptions,
+	type Tier3ResultMeta,
 } from "./core/prompt-defense";
 // SFE preprocessor (off by default; opt in via PromptDefenseOptions.useSfe)
 export {
@@ -42,6 +60,15 @@ export {
 	sfePreprocess,
 } from "./sfe/preprocess";
 // Types
-export type { RiskLevel, Tier1Result, Tier3Provider, Tier3Verdict } from "./types";
+export type {
+	RiskLevel,
+	Tier1Result,
+	Tier3CallerContext,
+	Tier3Context,
+	Tier3DecisionInput,
+	Tier3Event,
+	Tier3Provider,
+	Tier3Verdict,
+} from "./types";
 // Boundary helpers for consumers that opt into `annotateBoundary`
 export { containsBoundaryPatterns, generateBoundaryInstructions } from "./utils/boundary";
