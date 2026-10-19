@@ -154,8 +154,9 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 			let resp: Response;
 			try {
 				// Never follow redirects: fetch keeps custom auth headers (e.g. Azure `api-key`) and sends
-				// the tool content to whatever origin a 3xx points at.
-				resp = await doFetch(url, { method: "POST", headers, body, signal, redirect: "error" });
+				// the tool content to whatever origin a 3xx points at. "manual" hands back the 3xx, which
+				// the !resp.ok branch reports as "HTTP 3xx" without retrying.
+				resp = await doFetch(url, { method: "POST", headers, body, signal, redirect: "manual" });
 			} catch (err) {
 				if (signal.aborted) throw new Error("request aborted");
 				if (canRetry()) {

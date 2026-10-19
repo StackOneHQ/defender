@@ -372,7 +372,6 @@ interface DefenseResult {
     skipReason?: string;        // set instead of decision when Tier 3 didn't produce a verdict
     errored?: boolean; overrideApplied?: boolean; overrideSuppressed?: boolean; decidedBy?: 'policy' | 'options';
   };
-       | { skipReason: string };
   // tier3_only chunk telemetry — present only when the chunk-review path ran.
   tier3ChunkSummary?: { chunks: number; blocked: number; blockingChunk?: number; oversize?: boolean };
 

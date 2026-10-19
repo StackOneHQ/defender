@@ -225,7 +225,7 @@ describe("createOpenAICompatibleTier3Provider", () => {
 		expect(body).not.toHaveProperty("temperature");
 		expect(body.response_format.type).toBe("json_schema");
 		// Redirects would carry custom auth headers and the tool content to another origin.
-		expect(init?.redirect).toBe("error");
+		expect(init?.redirect).toBe("manual");
 		expect(v).toMatchObject({ decision: "allow", usage: { totalTokens: 5 } });
 	});
 
@@ -330,6 +330,38 @@ describe("createOpenAICompatibleTier3Provider", () => {
 	it("a 2xx with no choices is a provider fault (throws, so onError decides), not a block", async () => {
 		const provider = createOpenAICompatibleTier3Provider({ baseURL: "https://x/v1", model: "m", fetch: async () => okResponse({}) });
 		await expect(provider.classify("x")).rejects.toThrow(/no choice/);
+	});
+
+	it("does not follow a redirect: the target gets nothing and the error names the 3xx, without a retry", async () => {
+		const { createServer } = await import("node:http");
+		let targetHits = 0;
+		let originHits = 0;
+		const target = createServer((_req, res) => {
+			targetHits++;
+			res.end("{}");
+		});
+		await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
+		const targetPort = (target.address() as { port: number }).port;
+		const origin = createServer((_req, res) => {
+			originHits++;
+			res.writeHead(307, { location: `http://127.0.0.1:${targetPort}/v1/chat/completions` });
+			res.end();
+		});
+		await new Promise<void>((r) => origin.listen(0, "127.0.0.1", r));
+		const originPort = (origin.address() as { port: number }).port;
+		try {
+			const provider = createOpenAICompatibleTier3Provider({
+				baseURL: `http://127.0.0.1:${originPort}/v1`,
+				model: "m",
+				headers: { "api-key": "AZUREKEY" },
+			});
+			await expect(provider.classify("TOOL CONTENT")).rejects.toThrow(/HTTP 307/);
+			expect(targetHits).toBe(0);
+			expect(originHits).toBe(1);
+		} finally {
+			target.close();
+			origin.close();
+		}
 	});
 
 	it("does not retry when the deadline doesn't allow it", async () => {

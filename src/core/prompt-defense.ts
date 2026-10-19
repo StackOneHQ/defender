@@ -1596,9 +1596,8 @@ export class PromptDefense {
 			if ("skipReason" in validated) return this.tier3Failed(ctx, "error", validated.skipReason);
 			const verdict: Tier3Verdict = { ...validated };
 			if (!this.tier3IncludeRaw) delete verdict.raw;
-			// A refusal or unusable reply blocks, but every call refusing usually means a broken
-			// setup (prose-only model, too few tokens), so it gets its own warning and doesn't
-			// reset the failure streak.
+			// A refusal or unusable reply blocks. It counts toward its own streak (every call refusing
+			// usually means a broken setup: prose-only model, too few tokens) and breaks a failure run.
 			if (verdict.refused) this.noteTier3Refusal();
 			else this.noteTier3Success();
 			this.emitTier3Event({

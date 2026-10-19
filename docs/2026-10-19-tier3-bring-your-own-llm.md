@@ -553,7 +553,7 @@ Two adversarial reviews of the implementation led to these changes. The sections
 
 - **The slot wait is limited to 10 × `timeoutMs`, not `timeoutMs`.** With the tighter limit, a large payload sent to a healthy but slow judge made its late chunks fail. In `tier3_only` that fails open, so a late-chunk injection got through. The wait now uses the same limit after which a hung call gives its slot back. Overload goes to `onError`.
 - **More moderation responses count as refusals and block.** These are HTTP 400 `invalid_prompt` and a 2xx with an empty `choices` array (a gateway safety block). A body with no `choices` field at all still goes to `onError`.
-- **Refusals and unusable replies no longer reset the failure streak.** They have their own warning after 20 in a row, so a model that can't follow the format shows up instead of silently blocking everything.
+- **Refusals and unusable replies get their own warning** after 20 in a row, so a model that can't follow the format shows up instead of silently blocking everything. (Superseded in part by the fourth review: a refusal now resets the failure streak.)
 - **`timeoutMs` is capped,** so 10 × `timeoutMs` fits a `setTimeout` delay.
 - **Loopback means `localhost`, `::1`, or a dotted-quad `127.x.x.x`.** `127.evil.com` is rejected. Credentials in `baseURL` are rejected. An existing `/chat/completions` path isn't doubled.
 - **Redaction handles escaped quotes,** and no longer redacts `max_tokens`-style names.
