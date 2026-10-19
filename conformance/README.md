@@ -68,6 +68,6 @@ To add a case, add an `input` without an `expect`, then run `pnpm conformance:up
 
 ## Python
 
-`defender-py` keeps a pinned copy in `tests/conformance/`, with a `VERSION` file naming the TS tag it matches (e.g. `defender-v0.9.1`). A sync script copies the folder at a tag, and a CI check confirms the copy matches it. Porting a TS release starts with syncing its fixtures; the new cases fail in Python until the port is done.
+`defender-py` keeps a pinned copy in `tests/conformance/`, with a `VERSION` file naming the TS tag or commit it matches (e.g. `defender-v0.9.2`, or a commit SHA until a release tag includes the change). A sync script copies the folder at either ref, and a CI check confirms the copy matches it. Porting a TS release starts with syncing its fixtures; the new cases fail in Python until the port is done.
 
 This folder is not published to npm: the package's `files` allowlist is `dist`, `package.json`, `README.md` and `LICENSE`.
