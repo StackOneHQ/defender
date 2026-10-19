@@ -1,0 +1,124 @@
+{
+	"version": 1,
+	"area": "tier3-redact",
+	"description": "Provider error text → the redacted skipReason defender reports (URL paths/queries, credentials, token shapes removed; whitespace collapsed; capped).",
+	"cases": [
+		{
+			"id": "plain-message",
+			"input": {
+				"message": "503 Service Unavailable"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: 503 Service Unavailable"
+			}
+		},
+		{
+			"id": "url-path-and-query",
+			"input": {
+				"message": "fetch https://api.example.com/v1/chat?key=SECRET failed"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: fetch https://api.example.com failed"
+			}
+		},
+		{
+			"id": "url-userinfo",
+			"input": {
+				"message": "connect https://user:p4ss@host.example.com/x refused"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: connect https://host.example.com refused"
+			}
+		},
+		{
+			"id": "bearer-and-basic",
+			"input": {
+				"message": "auth Bearer TOKENVALUE and Basic dXNlcjpwYXNz rejected"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: auth Bearer [redacted] and Basic [redacted] rejected"
+			}
+		},
+		{
+			"id": "header-style",
+			"input": {
+				"message": "x-api-key: abc123SECRET api-key=def456SECRET"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: x-api-key: [redacted] api-key=[redacted]"
+			}
+		},
+		{
+			"id": "json-quoted-secret",
+			"input": {
+				"message": "{\"apiKey\": \"ghi789SECRET\", \"model\": \"m\"}"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {\"apiKey\": \"[redacted]\", \"model\": \"m\"}"
+			}
+		},
+		{
+			"id": "json-unterminated-secret",
+			"input": {
+				"message": "{\"apiKey\":\"UNTERMINATEDSECRET"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {\"apiKey\":\"[redacted]\""
+			}
+		},
+		{
+			"id": "json-escaped-quote-in-secret",
+			"input": {
+				"message": "{\"api_key\": \"abc\\\"def-ESCAPEDSECRET\"}"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {\"api_key\": \"[redacted]\"}"
+			}
+		},
+		{
+			"id": "token-shapes",
+			"input": {
+				"message": "keys sk-abcdefghijkl and AIzaSyA1234567890abcdefghijk leaked"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: keys sk-[redacted] and AIza[redacted] leaked"
+			}
+		},
+		{
+			"id": "access-token-redacted",
+			"input": {
+				"message": "access_token=XYZSECRET expired"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: access_token=[redacted] expired"
+			}
+		},
+		{
+			"id": "max-tokens-readable",
+			"input": {
+				"message": "max_tokens: 5 is too large; prompt_tokens=10"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: max_tokens: 5 is too large; prompt_tokens=10"
+			}
+		},
+		{
+			"id": "whitespace-collapsed",
+			"input": {
+				"message": "line one\n\n\tline   two"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: line one line two"
+			}
+		},
+		{
+			"id": "length-capped",
+			"input": {
+				"message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+			}
+		}
+	]
+}
