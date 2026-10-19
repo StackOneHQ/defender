@@ -137,7 +137,7 @@ const defense = createPromptDefense({
 });
 ```
 
-Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`. `baseURL` must use https, except for localhost; set `allowInsecureHttp: true` to send over plain http anyway.
+Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`. `baseURL` must use https, except for localhost and `127.x.x.x`; set `allowInsecureHttp: true` to send over plain http anyway. Put credentials in `apiKey` or `headers`, not in the URL. A moderation hit (`content_filter`, `invalid_prompt`, an empty `choices` array) counts as a refusal and blocks.
 
 #### Use any other LLM
 
@@ -218,7 +218,7 @@ const defense = createPromptDefense({
     escalationBand: { lower: 0.3, upper: 0.85 },  // cascade: when Tier 3 runs
     allowOverride: true,                          // cascade: can an "allow" undo a Tier 2 block?
     onError: 'tier2',                             // what a failure does
-    timeoutMs: 5000,                              // per call, and per wait for a slot; default none
+    timeoutMs: 5000,                              // per call; default none
     maxConcurrency: 8,                            // in-flight calls per instance; default unbounded
     maxTextLength: 10000,                         // per call (per chunk in tier3_only)
     maxChunks: 5,                                 // tier3_only
@@ -287,8 +287,8 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
 - `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.
-- Defender logs one warning after 20 consecutive provider failures on one instance, which usually means a bad key or model name. Caller cancellations don't count. Use `onEvent` for proper alerting.
-- `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. Waiting for a slot is limited to `timeoutMs`, so one call takes at most about 2 × `timeoutMs`.
+- Defender logs one warning after 20 consecutive provider failures on one instance, which usually means a bad key or model name. Caller cancellations don't count. A separate warning fires after 20 consecutive refusals or unusable replies, which usually means the model doesn't follow the JSON format or runs out of `maxTokens`. Use `onEvent` for proper alerting.
+- `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. A call that never finishes gives its slot back after 10 × `timeoutMs`. Waiting for a slot is limited to 10 × `timeoutMs` too, so a deep queue of healthy calls doesn't fail, and a hung provider can't stall callers forever. When the queue is overloaded, `onError` decides: use `"block"` to fail closed.
 
 **Data handling:** Tier 3 sends tool output to the endpoint you configure. Don't log `reason` or `raw` where tool content mustn't go, and don't show them to the agent; set `includeRaw: false` if needed.
 

@@ -78,6 +78,8 @@ function errorCodeOf(body: unknown): string | undefined {
 	return safeCode(err?.code) ?? safeCode(err?.type);
 }
 
+// Error codes that mean the provider refused the content (moderation), which the attacker can cause.
+const REFUSAL_CODES = new Set(["content_filter", "content_policy_violation", "invalid_prompt"]);
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 /** Append `/chat/completions` to the path (not the query), and require https except for loopback. */
@@ -88,7 +90,12 @@ function chatCompletionsUrl(baseURL: string, allowInsecureHttp: boolean): string
 	} catch {
 		throw new Error("createOpenAICompatibleTier3Provider: `baseURL` is not a valid URL");
 	}
-	const local = LOOPBACK_HOSTS.has(url.hostname) || url.hostname.startsWith("127.");
+	const local = LOOPBACK_HOSTS.has(url.hostname.toLowerCase()) || /^127(\.\d{1,3}){3}$/.test(url.hostname);
+	if (url.username || url.password) {
+		throw new Error(
+			"createOpenAICompatibleTier3Provider: put credentials in `apiKey` or `headers`, not in `baseURL`",
+		);
+	}
 	if (url.protocol === "http:" && !local && !allowInsecureHttp) {
 		throw new Error(
 			"createOpenAICompatibleTier3Provider: `baseURL` must use https (http is allowed for localhost, or with allowInsecureHttp)",
@@ -97,7 +104,8 @@ function chatCompletionsUrl(baseURL: string, allowInsecureHttp: boolean): string
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
 		throw new Error("createOpenAICompatibleTier3Provider: `baseURL` must be http(s)");
 	}
-	url.pathname = `${url.pathname.replace(/\/+$/, "")}/chat/completions`;
+	const path = url.pathname.replace(/\/+$/, "");
+	url.pathname = path.endsWith("/chat/completions") ? path : `${path}/chat/completions`;
 	return url.toString();
 }
 
@@ -165,7 +173,7 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 			}
 			if (!resp.ok) {
 				const code = errorCodeOf(parsed);
-				if (code === "content_filter" || code === "content_policy_violation") {
+				if (code && REFUSAL_CODES.has(code)) {
 					return { text: "", refused: true };
 				}
 				if ((resp.status === 429 || resp.status >= 500) && canRetry()) {
@@ -179,7 +187,11 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 					choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown; refusal?: unknown } }>;
 				}
 			)?.choices?.[0];
-			// No choice at all is a transport or proxy fault, not a judge reply, so onError decides it.
+			// An empty `choices` array is how some gateways report a safety block, which attacker
+			// content can trigger, so it blocks. No `choices` field at all is a transport or proxy
+			// fault, so onError decides it.
+			const choices = (parsed as { choices?: unknown })?.choices;
+			if (Array.isArray(choices) && choices.length === 0) return { text: "", refused: true };
 			if (!choice) throw new Error("no choice in reply");
 			// Refusals, content filters, truncated and empty replies are unusable verdicts the attacker
 			// can cause, so they block rather than fail open.

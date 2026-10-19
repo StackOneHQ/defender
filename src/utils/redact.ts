@@ -1,5 +1,7 @@
 const MAX_ERROR_TEXT = 200;
 const MAX_INPUT_TEXT = 2000;
+// Secret-looking field names. `token` must end the name, so `max_tokens` / `prompt_tokens` stay readable.
+const SECRET_NAME = String.raw`(?:[\w-]*(?:key|secret|password|authorization)[\w-]*|[\w-]*token\b)`;
 
 /**
  * Make provider error text safe to put in `skipReason` and events: strip URL
@@ -15,11 +17,8 @@ export function redactErrorText(text: string): string {
 		.replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
 		// "name": "value" and name=value / name: value, for secret-looking names.
 		// The closing quote is optional, so a value cut off or left unterminated is still removed.
-		.replace(/("[\w-]*(?:key|token|secret|password|authorization)[\w-]*"\s*:\s*)"[^"]*"?/gi, '$1"[redacted]"')
-		.replace(
-			/\b([\w-]*(?:key|token|secret|password|authorization)[\w-]*)(\s*[:=]\s*)[^\s&,;"]+/gi,
-			"$1$2[redacted]",
-		)
+		.replace(new RegExp(`("${SECRET_NAME}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"?`, "gi"), '$1"[redacted]"')
+		.replace(new RegExp(`\\b(${SECRET_NAME})(\\s*[:=]\\s*)[^\\s&,;"]+`, "gi"), "$1$2[redacted]")
 		.replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
 		.replace(/\bAIza[0-9A-Za-z_-]{20,}/g, "AIza[redacted]")
 		.replace(/\s+/g, " ")

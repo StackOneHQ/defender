@@ -297,9 +297,6 @@ function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
 }
 
-// Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
-// (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
-// throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
 /** Copy only the caller-context fields, so a caller object can't overwrite toolName, mode or chunk. */
 function pickCallerContext(context: Tier3CallerContext | undefined): Tier3CallerContext {
 	if (!context) return {};
@@ -325,6 +322,9 @@ function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undef
 	return controller.signal;
 }
 
+// Format a caught value for a message WITHOUT itself throwing: a payload getter can throw a non-Error
+// (e.g. `Object.create(null)`, or an object whose `toString` throws), and a bare `String(err)` on that
+// throws again — inside the catch — escaping the handler and crashing the very call it was guarding.
 function describeError(err: unknown): string {
 	try {
 		if (err instanceof Error) return err.message;
@@ -1109,6 +1109,7 @@ const TIER3_FAILURE_STREAK_WARN = 20;
 const TIER3_CANCELLED = "Tier 3 call cancelled by caller";
 // A call that never settles keeps its concurrency slot for at most this many timeouts.
 const TIER3_SLOT_CEILING_FACTOR = 10;
+const TIER3_MAX_TIMEOUT_MS = Math.floor(2_147_483_647 / TIER3_SLOT_CEILING_FACTOR);
 const MISSING_PROVIDER: Tier3Provider = {
 	classify: async () => {
 		throw new Error("No Tier 3 provider registered");
@@ -1157,6 +1158,8 @@ export class PromptDefense {
 	private tier3DecideWarned: boolean = false;
 	private tier3ConsecutiveFailures: number = 0;
 	private tier3FailureStreakWarned: boolean = false;
+	private tier3ConsecutiveRefusals: number = 0;
+	private tier3RefusalStreakWarned: boolean = false;
 	private tier2Required: boolean = false;
 
 	constructor(options: PromptDefenseOptions = {}) {
@@ -1393,8 +1396,9 @@ export class PromptDefense {
 		if (t3?.timeoutMs !== undefined) {
 			const ms = t3.timeoutMs;
 			if (Number.isFinite(ms) && ms > 0) {
-				// Whole milliseconds: AbortSignal.timeout rejects fractions.
-				this.tier3TimeoutMs = Math.ceil(ms);
+				// Whole milliseconds (AbortSignal.timeout rejects fractions), and small enough that the
+				// slot ceiling (timeoutMs x 10) still fits a setTimeout delay.
+				this.tier3TimeoutMs = Math.min(Math.ceil(ms), TIER3_MAX_TIMEOUT_MS);
 			} else {
 				console.warn(
 					`[defender] invalid tier3.timeoutMs ${ms} — must be a finite number > 0. No timeout applied.`,
@@ -1443,6 +1447,18 @@ export class PromptDefense {
 	private noteTier3Success(): void {
 		this.tier3ConsecutiveFailures = 0;
 		this.tier3FailureStreakWarned = false;
+		this.tier3ConsecutiveRefusals = 0;
+		this.tier3RefusalStreakWarned = false;
+	}
+
+	private noteTier3Refusal(): void {
+		this.tier3ConsecutiveRefusals++;
+		if (this.tier3ConsecutiveRefusals >= TIER3_FAILURE_STREAK_WARN && !this.tier3RefusalStreakWarned) {
+			this.tier3RefusalStreakWarned = true;
+			console.warn(
+				`[defender] ${this.tier3ConsecutiveRefusals} consecutive Tier 3 refusals or unusable replies (all blocked). Check the model follows the JSON format and has enough maxTokens.`,
+			);
+		}
 	}
 
 	private warnIfRiskyOverride(provider: Tier3Provider): void {
@@ -1480,18 +1496,16 @@ export class PromptDefense {
 		};
 		let release: () => void = () => {};
 		if (this.tier3Semaphore) {
-			// Waiting for a slot is bounded by timeoutMs too, so a hung provider can't stall every call.
-			const waitTimeout =
-				this.tier3TimeoutMs !== undefined ? AbortSignal.timeout(this.tier3TimeoutMs) : undefined;
+			// Waiting for a slot is bounded, so a hung provider can't stall every call, but at the same
+			// ceiling a hung call holds its slot for: a deep queue of healthy calls must not fail.
+			const waitMs =
+				this.tier3TimeoutMs !== undefined ? this.tier3TimeoutMs * TIER3_SLOT_CEILING_FACTOR : undefined;
+			const waitTimeout = waitMs !== undefined ? AbortSignal.timeout(waitMs) : undefined;
 			const granted = await this.tier3Semaphore.acquire(anySignal([waitSignal, waitTimeout]));
 			if (!granted) {
 				return (
 					notNeeded() ??
-					this.tier3Failed(
-						ctx,
-						"timeout",
-						`Tier 3 call timed out after ${this.tier3TimeoutMs}ms waiting for a slot`,
-					)
+					this.tier3Failed(ctx, "timeout", `Tier 3 call timed out after ${waitMs}ms waiting for a slot`)
 				);
 			}
 			release = granted;
@@ -1568,7 +1582,11 @@ export class PromptDefense {
 			if ("skipReason" in validated) return this.tier3Failed(ctx, "error", validated.skipReason);
 			const verdict: Tier3Verdict = { ...validated };
 			if (!this.tier3IncludeRaw) delete verdict.raw;
-			this.noteTier3Success();
+			// A refusal or unusable reply blocks, but every call refusing usually means a broken
+			// setup (prose-only model, too few tokens), so it gets its own warning and doesn't
+			// reset the failure streak.
+			if (verdict.refused) this.noteTier3Refusal();
+			else this.noteTier3Success();
 			this.emitTier3Event({
 				kind: verdict.refused ? "refusal" : "verdict",
 				mode: ctx.mode,
@@ -2029,6 +2047,13 @@ export class PromptDefense {
 			}
 			// onError "block" asked to fail closed: review with a provider that always fails.
 			if (this.tier3OnError === "block") {
+				if (!this.tier3MissingProviderWarned) {
+					this.tier3MissingProviderWarned = true;
+					console.warn(
+						'[defender] defenderMode=tier3_only but no Tier 3 provider is registered. onError is "block", so calls fail closed. Call setDefaultTier3Provider() at app startup.',
+					);
+				}
+				this.emitTier3Event({ kind: "missing_provider", mode: "tier3_only" });
 				return this.runTier3Only(value, MISSING_PROVIDER, toolName, depthFlag, startTime, options);
 			}
 			if (!this.tier3MissingProviderWarned) {

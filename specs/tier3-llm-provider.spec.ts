@@ -252,6 +252,8 @@ describe("createOpenAICompatibleTier3Provider", () => {
 		["finish_reason content_filter", okResponse({ choices: [{ finish_reason: "content_filter", message: { content: "" } }] })],
 		["message.refusal", okResponse(chat("", { refusal: "I can't help with that." }))],
 		["HTTP 400 content_filter", okResponse({ error: { code: "content_filter", message: "filtered" } }, 400)],
+		["HTTP 400 invalid_prompt", okResponse({ error: { code: "invalid_prompt", message: "flagged" } }, 400)],
+		["an empty choices array (gateway safety block)", okResponse({ choices: [] })],
 	])("treats %s as a refusal (block)", async (_name, response) => {
 		const provider = createOpenAICompatibleTier3Provider({ baseURL: "https://x/v1", model: "m", fetch: async () => response });
 		expect(await provider.classify("x")).toMatchObject({ decision: "block", refused: true });
@@ -296,6 +298,8 @@ describe("createOpenAICompatibleTier3Provider", () => {
 		);
 		await createOpenAICompatibleTier3Provider({ baseURL: "https://gw.example.com/v1?api-version=2024", model: "m", fetch }).classify("x");
 		expect(fetch.mock.calls[0][0]).toBe("https://gw.example.com/v1/chat/completions?api-version=2024");
+		await createOpenAICompatibleTier3Provider({ baseURL: "https://gw.example.com/v1/chat/completions", model: "m", fetch }).classify("x");
+		expect(fetch.mock.calls[1][0]).toBe("https://gw.example.com/v1/chat/completions");
 	});
 
 	it("requires https except for loopback, unless allowInsecureHttp is set", () => {
@@ -306,6 +310,10 @@ describe("createOpenAICompatibleTier3Provider", () => {
 			createOpenAICompatibleTier3Provider({ baseURL: "http://llm.internal/v1", model: "m", fetch, allowInsecureHttp: true }),
 		).not.toThrow();
 		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "not a url", model: "m", fetch })).toThrow(/valid URL/);
+		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "http://127.evil.com/v1", model: "m", fetch })).toThrow(/https/);
+		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "https://u:p@host.com/v1", model: "m", fetch })).toThrow(
+			/credentials/,
+		);
 	});
 
 	it("aborts the request at the deadline even without a signal", async () => {

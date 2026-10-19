@@ -517,7 +517,7 @@ Two adversarial reviews of the implementation led to these changes. The sections
 - **Unusable replies block.** A parse failure, an empty reply, `finish_reason: "length"`, or a plain-text refusal becomes `decision: "block"`, `refused: true`. They no longer go through `onError`. The attacker could cause any of them on purpose, and in `tier3_only` the default `onError` would have allowed them.
 - **Duplicate `decision` keys are rejected.** `JSON.parse` keeps the last one.
 - **`toolName` is cut down to identifier characters** (`[A-Za-z0-9_.:/-]`) instead of being free text.
-- **Concurrency slots.** A timed-out call keeps its slot until the provider settles, so `maxConcurrency` holds even with providers that ignore the abort signal. Waiting for a slot is also limited to `timeoutMs`. That bounds a call at about 2 × `timeoutMs` and stops a hung provider from stalling every caller.
+- **Concurrency slots.** A timed-out call keeps its slot until the provider settles, so `maxConcurrency` holds even with providers that ignore the abort signal. Waiting for a slot is also limited (see the third review below for the final bound), so a hung provider can't stall every caller.
 - **`callTier3` never throws.** A verdict with throwing getters is a provider failure.
 - **The failure streak is per instance.** Caller cancellations don't count toward it.
 - **`stopOnFirstBlock` with `decide`.** `decide` gets `tier3.unreviewedChunks`. If the call ends up allowed with aborted chunks, `coverageDegraded` is set.
@@ -548,4 +548,14 @@ Two adversarial reviews of the implementation led to these changes. The sections
 - Redaction removes quoted secrets even when the closing quote is missing.
 
 **Backward compatibility, restated.** With no new options, existing hand-written providers give the same results as before. The "unusable reply blocks" rule applies only to the new `createLlmTier3Provider` / `createOpenAICompatibleTier3Provider`. The only change existing users see is the text of `skipReason`, which is now redacted.
+
+### Changes after the third adversarial review
+
+- **The slot wait is limited to 10 × `timeoutMs`, not `timeoutMs`.** With the tighter limit, a large payload sent to a healthy but slow judge made its late chunks fail. In `tier3_only` that fails open, so a late-chunk injection got through. The wait now uses the same limit after which a hung call gives its slot back. Overload goes to `onError`.
+- **More moderation responses count as refusals and block.** These are HTTP 400 `invalid_prompt` and a 2xx with an empty `choices` array (a gateway safety block). A body with no `choices` field at all still goes to `onError`.
+- **Refusals and unusable replies no longer reset the failure streak.** They have their own warning after 20 in a row, so a model that can't follow the format shows up instead of silently blocking everything.
+- **`timeoutMs` is capped,** so 10 × `timeoutMs` fits a `setTimeout` delay.
+- **Loopback means `localhost`, `::1`, or a dotted-quad `127.x.x.x`.** `127.evil.com` is rejected. Credentials in `baseURL` are rejected. An existing `/chat/completions` path isn't doubled.
+- **Redaction handles escaped quotes,** and no longer redacts `max_tokens`-style names.
+- **`tier3_only` + `onError: "block"` with no provider warns once and emits `missing_provider`.**
 
