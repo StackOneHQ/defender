@@ -46,6 +46,7 @@
         "test": "FORCE_COLOR=1 vitest run",
         "test:watch": "FORCE_COLOR=1 vitest watch --silent",
         "test:typecheck": "tsc --noEmit --project tsconfig.tests.json",
+        "conformance:update": "CONFORMANCE_UPDATE=1 vitest run specs/conformance.spec.ts",
         "example": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
         "examples:typecheck": "tsc --noEmit --project examples/tsconfig.json",
         "examples:smoke": "for f in examples/0*.ts; do echo \"== $f\"; node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"$f\" || exit 1; done",
