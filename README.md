@@ -196,7 +196,7 @@ setDefaultTier3Provider(myProvider);   // or pass it as tier3.provider
 - `chunk` (tier3_only)
 - `userGoal` / `toolDescription` (when the caller passes them)
 
-In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines). Keys are reviewed too: an object whose values are only numbers, booleans or `null` still gets one review, because its keys can carry injected text.
+In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines). Keys are reviewed too: an object whose values are only numbers, booleans, `null` or empty values is still reviewed (like any payload, in up to `maxChunks` calls), because its keys can carry injected text.
 
 It returns a `Tier3Verdict`:
 

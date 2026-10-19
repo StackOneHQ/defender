@@ -377,7 +377,10 @@ function splitLongLine(line: string, max: number, overlap: number): string[] {
 			const sp = line.lastIndexOf(" ", end);
 			if (sp > start)
 				end = sp; // cut on a word boundary when one is in range
-			else end = Math.max(safeEnd(line, end), start + 1); // never split a surrogate pair
+			else {
+				end = safeEnd(line, end); // never split a surrogate pair
+				if (end <= start) end = Math.min(line.length, start + 2); // budget of 1 at a pair: take the pair
+			}
 		}
 		out.push(line.slice(start, end));
 		if (end >= line.length) break;
@@ -558,7 +561,19 @@ function formatRecordsForTier3(
 	// controllable text, so such a payload is reviewed even with no string value. Index-only paths
 	// (`[0]: 1`) carry no free text and don't count.
 	let hasKeyedScalar = false;
-	const isKeyedPath = (prefix: string) => prefix.length > 0 && !/^(\[\d+\])+$/.test(prefix);
+	// A keyed line (scalar, null or empty value) was dropped for budget. Keys can carry injected text,
+	// so this counts as oversize like a dropped string (onOversize governs it).
+	let droppedKeyed = false;
+	const isEmptyValue = (v: unknown): boolean =>
+		(typeof v === "string" && v.split(TIER3_LINE_BREAKS).every((l) => l.length === 0)) ||
+		(Array.isArray(v) && v.length === 0) ||
+		(v !== null &&
+			typeof v === "object" &&
+			!Array.isArray(v) &&
+			!ArrayBuffer.isView(v) &&
+			!(v instanceof ArrayBuffer) &&
+			!(typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer) &&
+			Object.keys(v).length === 0);
 	// Total STRING-leaf content actually emitted (excludes `key:` prefixes and separators). Compared
 	// against the input's string content below to flag oversize independently of any drop-site logic.
 	let emittedStringChars = 0;
@@ -583,7 +598,16 @@ function formatRecordsForTier3(
 		return true;
 	}
 	// `keyed`: value sits under a field/index (bare-vs-`field:`); false only for a top-level scalar.
-	function serialize(v: unknown, prefix: string, lines: string[], depth: number, keyed: boolean): void {
+	// `underKey`: some object key is on the path. Tracked structurally (not parsed from `prefix`), so a
+	// literal key like "[0]" still counts as a key.
+	function serialize(
+		v: unknown,
+		prefix: string,
+		lines: string[],
+		depth: number,
+		keyed: boolean,
+		underKey: boolean,
+	): void {
 		// Self-report: reaching here with no budget means this item is dropped. Flagging here (not just at
 		// each caller's precheck) closes the "silently dropped, never flagged" class against future callers.
 		if (used >= cap) {
@@ -605,13 +629,15 @@ function formatRecordsForTier3(
 			depthFlag.coverageDegraded = true;
 			return;
 		}
-		if (v === null || v === undefined) {
-			// Keep the key: `{"<text>": null}` must not hide `<text>` from the reviewer.
-			if (isKeyedPath(prefix)) {
-				if (fits(lines, `${prefix}: null`, Math.min(cap, nonStringCap))) hasKeyedScalar = true;
+		if (v === null || v === undefined || (underKey && isEmptyValue(v))) {
+			// Keep the key: `{"<text>": null}` / `""` / `{}` / `[]` must not hide `<text>` from the reviewer.
+			if (underKey) {
+				const line = v === null || v === undefined ? `${prefix}: null` : `${prefix}:`;
+				if (fits(lines, line, Math.min(cap, nonStringCap))) hasKeyedScalar = true;
 				else {
 					budgetTruncated = true;
 					depthFlag.coverageDegraded = true;
+					droppedKeyed = true;
 				}
 			}
 			return;
@@ -627,7 +653,8 @@ function formatRecordsForTier3(
 			if (!fits(lines, prefix ? `${prefix}: <binary ${bytes} bytes>` : `<binary ${bytes} bytes>`, limit)) {
 				budgetTruncated = true; // line (incl. its key) dropped for budget → retry with reserve / flag
 				depthFlag.coverageDegraded = true;
-			} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
+				if (underKey) droppedKeyed = true;
+			} else if (underKey) hasKeyedScalar = true;
 			return;
 		}
 		if (Array.isArray(v)) {
@@ -650,7 +677,8 @@ function formatRecordsForTier3(
 					if (!fits(lines, prefix ? `${prefix}: [${v.length} ${kind}]` : `[${v.length} ${kind}]`, limit)) {
 						budgetTruncated = true; // summary line (incl. its key) dropped for budget → retry / flag
 						depthFlag.coverageDegraded = true;
-					} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
+						if (underKey) droppedKeyed = true;
+					} else if (underKey) hasKeyedScalar = true;
 					return;
 				}
 			}
@@ -679,7 +707,7 @@ function formatRecordsForTier3(
 				const i = arrOrder ? arrOrder[k] : k;
 				cap = reserveMode ? tier3ItemCap(outerCap, used, arrTotal - k) : outerCap;
 				const before = lines.length;
-				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true);
+				serialize(v[i], `${prefix}[${i}]`, lines, depth + 1, true, underKey);
 				arrParts?.mark(i, before);
 			}
 			cap = outerCap;
@@ -705,7 +733,7 @@ function formatRecordsForTier3(
 				// Flatten key line breaks so a `\n` in a key can't forge a line/record boundary.
 				const key = rawKey.replace(TIER3_LINE_BREAKS_GLOBAL, " ");
 				const before = lines.length;
-				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true);
+				serialize(val, prefix ? `${prefix}.${key}` : key, lines, depth + 1, true, true);
 				objParts?.mark(idx, before);
 			}
 			cap = outerCap;
@@ -755,7 +783,7 @@ function formatRecordsForTier3(
 					if (isStr) {
 						hasString = true;
 						emittedStringChars += line.length;
-					} else if (isKeyedPath(prefix)) hasKeyedScalar = true;
+					} else if (underKey) hasKeyedScalar = true;
 				} else if (isStr) {
 					// String too big for the remaining share: truncate to it, keeping the `key:` prefix.
 					const sep = lines.length > 0 ? 1 : 0;
@@ -775,6 +803,7 @@ function formatRecordsForTier3(
 					// is dropped. Flag it so coverage is honest and a genuine overflow triggers the retry.
 					budgetTruncated = true;
 					depthFlag.coverageDegraded = true;
+					if (underKey) droppedKeyed = true;
 					break;
 				}
 			}
@@ -822,7 +851,7 @@ function formatRecordsForTier3(
 			used += emitted > 0 ? 2 : 0; // charge the "\n\n" before this block (rolled back if empty)
 			const record = records[i];
 			const lines: string[] = [];
-			serialize(record, rootPrefixOf(record, i), lines, 0, false);
+			serialize(record, rootPrefixOf(record, i), lines, 0, false, false);
 			if (lines.length > 0) {
 				collected.push({ i, block: lines.join("\n") });
 				emitted++;
@@ -844,6 +873,7 @@ function formatRecordsForTier3(
 		used = 0;
 		hasString = false;
 		hasKeyedScalar = false;
+		droppedKeyed = false;
 		emittedStringChars = 0;
 		budgetTruncated = false;
 		depthFlag.coverageDegraded = undefined;
@@ -860,7 +890,7 @@ function formatRecordsForTier3(
 	const inputStringChars = sumInputStringChars(value, meter);
 	if (meter.hit) sizeLimitHit = true;
 	// Oversize when string content was dropped/truncated OR the byte budget was hit anywhere.
-	if (emittedStringChars < inputStringChars || sizeLimitHit) depthFlag.budgetExceeded = true;
+	if (emittedStringChars < inputStringChars || sizeLimitHit || droppedKeyed) depthFlag.budgetExceeded = true;
 	// Nothing reviewable (no string leaf and no keyed scalar) → skip the provider. Emit in original order.
 	return hasString || hasKeyedScalar ? blocks.join("\n\n") : "";
 }
@@ -1134,7 +1164,7 @@ let tier3GenericOverrideWarned = false;
 const TIER3_FAILURE_STREAK_WARN = 20;
 const TIER3_CANCELLED = "Tier 3 call cancelled by caller";
 // Result fields only defender may set; stripped from provider verdicts.
-const META_KEYS = ["skipReason", "errored", "overrideApplied", "overrideSuppressed", "decidedBy"] as const;
+const META_KEYS = ["skipReason", "errored", "overrideApplied", "overrideSuppressed", "decidedBy", "note"] as const;
 // A call that never settles keeps its concurrency slot for at most this many timeouts.
 const TIER3_SLOT_CEILING_FACTOR = 10;
 const TIER3_MAX_TIMEOUT_MS = Math.floor(2_147_483_647 / TIER3_SLOT_CEILING_FACTOR);
@@ -2023,10 +2053,17 @@ export class PromptDefense {
 			...(chunkFailures > 0 ? { errored: true } : {}),
 			...(decidedBy ? { decidedBy } : {}),
 		};
-		// With a verdict, `skipReason` isn't reported, so say why the outcome isn't the verdict's.
-		if (oversizeBlock && skipReason) meta.note = skipReason;
-		else if (chunkFailures > 0) {
-			meta.note = `${chunkFailures} of ${chunkTotal} chunks failed${firstChunkFailure ? `: ${firstChunkFailure}` : ""}`;
+		// With a verdict, `skipReason` isn't reported, so say why the outcome isn't the verdict's alone.
+		// Without one, `skipReason` already says it.
+		if (verdict) {
+			const notes: string[] = [];
+			if (oversizeBlock && skipReason) notes.push(skipReason);
+			if (chunkFailures > 0) {
+				notes.push(
+					`${chunkFailures} of ${chunkTotal} chunks failed${firstChunkFailure ? `: ${firstChunkFailure}` : ""}`,
+				);
+			}
+			if (notes.length > 0) meta.note = notes.join("; ");
 		}
 		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
 		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";

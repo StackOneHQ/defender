@@ -179,7 +179,6 @@
 				"tier3": {
 					"errored": true,
 					"skipReason": "Tier 3 provider error: 503 Service Unavailable",
-					"note": "1 of 1 chunks failed: Tier 3 provider error: 503 Service Unavailable",
 					"hasRaw": false
 				},
 				"coverageDegraded": true,
@@ -212,7 +211,6 @@
 				"tier3": {
 					"errored": true,
 					"skipReason": "Tier 3 provider error: 503 Service Unavailable",
-					"note": "1 of 1 chunks failed: Tier 3 provider error: 503 Service Unavailable",
 					"hasRaw": false
 				},
 				"coverageDegraded": true,
@@ -246,7 +244,6 @@
 				"tier3": {
 					"errored": true,
 					"skipReason": "Tier 3 provider error: 503 Service Unavailable",
-					"note": "1 of 1 chunks failed: Tier 3 provider error: 503 Service Unavailable",
 					"hasRaw": false
 				},
 				"coverageDegraded": true,
@@ -274,7 +271,6 @@
 				"tier3": {
 					"errored": true,
 					"skipReason": "Tier 3 provider error: No Tier 3 provider registered",
-					"note": "1 of 1 chunks failed: Tier 3 provider error: No Tier 3 provider registered",
 					"hasRaw": false
 				},
 				"coverageDegraded": true,
@@ -303,7 +299,6 @@
 				"tier3": {
 					"errored": true,
 					"skipReason": "Tier 3 provider returned invalid decision of type string (expected \"block\" | \"allow\")",
-					"note": "1 of 1 chunks failed: Tier 3 provider returned invalid decision of type string (expected \"block\" | \"allow\")",
 					"hasRaw": false
 				},
 				"coverageDegraded": true,
@@ -327,7 +322,8 @@
 						"errored": true,
 						"decidedBy": "policy",
 						"overrideApplied": true,
-						"skipReason": "x"
+						"skipReason": "x",
+						"note": "spoofed"
 					}
 				}
 			},

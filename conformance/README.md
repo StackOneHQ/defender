@@ -33,14 +33,14 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
     - `coverageDegraded`: a boolean
     - `skipReason`: `tier3.skipReason` or `null`
   - Lengths are **UTF-16 code units**, as in JavaScript, and no cut splits a surrogate pair. A Python port must count the same way.
-  - Keys are text. A `key: <scalar>` line (including `key: null`) makes a payload reviewable even with no string value. Index-only paths (`[0]: 1`) don't.
+  - Keys are text. A keyed line makes a payload reviewable even with no string value: `key: <scalar>`, `key: null`, or `key:` for an empty string, object or array. Paths with no object key on them (`[0]: 1`) don't. A keyed line dropped for budget counts as oversize.
   - Lines split on `\r`, `\n`, U+2028, U+2029 and U+0085 only.
   - Object keys follow JavaScript order: integer-like keys first, ascending, then insertion order.
   - Numbers render like JavaScript `String(n)`: `-0` → `0`, `1.0` → `1`, `1e16` → `10000000000000000`, `1e21` → `1e+21`.
 - **`tier3-prompt`**:
   - `buildTier3Messages(input.prompt ?? DEFAULT_TIER3_PROMPT, input.text, input.ctx)`. When `input.prompt` is set, validate it first, as `createLlmTier3Provider` does.
   - Expect `{ messages: [{ role, content }] }`, with the 16-hex id inside every real `<<<NAME id=…>>>` marker replaced by `<ID1>`, `<ID2>`… in order of first appearance. That still pins that an open/close pair shares an id and that separate blocks get separate ids. Expect `{ error: true }` when the template is rejected.
-  - Ids are random per call, which a fixture can't express. A runner should also render twice and check that no id repeats.
+  - Ids are random per call, which a fixture can't express. A runner should also render twice and check that no id from the first render appears in the second.
 - **`tier3-parse`**: `parseVerdictJson(input.reply)`. Expect `{ decision, reason? }`, or `{ error: true }`.
 - **`tier3-redact`**: a `tier3_only` call whose provider throws an error with message `input.message`. Expect `{ skipReason }`.
 - **`tier3-policy`**:
