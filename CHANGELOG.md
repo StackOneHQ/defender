@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/StackOneHQ/defender/compare/defender-v0.9.1...defender-v0.9.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **ENG-1249:** close Tier-3 gaps found by the conformance review, harden fixtures ([#110](https://github.com/StackOneHQ/defender/issues/110)) ([e4b4e4a](https://github.com/StackOneHQ/defender/commit/e4b4e4afa9ee67f1d52d1307855bc1a971c785a2))
+
 ## [0.9.1](https://github.com/StackOneHQ/defender/compare/defender-v0.9.0...defender-v0.9.1) (2026-10-19)
 
 

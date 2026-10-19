@@ -1,6 +1,6 @@
 {
     "name": "@stackone/defender",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "description": "Prompt injection defense framework for AI tool-calling",
     "homepage": "https://www.stackone.com/platform/prompt-injection-guard/?utm_source=npm&utm_medium=listing&utm_campaign=homepage",
     "repository": {
