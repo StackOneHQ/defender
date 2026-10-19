@@ -33,6 +33,8 @@ export interface OpenAICompatibleTier3Options {
 	parse?: LlmTier3ProviderOptions["parse"];
 	/** For tests or custom runtimes. Default: globalThis.fetch. */
 	fetch?: typeof fetch;
+	/** Allow plain http:// to a non-local host. Tool content and the key then travel unencrypted. */
+	allowInsecureHttp?: boolean;
 }
 
 /** Safety limit when defender sets no deadline (`tier3.timeoutMs` unset). */
@@ -76,23 +78,46 @@ function errorCodeOf(body: unknown): string | undefined {
 	return safeCode(err?.code) ?? safeCode(err?.type);
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/** Append `/chat/completions` to the path (not the query), and require https except for loopback. */
+function chatCompletionsUrl(baseURL: string, allowInsecureHttp: boolean): string {
+	let url: URL;
+	try {
+		url = new URL(baseURL);
+	} catch {
+		throw new Error("createOpenAICompatibleTier3Provider: `baseURL` is not a valid URL");
+	}
+	const local = LOOPBACK_HOSTS.has(url.hostname) || url.hostname.startsWith("127.");
+	if (url.protocol === "http:" && !local && !allowInsecureHttp) {
+		throw new Error(
+			"createOpenAICompatibleTier3Provider: `baseURL` must use https (http is allowed for localhost, or with allowInsecureHttp)",
+		);
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error("createOpenAICompatibleTier3Provider: `baseURL` must be http(s)");
+	}
+	url.pathname = `${url.pathname.replace(/\/+$/, "")}/chat/completions`;
+	return url.toString();
+}
+
 /** Build a Tier 3 provider for an OpenAI-compatible chat completions endpoint. */
 export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3Options): Tier3Provider {
 	if (!opts?.baseURL || !opts.model) {
 		throw new Error("createOpenAICompatibleTier3Provider: `baseURL` and `model` are required");
 	}
-	const url = `${opts.baseURL.replace(/\/+$/, "")}/chat/completions`;
+	const url = chatCompletionsUrl(opts.baseURL, opts.allowInsecureHttp === true);
 	const doFetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
 	const responseFormat = opts.responseFormat ?? "json_schema";
 	const maxTokens = opts.maxTokens ?? 300;
 	const retries = Math.max(0, Math.floor(opts.retries ?? 1));
 
 	const complete = async (req: LlmCompletionRequest): Promise<LlmCompletion> => {
-		const signal = req.signal
-			? req.deadline === undefined
-				? AbortSignal.any([req.signal, AbortSignal.timeout(DEFAULT_SAFETY_TIMEOUT_MS)])
-				: req.signal
-			: AbortSignal.timeout(DEFAULT_SAFETY_TIMEOUT_MS);
+		// Honor the deadline on its own too, so the provider works without defender's signal.
+		const budget =
+			req.deadline !== undefined ? Math.max(1, Math.ceil(req.deadline - Date.now())) : DEFAULT_SAFETY_TIMEOUT_MS;
+		const limit = AbortSignal.timeout(budget);
+		const signal = req.signal ? AbortSignal.any([req.signal, limit]) : limit;
 		const body = JSON.stringify({
 			model: opts.model,
 			messages: req.messages,
@@ -154,6 +179,8 @@ export function createOpenAICompatibleTier3Provider(opts: OpenAICompatibleTier3O
 					choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown; refusal?: unknown } }>;
 				}
 			)?.choices?.[0];
+			// No choice at all is a transport or proxy fault, not a judge reply, so onError decides it.
+			if (!choice) throw new Error("no choice in reply");
 			// Refusals, content filters, truncated and empty replies are unusable verdicts the attacker
 			// can cause, so they block rather than fail open.
 			const content = typeof choice?.message?.content === "string" ? stripThinking(choice.message.content) : "";

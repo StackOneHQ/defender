@@ -95,6 +95,20 @@ describe("buildTier3Messages delimiting", () => {
 		);
 	});
 
+	it("rejects any placeholder in the trusted system part", () => {
+		const complete = async () => "{}";
+		for (const name of ["toolName", "userGoal", "toolDescription"]) {
+			expect(() => createLlmTier3Provider({ complete, prompt: { system: `x {{${name}}}`, user: "{{content}}" } })).toThrow(
+				/must not appear in `system`/,
+			);
+		}
+	});
+
+	it("keeps blank lines inside the content as they are", () => {
+		const user = userMessage(buildTier3Messages(DEFAULT_TIER3_PROMPT, "a\n\n\n\nb"));
+		expect(user).toContain("a\n\n\n\nb");
+	});
+
 	it("supports a \\{{ escape and repeated optional placeholders", () => {
 		const msgs = buildTier3Messages({ system: "lit \\{{x}}", user: "{{toolName}} {{toolName}} {{content}}" }, "c", {
 			toolName: "t",
@@ -126,6 +140,7 @@ describe("parseVerdictJson (strict)", () => {
 		["bad decision", '{"decision":"maybe","reason":""}'],
 		["array", '[{"decision":"block"}]'],
 		["duplicate decision keys", '{"decision":"block","decision":"allow"}'],
+		["an escaped duplicate decision key", '{"decision":"block","deci\\u0073ion":"allow"}'],
 	])("throws on %s", (_name, text) => {
 		expect(() => parseVerdictJson(text)).toThrow();
 	});
@@ -273,6 +288,38 @@ describe("createOpenAICompatibleTier3Provider", () => {
 		const err = await provider.classify("TOOL CONTENT").catch((e: Error) => e);
 		expect(String(err)).toContain("HTTP 401 invalid_api_key");
 		expect(String(err)).not.toMatch(/SECRET|supersecret|TOOL CONTENT/);
+	});
+
+	it("keeps a query string in baseURL after the path", async () => {
+		const fetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+			okResponse(chat('{"decision":"allow","reason":""}')),
+		);
+		await createOpenAICompatibleTier3Provider({ baseURL: "https://gw.example.com/v1?api-version=2024", model: "m", fetch }).classify("x");
+		expect(fetch.mock.calls[0][0]).toBe("https://gw.example.com/v1/chat/completions?api-version=2024");
+	});
+
+	it("requires https except for loopback, unless allowInsecureHttp is set", () => {
+		const fetch = async () => okResponse(chat("{}"));
+		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "http://llm.internal/v1", model: "m", fetch })).toThrow(/https/);
+		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "http://127.0.0.1:8000/v1", model: "m", fetch })).not.toThrow();
+		expect(() =>
+			createOpenAICompatibleTier3Provider({ baseURL: "http://llm.internal/v1", model: "m", fetch, allowInsecureHttp: true }),
+		).not.toThrow();
+		expect(() => createOpenAICompatibleTier3Provider({ baseURL: "not a url", model: "m", fetch })).toThrow(/valid URL/);
+	});
+
+	it("aborts the request at the deadline even without a signal", async () => {
+		const fetch = (_url: string | URL | Request, init?: RequestInit) =>
+			new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
+		const provider = createOpenAICompatibleTier3Provider({ baseURL: "https://x/v1", model: "m", fetch, retries: 0 });
+		const t0 = performance.now();
+		await expect(provider.classify("x", { deadline: Date.now() + 30 })).rejects.toThrow(/aborted/);
+		expect(performance.now() - t0).toBeLessThan(1000);
+	});
+
+	it("a 2xx with no choices is a provider fault (throws, so onError decides), not a block", async () => {
+		const provider = createOpenAICompatibleTier3Provider({ baseURL: "https://x/v1", model: "m", fetch: async () => okResponse({}) });
+		await expect(provider.classify("x")).rejects.toThrow(/no choice/);
 	});
 
 	it("does not retry when the deadline doesn't allow it", async () => {

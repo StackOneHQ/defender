@@ -118,11 +118,11 @@ describe("tier3.allowOverride (cascade)", () => {
 		expect(applied.tier3?.overrideApplied).toBe(true);
 	});
 
-	it("an invalid value warns and falls back to true", async () => {
+	it("an invalid value warns and falls back to the restrictive false", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const r = await cascade(allowing(), { allowOverride: { maxTier2Score: 2 } }).defendToolResult({ body: INJ }, "t");
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("invalid tier3.allowOverride"));
-		expect(r.allowed).toBe(true);
+		expect(r.allowed).toBe(false);
 		warn.mockRestore();
 	});
 
@@ -183,6 +183,19 @@ describe("tier3.onError", () => {
 		expect(strict.tier3?.errored).toBe(true);
 		expect(strict.allowed).toBe(false);
 		warn.mockRestore();
+	});
+
+	it('tier3_only "block" with no provider fails closed instead of falling back to the cascade', async () => {
+		const r = await createPromptDefense({
+			enableTier1: false,
+			enableTier2: false,
+			enableTier3: true,
+			defenderMode: "tier3_only",
+			blockHighRisk: true,
+			tier3: { onError: "block" },
+		}).defendToolResult({ body: "x" }, "t");
+		expect(r.allowed).toBe(false);
+		expect(r.tier3?.skipReason).toMatch(/No Tier 3 provider registered/);
 	});
 
 	it("tier3_only default drops failed chunks; a block from another chunk still blocks", async () => {
@@ -405,6 +418,53 @@ describe("tier3.timeoutMs, cancellation and concurrency", () => {
 		expect(r.tier3?.errored).toBe(true);
 	});
 
+	it("a provider that never settles gets its slot back after a ceiling", async () => {
+		let hang = true;
+		const provider: Tier3Provider = { classify: () => (hang ? new Promise(() => {}) : Promise.resolve({ decision: "allow" })) };
+		const defense = tier3Only(provider, { maxConcurrency: 1, timeoutMs: 10 });
+		const first = await defense.defendToolResult({ body: "x" }, "t");
+		expect(first.tier3?.skipReason).toMatch(/timed out/);
+		hang = false;
+		const blocked = await defense.defendToolResult({ body: "x" }, "t");
+		expect(blocked.tier3?.skipReason).toMatch(/waiting for a slot/);
+		await new Promise((res) => setTimeout(res, 150)); // past 10 × timeoutMs
+		const after = await defense.defendToolResult({ body: "x" }, "t");
+		expect(after.tier3?.decision).toBe("allow");
+	});
+
+	it("a queued call cancelled by the caller leaves the queue without calling the provider", async () => {
+		let release: () => void = () => {};
+		const calls: string[] = [];
+		const provider: Tier3Provider = {
+			classify: (text) => {
+				calls.push(text);
+				return new Promise((res) => {
+					release = () => res({ decision: "allow" });
+				});
+			},
+		};
+		const defense = tier3Only(provider, { maxConcurrency: 1 });
+		const holder = defense.defendToolResult({ body: "holder" }, "t");
+		const controller = new AbortController();
+		const queued = defense.defendToolResult({ body: "queued" }, "t", { signal: controller.signal });
+		await new Promise((res) => setTimeout(res, 10));
+		controller.abort();
+		const q = await queued;
+		expect(q.tier3?.skipReason).toMatch(/cancelled by caller/);
+		release();
+		await holder;
+		const later = defense.defendToolResult({ body: "later" }, "t");
+		await new Promise((res) => setTimeout(res, 10));
+		release();
+		expect((await later).tier3?.decision).toBe("allow");
+		expect(calls.some((c) => c.includes("queued"))).toBe(false);
+	});
+
+	it("accepts a fractional timeoutMs with maxConcurrency", async () => {
+		const r = await tier3Only(allowing(), { maxConcurrency: 1, timeoutMs: 1000.5 }).defendToolResult({ body: "x" }, "t");
+		expect(r.tier3?.decision).toBe("allow");
+	});
+
 	it("a timed-out call keeps its slot until the provider settles, so maxConcurrency holds", async () => {
 		let inFlight = 0;
 		let peak = 0;
@@ -598,6 +658,8 @@ describe("tier3 result hygiene", () => {
 		).defendToolResult({ body: "x" }, "t");
 		const reason = r.tier3?.skipReason ?? "";
 		expect(reason).not.toMatch(/SECRET|dXNlcjpwYXNz|AIzaSyA1234|p4ss/);
+		const unterminated = await tier3Only(throwing('{"apiKey":"UNTERMINATEDSECRET')).defendToolResult({ body: "x" }, "t");
+		expect(unterminated.tier3?.skipReason).not.toContain("UNTERMINATEDSECRET");
 		expect(reason).toContain("https://host.com");
 	});
 

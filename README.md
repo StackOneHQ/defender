@@ -137,7 +137,7 @@ const defense = createPromptDefense({
 });
 ```
 
-Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`.
+Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`. `baseURL` must use https, except for localhost; set `allowInsecureHttp: true` to send over plain http anyway.
 
 #### Use any other LLM
 
@@ -165,7 +165,7 @@ const provider = createLlmTier3Provider({
 The same shape works with the Vercel AI SDK, LangChain or plain `fetch`. Return `refused: true` when the model refuses or a content filter fires: defender treats that as a block, because an attacker can trigger a refusal on purpose. If you can compute a real P(block), for example from logprobs, return it as `score`.
 
 What defender does for you:
-- **Prompt.** `DEFAULT_TIER3_PROMPT` is used unless you pass `prompt`, either `{ system, user }` with `{{content}}`, `{{toolName}}`, `{{userGoal}}` and `{{toolDescription}}` placeholders (`{{content}}` exactly once, in `user`), or a function that returns messages. `result.tier3.promptVersion` reports which prompt ran.
+- **Prompt.** `DEFAULT_TIER3_PROMPT` is used unless you pass `prompt`, either `{ system, user }` with `{{content}}`, `{{toolName}}`, `{{userGoal}}` and `{{toolDescription}}` placeholders (all in `user`, which is the untrusted channel; `{{content}}` exactly once), or a function that returns messages. `result.tier3.promptVersion` reports which prompt ran.
 - **Delimiting.** The tool output is wrapped in marker lines with a random id per call, so it can't close its own wrapper. Look-alike markers inside it are rewritten. `userGoal` and `toolDescription` are wrapped the same way, and the tool name is cut down to identifier characters.
 - **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`, with one `decision` key. This stops JSON planted in the tool output from choosing the verdict.
 - **Unusable replies block.** The attacker can cause these on purpose: a plain-text refusal, prose, two objects, or a reply cut off by the token limit. So they count as a block (`refused: true`), not as a failure. Give reasoning models enough `maxTokens`, or they get cut off and block.
@@ -239,9 +239,9 @@ const defense = createPromptDefense({
 | `false` | is ignored; Tier 3 can only add blocks |
 | `{ maxTier2Score: 0.75 }` | undoes the block only when Tier 2's score (before density damping) is below 0.75 |
 
-Use `false` or `{ maxTier2Score }` until you've tested your judge against text written to fool it. Defender logs a one-time warning when `allowOverride` is `true` with a provider from `createLlmTier3Provider` or `createOpenAICompatibleTier3Provider`.
+Use `false` or `{ maxTier2Score }` until you've tested your judge against text written to fool it. In cascade mode without `decide`, defender logs a one-time warning when `allowOverride` is `true` with a provider from `createLlmTier3Provider` or `createOpenAICompatibleTier3Provider`. An invalid `allowOverride` value warns and falls back to `false`.
 
-**`onError`**. A failure is a throw, a timeout, an invalid or unparseable verdict, or a caller cancellation:
+**`onError`**. A failure is a throw, a timeout, an invalid verdict from a hand-written provider, or a caller cancellation. Unusable replies from `createLlmTier3Provider` / `createOpenAICompatibleTier3Provider` aren't failures; they block (see above):
 
 | Setting | Cascade | tier3_only |
 |---|---|---|
@@ -249,7 +249,7 @@ Use `false` or `{ maxTier2Score }` until you've tested your judge against text w
 | `"allow"` (tier3_only default) | treat as an `allow` (subject to `allowOverride`) | drop failed chunks; other chunks decide |
 | `"block"` | block if Tier 2 rated the payload medium or higher | block if any chunk failed; `onOversize` defaults to `"scan_anyway"` |
 
-Under `"block"`, a missing provider also counts as a failure. `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
+Under `"block"`, a missing provider also counts as a failure, in `tier3_only` too (instead of falling back to the cascade). `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
 
 **`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated), and returns `"block"`, `"allow"` or `"default"` (use the options above):
 

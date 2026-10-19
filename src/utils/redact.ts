@@ -14,7 +14,8 @@ export function redactErrorText(text: string): string {
 		.replace(/\b(https?):\/\/(?:[^@/\s?#]*@)?([^/\s?#]+)[^\s]*/gi, "$1://$2")
 		.replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
 		// "name": "value" and name=value / name: value, for secret-looking names.
-		.replace(/("[\w-]*(?:key|token|secret|password|authorization)[\w-]*"\s*:\s*)"[^"]*"/gi, '$1"[redacted]"')
+		// The closing quote is optional, so a value cut off or left unterminated is still removed.
+		.replace(/("[\w-]*(?:key|token|secret|password|authorization)[\w-]*"\s*:\s*)"[^"]*"?/gi, '$1"[redacted]"')
 		.replace(
 			/\b([\w-]*(?:key|token|secret|password|authorization)[\w-]*)(\s*[:=]\s*)[^\s&,;"]+/gi,
 			"$1$2[redacted]",

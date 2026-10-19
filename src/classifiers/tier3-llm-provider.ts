@@ -150,8 +150,10 @@ export function validatePromptTemplate(template: Tier3PromptTemplate): void {
 	if (typeof template?.system !== "string" || typeof template?.user !== "string") {
 		throw new Error("Tier 3 prompt: template must have string `system` and `user` parts");
 	}
-	if (scanPlaceholders(template.system, "system").includes("content")) {
-		throw new Error("Tier 3 prompt: {{content}} must not appear in `system`");
+	// The system part is the trusted channel; every placeholder carries untrusted text.
+	const inSystem = scanPlaceholders(template.system, "system");
+	if (inSystem.length > 0) {
+		throw new Error(`Tier 3 prompt: placeholders must not appear in \`system\` (found {{${inSystem[0]}}})`);
 	}
 	const userContent = scanPlaceholders(template.user, "user").filter((n) => n === "content").length;
 	if (userContent !== 1) {
@@ -200,9 +202,12 @@ export function buildTier3Messages(
 		userGoal: goal ? `User goal:\n${goal.wrapped}` : "",
 		toolDescription: desc ? `Tool description:\n${desc.wrapped}` : "",
 	};
+	// Collapse the blank lines empty optional fields leave behind, without touching the content.
+	const slot = `\u0000${randomId()}\u0000`;
+	const user = fill(prompt.user, { ...values, content: slot }).replace(/\n{3,}/g, "\n\n");
 	return [
 		{ role: "system", content: fill(prompt.system, values) },
-		{ role: "user", content: fill(prompt.user, values).replace(/\n{3,}/g, "\n\n") },
+		{ role: "user", content: user.split(slot).join(content.wrapped) },
 	];
 }
 
@@ -218,16 +223,15 @@ export function parseVerdictJson(text: string): { decision: "block" | "allow"; r
 	if (!body.startsWith("{") || !body.endsWith("}")) {
 		throw new Error("Tier 3 reply is not a single JSON object");
 	}
-	// JSON.parse keeps the last duplicate key, so two "decision" keys could flip the verdict.
-	if ((body.match(/"decision"\s*:/g) ?? []).length > 1) {
-		throw new Error("Tier 3 reply has more than one decision");
-	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(body);
 	} catch {
 		throw new Error("Tier 3 reply is not valid JSON");
 	}
+	// JSON.parse keeps the last duplicate key, so a second "decision" (even escaped) could flip it.
+	const keys = topLevelKeys(body);
+	if (new Set(keys).size !== keys.length) throw new Error("Tier 3 reply has duplicate keys");
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 		throw new Error("Tier 3 reply is not a JSON object");
 	}
@@ -235,6 +239,27 @@ export function parseVerdictJson(text: string): { decision: "block" | "allow"; r
 	const d = typeof decision === "string" ? decision.toLowerCase() : undefined;
 	if (d !== "block" && d !== "allow") throw new Error("Tier 3 reply has no valid decision");
 	return typeof reason === "string" ? { decision: d, reason: reason.slice(0, MAX_REASON_CHARS) } : { decision: d };
+}
+
+/** Decoded top-level member names of a valid JSON object, in order, duplicates kept. */
+function topLevelKeys(json: string): string[] {
+	const keys: string[] = [];
+	let depth = 0;
+	for (let i = 0; i < json.length; i++) {
+		const ch = json[i];
+		if (ch === "{" || ch === "[") depth++;
+		else if (ch === "}" || ch === "]") depth--;
+		else if (ch === '"') {
+			let j = i + 1;
+			while (j < json.length && json[j] !== '"') j += json[j] === "\\" ? 2 : 1;
+			const token = json.slice(i, j + 1);
+			let k = j + 1;
+			while (k < json.length && /\s/.test(json[k])) k++;
+			if (depth === 1 && json[k] === ":") keys.push(JSON.parse(token) as string);
+			i = j;
+		}
+	}
+	return keys;
 }
 
 /** Build a Tier 3 provider around any LLM call. */

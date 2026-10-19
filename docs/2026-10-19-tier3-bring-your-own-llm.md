@@ -348,7 +348,7 @@ interface Tier3DecisionInput {
     multihead: boolean;
   };
   tier3:
-    | { ran: true; decision: "block" | "allow"; score?: number; refused: boolean }
+    | { ran: true; decision: "block" | "allow"; score?: number; refused: boolean; unreviewedChunks?: number }
     | { ran: false; errored: boolean; skipReason: string };
   toolName?: string;
 }
@@ -531,4 +531,21 @@ Two adversarial reviews of the implementation led to these changes. The sections
 
   Input is capped before matching.
 - **No separate startup warning.** The existing one-time missing-provider warning covers that case.
+
+### Changes after the bot review (cubic)
+
+- `system` may not contain any placeholder; all untrusted fields go in `user`.
+- Collapsing the blank lines left by empty optional fields no longer touches the content.
+- The duplicate-key check reads the JSON, so an escaped `"deci\u0073ion"` is caught too.
+- Layer 3 appends `/chat/completions` to the URL path, so a `baseURL` with a query string still works.
+- Layer 3 requires https, except for loopback hosts. `allowInsecureHttp: true` opts out.
+- Layer 3 also honors `deadline` without a signal.
+- A 2xx with no `choices` is a provider fault: it throws, and `onError` decides it. It does not count as a block.
+- An invalid `allowOverride` falls back to `false`, not `true`.
+- `timeoutMs` is rounded up to whole milliseconds.
+- A call that never settles gets its slot back after 10 × `timeoutMs`.
+- In `tier3_only`, `onError: "block"` with no provider fails closed instead of falling back to the cascade.
+- Redaction removes quoted secrets even when the closing quote is missing.
+
+**Backward compatibility, restated.** With no new options, existing hand-written providers give the same results as before. The "unusable reply blocks" rule applies only to the new `createLlmTier3Provider` / `createOpenAICompatibleTier3Provider`. The only change existing users see is the text of `skipReason`, which is now redacted.
 

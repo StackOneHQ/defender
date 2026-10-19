@@ -1107,6 +1107,13 @@ let tier2UnavailableWarned = false;
 let tier3GenericOverrideWarned = false;
 const TIER3_FAILURE_STREAK_WARN = 20;
 const TIER3_CANCELLED = "Tier 3 call cancelled by caller";
+// A call that never settles keeps its concurrency slot for at most this many timeouts.
+const TIER3_SLOT_CEILING_FACTOR = 10;
+const MISSING_PROVIDER: Tier3Provider = {
+	classify: async () => {
+		throw new Error("No Tier 3 provider registered");
+	},
+};
 
 type Tier3AllowOverride = boolean | { maxTier2Score: number };
 type Tier3Decision = "block" | "allow" | "default";
@@ -1353,8 +1360,10 @@ export class PromptDefense {
 			) {
 				this.tier3AllowOverride = { maxTier2Score: ao.maxTier2Score };
 			} else {
+				// Fall back to the restrictive setting, so a typo can't widen what an allow undoes.
+				this.tier3AllowOverride = false;
 				console.warn(
-					"[defender] invalid tier3.allowOverride — must be a boolean or { maxTier2Score } with 0 < maxTier2Score <= 1. Falling back to true.",
+					"[defender] invalid tier3.allowOverride — must be a boolean or { maxTier2Score } with 0 < maxTier2Score <= 1. Falling back to false.",
 				);
 			}
 			if (this.defenderMode === "tier3_only") {
@@ -1384,7 +1393,8 @@ export class PromptDefense {
 		if (t3?.timeoutMs !== undefined) {
 			const ms = t3.timeoutMs;
 			if (Number.isFinite(ms) && ms > 0) {
-				this.tier3TimeoutMs = ms;
+				// Whole milliseconds: AbortSignal.timeout rejects fractions.
+				this.tier3TimeoutMs = Math.ceil(ms);
 			} else {
 				console.warn(
 					`[defender] invalid tier3.timeoutMs ${ms} — must be a finite number > 0. No timeout applied.`,
@@ -1522,7 +1532,17 @@ export class PromptDefense {
 			callStarted = true;
 			// Hold the slot until the provider really settles, even after we stop waiting, so a slow
 			// provider can't push in-flight calls past maxConcurrency. Also swallows a late rejection.
+			// A provider that never settles gets its slot back after a ceiling, so hangs can't use up
+			// the pool for good.
 			call.then(release, release);
+			if (this.tier3Semaphore && this.tier3TimeoutMs !== undefined) {
+				const ceiling = setTimeout(release, this.tier3TimeoutMs * TIER3_SLOT_CEILING_FACTOR);
+				(ceiling as { unref?: () => void }).unref?.();
+				call.then(
+					() => clearTimeout(ceiling),
+					() => clearTimeout(ceiling),
+				);
+			}
 			const settled = await Promise.race([
 				call.then(
 					(value) => ({ ok: true as const, value }),
@@ -2006,6 +2026,10 @@ export class PromptDefense {
 			const provider = this.resolveTier3Provider();
 			if (provider) {
 				return this.runTier3Only(value, provider, toolName, depthFlag, startTime, options);
+			}
+			// onError "block" asked to fail closed: review with a provider that always fails.
+			if (this.tier3OnError === "block") {
+				return this.runTier3Only(value, MISSING_PROVIDER, toolName, depthFlag, startTime, options);
 			}
 			if (!this.tier3MissingProviderWarned) {
 				this.tier3MissingProviderWarned = true;
