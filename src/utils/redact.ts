@@ -25,8 +25,12 @@ export function redactErrorText(text: string): string {
 		.replace(/\b([a-z][a-z0-9+.-]*):\/\/(?:[^/\s?#]*@)?([^/@\s?#]+)[^\s]*/gi, "$1://$2")
 		// Bearer/Basic are always followed by a credential. "Token"/"Digest" are also ordinary words, so
 		// they need a credential-shaped value (keeps "Token limit exceeded" readable).
-		// A quoted value whole, else stop at a quote or comma so the next pair in a dict repr stays matchable.
-		.replace(/\b(Bearer|Basic)\s+(?:"[^"]*"?|'[^']*'?|[^\s'",]+)/gi, "$1 [redacted]")
+		// A quoted value whole (escapes included). An unquoted value runs to the next whitespace or comma,
+		// but leaves a closing quote that ends it, so the next pair in a dict repr stays matchable.
+		.replace(
+			/\b(Bearer|Basic)\s+(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s,'"](?:[^\s,]*?(?=['"]?(?:[\s,}\])]|$))|[^\s,]*))/gi,
+			"$1 [redacted]",
+		)
 		.replace(new RegExp(`\\b(Token|Digest)\\s+${CREDENTIAL}`, "gi"), "$1 [redacted]")
 		.replace(
 			new RegExp(`\\b(authorization|proxy-authorization)(\\s*[:=]\\s*)(?:[A-Za-z]+\\s+)?${CREDENTIAL}`, "gi"),
