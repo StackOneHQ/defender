@@ -277,6 +277,16 @@
 			"expect": {
 				"skipReason": "Tier 3 provider error: a: Bearer [redacted] rest; b: Basic [redacted] tail"
 			}
+		},
+		{
+			"id": "bearer-brace-not-a-delimiter",
+			"description": "Only whitespace, a comma or the end stops an unquoted Bearer value, so text after a brace is redacted too.",
+			"input": {
+				"message": "auth failed: Bearer abc}secretvalue12 and Basic xyz)moresecret34"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: auth failed: Bearer [redacted] and Basic [redacted]"
+			}
 		}
 	]
 }

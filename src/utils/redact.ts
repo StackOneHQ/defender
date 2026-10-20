@@ -28,7 +28,7 @@ export function redactErrorText(text: string): string {
 		// A quoted value whole (escapes included). An unquoted value runs to the next whitespace or comma,
 		// but leaves a closing quote that ends it, so the next pair in a dict repr stays matchable.
 		.replace(
-			/\b(Bearer|Basic)\s+(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s,'"](?:[^\s,]*?(?=['"]?(?:[\s,}\])]|$))|[^\s,]*))/gi,
+			/\b(Bearer|Basic)\s+(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s,'"](?:[^\s,]*?(?=['"]?(?:[\s,]|$))|[^\s,]*))/gi,
 			"$1 [redacted]",
 		)
 		.replace(new RegExp(`\\b(Token|Digest)\\s+${CREDENTIAL}`, "gi"), "$1 [redacted]")
