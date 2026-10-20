@@ -237,6 +237,26 @@
 			"expect": {
 				"skipReason": "Tier 3 provider error: 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀…"
 			}
+		},
+		{
+			"id": "url-password-with-at",
+			"description": "Userinfo runs to the last @, so a password containing @ doesn't leak into the host.",
+			"input": {
+				"message": "connect https://user:p@ss@host.example.com/x refused"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: connect https://host.example.com refused"
+			}
+		},
+		{
+			"id": "dict-repr-bearer-then-key",
+			"description": "The Bearer rule stops at the quote, so the next pair in a dict repr is still redacted.",
+			"input": {
+				"message": "{'Authorization': 'Bearer abcdefghijklmnop', 'X-Api-Key': 'zzzzzzzzzz'}"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {'Authorization': '[redacted]', 'X-Api-Key': '[redacted]'}"
+			}
 		}
 	]
 }

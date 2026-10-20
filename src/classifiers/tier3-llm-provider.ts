@@ -197,6 +197,8 @@ export function buildTier3Messages(
 		}
 		return messages;
 	}
+	// Validate here too: a direct call with a template missing {{content}} would review nothing.
+	validatePromptTemplate(prompt);
 	const values = {
 		content: content.wrapped,
 		toolName,
