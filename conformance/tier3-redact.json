@@ -257,6 +257,16 @@
 			"expect": {
 				"skipReason": "Tier 3 provider error: {'Authorization': '[redacted]', 'X-Api-Key': '[redacted]'}"
 			}
+		},
+		{
+			"id": "bearer-quoted-value",
+			"description": "A quoted Bearer value is redacted whole.",
+			"input": {
+				"message": "auth failed: Bearer 'abcdefghijklmnop' and Basic \"dXNlcjpwYXNzd29yZA==\""
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: auth failed: Bearer [redacted] and Basic [redacted]"
+			}
 		}
 	]
 }
