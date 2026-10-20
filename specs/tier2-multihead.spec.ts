@@ -323,10 +323,10 @@ describe.skipIf(!!process.env.CI)("PromptDefense — Bug 3: tier2Score reflects 
 
 describe.skipIf(!!process.env.CI)("Tier2Classifier — auto-load calibration from classifier_config.json", () => {
 	it("reads calibration block when present in model dir", () => {
-		// v5's classifier_config.json sets { calibration: { temperatureT: 2.41, highRiskThreshold: 0.64 } }
+		// The bundled classifier_config.json sets { calibration: { temperatureT: 2.41, highRiskThreshold: 0.52 } }
 		const tier2 = createTier2Classifier({ onnxModelPath: multiheadPath });
 		expect(tier2.getTemperature()).toBeCloseTo(2.41, 2);
-		expect(tier2.getConfig().highRiskThreshold).toBeCloseTo(0.64, 2);
+		expect(tier2.getConfig().highRiskThreshold).toBeCloseTo(0.52, 2);
 	});
 
 	it("user-provided config overrides model calibration defaults", () => {

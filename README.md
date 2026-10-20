@@ -97,8 +97,9 @@ Regex-based detection that scores content and escalates risk — it does **not**
 Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
 - Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
-- Bundled model is **multi-head** (variant `minilm-multihead-v5`). The auxiliary head identifies meta-discussion / documentation phrasing — under multi-head mode a chunk blocks only when `main >= mainThr AND aux < auxThr`, so docs that quote injection text aren't over-flagged. Reported on the result as `tier2AuxScore` and `tier2MultiheadBlocked`.
-- The bundled model carries calibrated thresholds (`highRiskThreshold ≈ 0.64`) in its `classifier_config.json`; these override library defaults when the model is loaded.
+- Bundled model is **multi-head** (variant `jbv2-mh-grid-agpjb2pinstr-s2` since 0.9.3; it still lives in the `minilm-multihead-v5` folder so existing paths keep working). The auxiliary head identifies meta-discussion / documentation phrasing — under multi-head mode a chunk blocks only when `main >= mainThr AND aux < auxThr`, so docs that quote injection text aren't over-flagged. Reported on the result as `tier2AuxScore` and `tier2MultiheadBlocked`.
+- The bundled model carries calibrated thresholds (`highRiskThreshold` 0.52 at temperature 2.41) in its `classifier_config.json`; these override library defaults when the model is loaded. Thresholds are model-specific: 0.64 was right for the previous model, not this one.
+- Multi-head presets tuned for this model, as `mainThreshold`/`auxThreshold` (a chunk blocks when its main score >= `mainThreshold` and its aux score < `auxThreshold`): High 0.77/0.325, Medium 0.88/0.325, Low 0.94/0.30. They're also in `classifier_config.json` under `multihead_presets`.
 - Catches attacks that evade pattern-based detection
 - Latency: ~10ms/sample (after model warmup)
 
