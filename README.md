@@ -338,7 +338,7 @@ const defense = createPromptDefense({
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
   sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized = content verbatim) (default: true)
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
-  tier2Config: { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } }, // Tier 2 overrides: highRiskThreshold, multihead (default: the model's calibration, single-head)
+  tier2Config: {},              // Tier 2 overrides (default: the model's calibration, single-head); e.g. { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } } turns on multi-head
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
   enableTier3: false,           // (default: false)
