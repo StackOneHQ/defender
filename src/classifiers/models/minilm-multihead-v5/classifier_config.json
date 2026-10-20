@@ -5,7 +5,7 @@
   "hidden_size": 384,
   "freeze_layers": 4,
   "pooling": "mean",
-  "optimal_threshold": 0.4,
+  "optimal_threshold": 0.15,
   "datasets": [
     "qualifire",
     "jayavibhav",
@@ -37,11 +37,39 @@
   "three_class": false,
   "multi_head": true,
   "aux_loss_alpha": 0.5,
+  "extra_benchmarks": [
+    "hd-negatives-v1",
+    "hd-pairs-v1",
+    "hd-negatives-v2",
+    "hd-pairs-v2",
+    "hd-negatives-v4",
+    "hd-pairs-v4",
+    "hd-short-v1",
+    "hd-negatives-v5",
+    "hd-pairs-v5",
+    "hd-pairs-agent-v1"
+  ],
+  "variant": "jbv2-mh-grid-agpjb2pinstr-s2",
   "calibration": {
     "temperatureT": 2.41,
-    "highRiskThreshold": 0.64,
+    "highRiskThreshold": 0.52,
     "ece": 0.09,
     "fitted_on": "labeled plugin events 2026-05-13",
-    "notes": "Raw highRiskThreshold 0.8 is math-equivalent to calibrated 0.64 at T=2.41. tier2Score is reported as calibrated probability (post-sigmoid(logit/T))."
+    "notes": "tier2Score is the calibrated probability sigmoid(logit/T) at T=2.41. highRiskThreshold 0.52 is the single-head operating point for this model, chosen to match the shipped false-positive rate (v5 used 0.64). Do not reuse 0.64 with this model."
+  },
+  "multihead_presets": {
+    "High": {
+      "mainThreshold": 0.77,
+      "auxThreshold": 0.325
+    },
+    "Medium": {
+      "mainThreshold": 0.88,
+      "auxThreshold": 0.325
+    },
+    "Low": {
+      "mainThreshold": 0.94,
+      "auxThreshold": 0.3
+    },
+    "notes": "Tuned 2026-10-14 for this model only (docs/2026-09-30-tier2-prompt-injection-identifiability.md, release gate 1). Do not reuse for another model."
   }
 }

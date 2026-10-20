@@ -105,7 +105,8 @@ describe("#Tier2Classifier", () => {
 			const classifier = createTier2Classifier();
 
 			// act / assert
-			expect(classifier.getRiskLevel(0.6)).toBe("medium");
+			// The bundled model's high line is 0.52, so medium is [0.5, 0.52).
+			expect(classifier.getRiskLevel(0.51)).toBe("medium");
 		});
 
 		it("returns low for scores below the medium threshold", () => {
@@ -118,11 +119,10 @@ describe("#Tier2Classifier", () => {
 	});
 
 	describe(".getConfig", () => {
-		// Since 0.7, the default model (v5) ships with calibration defaults in
-		// its classifier_config.json — Tier2Classifier auto-loads them, so the
-		// out-of-the-box highRiskThreshold reflects v5's calibrated threshold
-		// (0.64 = raw 0.8 at T=2.41). The legacy default (0.8) still applies
-		// for models without a calibration block (e.g. user-supplied paths).
+		// The bundled model ships calibration defaults in its classifier_config.json and
+		// Tier2Classifier auto-loads them: highRiskThreshold 0.52 at T=2.41 (ENG-3282; v5
+		// used 0.64). The legacy default (0.8) still applies for models without a
+		// calibration block (e.g. user-supplied paths).
 		it("returns the model calibration highRiskThreshold when present", () => {
 			// arrange
 			const classifier = createTier2Classifier();
@@ -131,12 +131,9 @@ describe("#Tier2Classifier", () => {
 			const actual = classifier.getConfig();
 
 			// assert
-			// v5's classifier_config.json ships highRiskThreshold = 0.64
-			// (math-equivalent to raw 0.8 at T=2.41). Assert the exact value so
-			// an accidentally-removed or malformed calibration block — which
-			// silently falls back to the library default 0.8 — fails this test
-			// instead of slipping through under a "any positive value" guard.
-			expect(actual.highRiskThreshold).toBeCloseTo(0.64, 2);
+			// Assert the exact value so an accidentally-removed or malformed calibration
+			// block, which silently falls back to the library default 0.8, fails this test.
+			expect(actual.highRiskThreshold).toBeCloseTo(0.52, 2);
 		});
 
 		it("returns the configured mediumRiskThreshold", () => {
@@ -166,7 +163,7 @@ describe("#Tier2Classifier", () => {
 				highRiskThreshold: undefined,
 			});
 			const actual = classifier.getConfig();
-			expect(actual.highRiskThreshold).toBeCloseTo(0.64, 2);
+			expect(actual.highRiskThreshold).toBeCloseTo(0.52, 2);
 			expect(actual.temperatureT).toBeCloseTo(2.41, 2);
 		});
 	});
