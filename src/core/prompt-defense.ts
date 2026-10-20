@@ -1754,6 +1754,10 @@ export class PromptDefense {
 		if (verdict === null || typeof verdict !== "object") {
 			return { skipReason: `Tier 3 provider returned non-object verdict: ${typeof verdict}` };
 		}
+		// A refusal is attacker-triggerable, so it blocks even without a valid decision.
+		if ((verdict as { refused?: unknown }).refused === true) {
+			verdict = { ...(verdict as object), decision: "block" };
+		}
 		const decision = (verdict as { decision?: unknown }).decision;
 		if (decision !== "block" && decision !== "allow") {
 			// Don't echo the value: it is provider output and may quote content.

@@ -237,6 +237,56 @@
 			"expect": {
 				"skipReason": "Tier 3 provider error: 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀…"
 			}
+		},
+		{
+			"id": "url-password-with-at",
+			"description": "Userinfo runs to the last @, so a password containing @ doesn't leak into the host.",
+			"input": {
+				"message": "connect https://user:p@ss@host.example.com/x refused"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: connect https://host.example.com refused"
+			}
+		},
+		{
+			"id": "dict-repr-bearer-then-key",
+			"description": "The Bearer rule stops at the quote, so the next pair in a dict repr is still redacted.",
+			"input": {
+				"message": "{'Authorization': 'Bearer abcdefghijklmnop', 'X-Api-Key': 'zzzzzzzzzz'}"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: {'Authorization': '[redacted]', 'X-Api-Key': '[redacted]'}"
+			}
+		},
+		{
+			"id": "bearer-quoted-value",
+			"description": "A quoted Bearer value is redacted whole.",
+			"input": {
+				"message": "auth failed: Bearer 'abcdefghijklmnop' and Basic \"dXNlcjpwYXNzd29yZA==\""
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: auth failed: Bearer [redacted] and Basic [redacted]"
+			}
+		},
+		{
+			"id": "bearer-embedded-and-escaped-quotes",
+			"description": "An unquoted Bearer value keeps embedded quotes; a quoted one keeps escaped quotes.",
+			"input": {
+				"message": "a: Bearer abc'defghijk rest; b: Basic \"abc\\\"defgh\" tail"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: a: Bearer [redacted] rest; b: Basic [redacted] tail"
+			}
+		},
+		{
+			"id": "bearer-brace-not-a-delimiter",
+			"description": "Only whitespace, a comma or the end stops an unquoted Bearer value, so text after a brace is redacted too.",
+			"input": {
+				"message": "auth failed: Bearer abc}secretvalue12 and Basic xyz)moresecret34"
+			},
+			"expect": {
+				"skipReason": "Tier 3 provider error: auth failed: Bearer [redacted] and Basic [redacted]"
+			}
 		}
 	]
 }

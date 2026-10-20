@@ -203,8 +203,10 @@ describe("conformance fixtures", () => {
 		const idsOf = (text: string) => [...text.matchAll(MARKER_RE)].map((m) => m[2]);
 		const a = idsOf(render());
 		const b = idsOf(render());
-		expect(a).toHaveLength(6); // 3 blocks × open/close
-		expect(new Set(a).size).toBe(3);
+		for (const ids of [a, b]) {
+			expect(ids).toHaveLength(6); // 3 blocks × open/close
+			expect(new Set(ids).size).toBe(3);
+		}
 		expect(a.some((id) => b.includes(id))).toBe(false);
 	});
 

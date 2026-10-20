@@ -1737,6 +1737,37 @@
 				"coverageDegraded": false,
 				"judgeCalls": 1
 			}
+		},
+		{
+			"id": "t3only-refused-without-decision-blocks",
+			"description": "A refusal blocks even without a valid decision.",
+			"input": {
+				"mode": "tier3_only",
+				"payload": {
+					"body": "x"
+				},
+				"judge": {
+					"default": {
+						"refused": true
+					}
+				}
+			},
+			"expect": {
+				"allowed": false,
+				"riskLevel": "high",
+				"tier3": {
+					"decision": "block",
+					"refused": true,
+					"hasRaw": false
+				},
+				"coverageDegraded": false,
+				"chunkSummary": {
+					"chunks": 1,
+					"blocked": 1,
+					"blockingChunk": 0
+				},
+				"judgeCalls": 1
+			}
 		}
 	]
 }

@@ -23,6 +23,10 @@ describe("buildTier3Messages delimiting", () => {
 		expect(user).toContain("Tool: gmail_get");
 	});
 
+	it("rejects a template without {{content}} when called directly", () => {
+		expect(() => buildTier3Messages({ system: "s", user: "no content slot" }, "x")).toThrow(/content/);
+	});
+
 	it("uses a new id per call", () => {
 		const a = [...userMessage(buildTier3Messages(DEFAULT_TIER3_PROMPT, "x")).matchAll(MARKER_RE)][0][2];
 		const b = [...userMessage(buildTier3Messages(DEFAULT_TIER3_PROMPT, "x")).matchAll(MARKER_RE)][0][2];
