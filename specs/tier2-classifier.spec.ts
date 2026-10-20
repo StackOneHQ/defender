@@ -105,6 +105,7 @@ describe("#Tier2Classifier", () => {
 			const classifier = createTier2Classifier();
 
 			// act / assert
+			expect(classifier.getRiskLevel(0.52)).toBe("high"); // the recalibrated boundary
 			// The bundled model's high line is 0.52, so medium is [0.5, 0.52).
 			expect(classifier.getRiskLevel(0.51)).toBe("medium");
 		});

@@ -243,6 +243,7 @@ describe.skipIf(!!process.env.CI)("Tier2Classifier ONNX mode", () => {
 
 	it("should return correct risk levels", () => {
 		expect(classifier.getRiskLevel(0.9)).toBe("high");
+		expect(classifier.getRiskLevel(0.52)).toBe("high"); // the recalibrated boundary
 		expect(classifier.getRiskLevel(0.51)).toBe("medium");
 		expect(classifier.getRiskLevel(0.3)).toBe("low");
 	});
