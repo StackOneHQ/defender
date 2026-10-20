@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/StackOneHQ/defender/compare/defender-v0.9.2...defender-v0.9.3) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ENG-3282:** swap the Tier-2 model and recalibrate its threshold ([#115](https://github.com/StackOneHQ/defender/issues/115)) ([2769666](https://github.com/StackOneHQ/defender/commit/2769666beded19bc5b8213b9d237c6d4965d7187))
+* **ENG-3500:** Tier-3 hardening found while porting to Python ([#112](https://github.com/StackOneHQ/defender/issues/112)) ([f73f336](https://github.com/StackOneHQ/defender/commit/f73f336e84f21267973e10562e42a51d83f7d2e2))
+
 ## [0.9.2](https://github.com/StackOneHQ/defender/compare/defender-v0.9.1...defender-v0.9.2) (2026-10-19)
 
 
