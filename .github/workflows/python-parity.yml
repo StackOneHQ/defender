@@ -1,0 +1,39 @@
+# Opens a parity issue in StackOneHQ/defender-py when its latest stackone-defender GitHub release is
+# behind a TS release (ENG-1249 part C).
+# Called by release-please.yml after a publish; run it by hand with workflow_dispatch.
+name: python-parity
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "@stackone/defender version just released (X.Y.Z)"
+        required: true
+        type: string
+    secrets:
+      REPO_GH_PAT:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "@stackone/defender version to compare (X.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    # Advisory only: never fail the release.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Open a parity issue when Python is behind
+        env:
+          GH_TOKEN: ${{ secrets.REPO_GH_PAT }}
+          TS_VERSION: ${{ inputs.version }}
+        run: scripts/python-parity-issue.sh
