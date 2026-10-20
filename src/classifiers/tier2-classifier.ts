@@ -84,10 +84,9 @@ function readCalibrationDefaults(modelDir: string): ModelCalibrationDefaults | n
  *
  * **Threshold selection matters.** Both fields are required (no library
  * default) because the right operating point depends on the model and the
- * caller's traffic distribution. For the bundled default model, FP-benchmark
- * validation gives `{ mainThreshold: 0.5, auxThreshold: 0.64 }`. Lower
- * `auxThreshold` (e.g. 0.3) over-rescues attacks on broader benchmarks —
- * see `evals/RESULTS.md` before picking a different value.
+ * caller's traffic distribution. Presets tuned for the bundled model ship in its
+ * `classifier_config.json` under `multihead_presets` (High 0.77/0.325, Medium
+ * 0.88/0.325, Low 0.94/0.30); they are model-specific.
  */
 export interface MultiheadConfig {
 	/**
@@ -173,8 +172,8 @@ export class Tier2Classifier {
 		//   2. Model-specific defaults from `<modelDir>/classifier_config.json:calibration`
 		//   3. Caller-provided `config` (always wins)
 		//
-		// Model-specific defaults let us ship v5 with `temperatureT: 2.41` and
-		// `highRiskThreshold: 0.64` baked in without the library needing to
+		// Model-specific defaults let us ship a model with its calibration (today
+		// `temperatureT: 2.41`, `highRiskThreshold: 0.52`) baked in without the library needing to
 		// know which model the caller is loading. Legacy models without a
 		// classifier_config.json (e.g. `minilm-full-aug`) skip step 2.
 		const modelDir = config.onnxModelPath ?? getDefaultModelPath();

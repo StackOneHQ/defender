@@ -65,7 +65,7 @@ export interface DefenseResult {
 	 * The tool result to forward to the LLM. By default (`sanitizeContent: true`)
 	 * this is a **sentence-level cleaned** copy: within any field that scored
 	 * high/critical, sentences that themselves score above the high threshold are
-	 * dropped (or the whole field is blocked if it is a single sentence), role
+	 * dropped (a single-sentence field is left as is; `allowed` still gates it), role
 	 * markers are stripped from survivors, and the result is `[UD-…]`
 	 * boundary-wrapped when `annotateBoundary` is enabled. Best-effort only —
 	 * cleaning is capped by detection, so treat it as untrusted and still gate on

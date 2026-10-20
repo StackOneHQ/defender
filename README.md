@@ -49,6 +49,8 @@ npm install onnxruntime-node @huggingface/transformers
 
 If they're missing, Defender does **not** silently run unprotected. It logs a warning, sets `result.tier2Available === false` (alert on this to detect degraded ML defense), and falls back to Tier 1 pattern detection. To **fail closed** instead — throw when Tier 2 can't load — pass `requireTier2: true` to `createPromptDefense`. To run Tier-1-only intentionally, pass `enableTier2: false`.
 
+Defender needs Node.js 22 or later. `useSfe: true` also needs the optional peer `fasttext.wasm` (`npm install fasttext.wasm`); without it SFE passes payloads through unfiltered and warns.
+
 ## Quick Start
 
 Runnable examples, including Tier 3 with OpenAI, Gemini, Anthropic or a local model, are in [`examples/`](./examples).
@@ -97,9 +99,9 @@ Regex-based detection that scores content and escalates risk — it does **not**
 Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
 - Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
 - Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package — no external download needed
-- Bundled model is **multi-head** (variant `jbv2-mh-grid-agpjb2pinstr-s2` since 0.9.3; it still lives in the `minilm-multihead-v5` folder so existing paths keep working). The auxiliary head identifies meta-discussion / documentation phrasing — under multi-head mode a chunk blocks only when `main >= mainThr AND aux < auxThr`, so docs that quote injection text aren't over-flagged. Reported on the result as `tier2AuxScore` and `tier2MultiheadBlocked`.
+- Bundled model is **multi-head** (variant `jbv2-mh-grid-agpjb2pinstr-s2` since 0.9.3; it still lives in the `minilm-multihead-v5` folder so existing paths keep working). The auxiliary head identifies meta-discussion / documentation phrasing, so docs that quote injection text aren't over-flagged.
 - The bundled model carries calibrated thresholds (`highRiskThreshold` 0.52 at temperature 2.41) in its `classifier_config.json`; these override library defaults when the model is loaded. Thresholds are model-specific: 0.64 was right for the previous model, not this one.
-- Multi-head presets tuned for this model, as `mainThreshold`/`auxThreshold` (a chunk blocks when its main score >= `mainThreshold` and its aux score < `auxThreshold`): High 0.77/0.325, Medium 0.88/0.325, Low 0.94/0.30. They're also in `classifier_config.json` under `multihead_presets`.
+- Multi-head mode is off by default; Tier 2 then blocks at `highRiskThreshold`. To turn it on, pass a preset as `tier2Config: { multihead: { mainThreshold, auxThreshold } }`: a chunk then blocks when its main score >= `mainThreshold` and its aux score < `auxThreshold`, and the result reports `tier2AuxScore` and `tier2MultiheadBlocked`. Presets tuned for this model: High 0.77/0.325, Medium 0.88/0.325, Low 0.94/0.30. They're also in `classifier_config.json` under `multihead_presets`, but defender doesn't load them for you.
 - Catches attacks that evade pattern-based detection
 - Latency: ~10ms/sample (after model warmup)
 
@@ -130,7 +132,7 @@ import { createOpenAICompatibleTier3Provider, createPromptDefense } from '@stack
 const provider = createOpenAICompatibleTier3Provider({
   baseURL: 'https://api.openai.com/v1',
   apiKey: process.env.OPENAI_API_KEY,
-  model: 'gpt-4.1-mini',
+  model: 'gpt-6-luna',
 });
 
 const defense = createPromptDefense({
@@ -140,7 +142,7 @@ const defense = createPromptDefense({
 });
 ```
 
-Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens`, `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`. `baseURL` must use https, except for localhost and `127.x.x.x`; set `allowInsecureHttp: true` to send over plain http anyway. Put credentials in `apiKey` or `headers`, not in the URL. A moderation hit (`content_filter`, `invalid_prompt`, an empty `choices` array) counts as a refusal and blocks.
+Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_object"` / `"none"`), `maxTokens` (default 300, sent as `max_completion_tokens`; `legacyMaxTokens: true` sends `max_tokens`), `temperature` (not sent unless set), `retries` (1 extra attempt on 429 / 5xx / network errors), `prompt`, `parse`, `fetch` (a custom fetch, for tests or other runtimes). `baseURL` must use https, except for localhost and `127.x.x.x`; set `allowInsecureHttp: true` to send over plain http anyway. Put credentials in `apiKey` or `headers`, not in the URL. A moderation hit (`content_filter`, `invalid_prompt`, an empty `choices` array) counts as a refusal and blocks.
 
 #### Use any other LLM
 
@@ -156,7 +158,12 @@ const provider = createLlmTier3Provider({
   complete: async ({ messages, signal }) => {
     const system = messages.find((m) => m.role === 'system')?.content;
     const r = await anthropic.messages.create(
-      { model: 'claude-haiku-5-5', max_tokens: 300, system, messages: messages.filter((m) => m.role !== 'system') },
+      {
+        model: 'claude-haiku-5-5',
+        max_tokens: 300,
+        system,
+        messages: messages.filter((m) => m.role === 'user').map((m) => ({ role: 'user' as const, content: m.content })),
+      },
       { signal },
     );
     const text = r.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
@@ -242,7 +249,7 @@ const defense = createPromptDefense({
 | `false` | is ignored; Tier 3 can only add blocks |
 | `{ maxTier2Score: 0.75 }` | undoes the block only when Tier 2's score (before density damping) is below 0.75 |
 
-Use `false` or `{ maxTier2Score }` until you've tested your judge against text written to fool it. In cascade mode without `decide`, defender logs a one-time warning when `allowOverride` is `true` with a provider from `createLlmTier3Provider` or `createOpenAICompatibleTier3Provider`. An invalid `allowOverride` value warns and falls back to `false`.
+Use `false` or `{ maxTier2Score }` until you've tested your judge against text written to fool it. In cascade mode without `decide`, defender logs a warning once per process when `allowOverride` is `true` with a provider from `createLlmTier3Provider` or `createOpenAICompatibleTier3Provider`. An invalid `allowOverride` value warns and falls back to `false`.
 
 **`onError`**. A failure is a throw, a timeout, an invalid verdict from a hand-written provider, or a caller cancellation. Unusable replies from `createLlmTier3Provider` / `createOpenAICompatibleTier3Provider` aren't failures; they block (see above):
 
@@ -250,7 +257,7 @@ Use `false` or `{ maxTier2Score }` until you've tested your judge against text w
 |---|---|---|
 | `"tier2"` (cascade default) | keep Tier 2's verdict | not allowed; uses `"allow"` |
 | `"allow"` (tier3_only default) | treat as an `allow` (subject to `allowOverride`) | drop failed chunks; other chunks decide |
-| `"block"` | block if Tier 2 rated the payload medium or higher | block if any chunk failed; `onOversize` defaults to `"scan_anyway"` |
+| `"block"` | block if Tier 2 rated the payload medium or higher (with the bundled model Tier 2 rarely reports `medium`: its band is [0.5, 0.52)) | block if any chunk failed; `onOversize` defaults to `"scan_anyway"` |
 
 Under `"block"`, a missing provider also counts as a failure, in `tier3_only` too (instead of falling back to the cascade). `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
 
@@ -302,7 +309,7 @@ Use `allowed` for blocking decisions:
 - `allowed: true` — safe to pass to the LLM
 - `allowed: false` — content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-`riskLevel` is diagnostic metadata. It starts at `low` and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring — never reduced within a call. Use it for logging and monitoring, not for allow/block logic.
+`riskLevel` is diagnostic metadata. It starts at `low` and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring. When Tier 3 runs, a cascade `allow` override can lower it back to the Tier 1 level, and in `tier3_only` it is `high` when the call blocks and `low` otherwise. Use it for logging and monitoring, not for allow/block logic.
 
 Risk escalation from detections:
 
@@ -329,6 +336,7 @@ const defense = createPromptDefense({
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
   sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized = content verbatim) (default: true)
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
+  tier2Config: { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } }, // Tier 2 overrides: highRiskThreshold, multihead (default: the model's calibration, single-head)
 
   // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
   enableTier3: false,           // (default: false)
@@ -344,9 +352,9 @@ const defense = createPromptDefense({
 });
 ```
 
-### `defense.defendToolResult(value, toolName)`
+### `defense.defendToolResult(value, toolName, options?)`
 
-The primary method. Runs Tier 1 + Tier 2 and returns a `DefenseResult`:
+The primary method. Runs the enabled tiers and returns a `DefenseResult`. `options` takes `context` (`{ userGoal, toolDescription }`, passed to Tier 3) and `signal` (cancels in-flight Tier 3 calls):
 
 ```typescript
 interface DefenseResult {
@@ -364,15 +372,16 @@ interface DefenseResult {
   tier2AuxScore?: number;                 // Multi-head auxiliary score for the reported chunk
   tier2MultiheadBlocked?: boolean;        // True when the multi-head rule (main >= mainThr AND aux < auxThr) fired
   tier2SkipReason?: string;               // Reason Tier 2 was skipped (e.g. "No strings extracted")
+  tier2Available?: boolean;               // false when Tier 2 is enabled but the model/runtime failed to load (Tier 1 only); absent otherwise
   maxSentence?: string;                   // The sentence with the highest Tier 2 score
 
-  // Tier 3 verdict — present only when Tier 3 ran (use `"tier3" in result` to probe).
+  // Tier 3 outcome: present when Tier 3 ran or was wanted but skipped (use `"tier3" in result` to probe).
   // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
   tier3?: {
     decision?: 'block' | 'allow'; score?: number; reason?: string; refused?: boolean; promptVersion?: string;
     raw?: unknown; latencyMs?: number; usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
     skipReason?: string;        // set instead of decision when Tier 3 didn't produce a verdict
-    errored?: boolean; overrideApplied?: boolean; overrideSuppressed?: boolean; decidedBy?: 'policy' | 'options';
+    errored?: boolean; note?: string; overrideApplied?: boolean; overrideSuppressed?: boolean; decidedBy?: 'policy' | 'options';
   };
   // tier3_only chunk telemetry — present only when the chunk-review path ran.
   tier3ChunkSummary?: { chunks: number; blocked: number; blockingChunk?: number; oversize?: boolean };
@@ -382,6 +391,9 @@ interface DefenseResult {
 
   // Stack-safety guard — set when any recursive walk hit the depth limit
   truncatedAtDepth?: boolean;
+  // True when analysis didn't cover everything (oversize, failed Tier 3 chunks, depth/size limits,
+  // unreadable payload). Absent, not false, when coverage was complete.
+  coverageDegraded?: boolean;
 
   latencyMs: number;                      // Total processing time in milliseconds
 
@@ -415,6 +427,8 @@ for (const result of results) {
 }
 ```
 
+Each item can also carry `context` (same as `defendToolResult`). A second argument `{ signal }` cancels Tier 3 calls for the whole batch.
+
 ### `defense.analyze(text)`
 
 Low-level Tier 1 analysis for debugging. Returns pattern matches and risk assessment without sanitization.
@@ -432,7 +446,7 @@ The bundled model auto-loads on first `defendToolResult()` call. Use `warmupTier
 
 ```typescript
 const defense = createPromptDefense();
-await defense.warmupTier2(); // optional, avoids ~1-2s first-call latency
+await defense.warmupTier2(); // optional, loads the model now instead of on the first call
 ```
 
 ### Tier 3 Setup
@@ -454,6 +468,7 @@ setDefaultTier3Provider(null);
 ### With Vercel AI SDK
 
 ```typescript
+import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, tool } from 'ai';
 import { createPromptDefense } from '@stackone/defender';
 
@@ -463,7 +478,7 @@ const defense = createPromptDefense({
 await defense.warmupTier2(); // optional, avoids first-call latency
 
 const result = await generateText({
-  model: anthropic('claude-sonnet-4-20250514'),
+  model: anthropic('claude-sonnet-5-5'),
   tools: {
     gmail_get_message: tool({
       // ... tool definition
@@ -492,7 +507,7 @@ For Tier 1 value scanning, per-tool overrides focus on the fields most likely to
 |---|---|
 | `gmail_*`, `email_*` | subject, body, snippet, content |
 | `documents_*` | name, description, content, title |
-| `github_*` | name, title, body, description, message |
+| `github_*` | name, title, body, description, content, message |
 | `hris_*` | name, notes, bio, description |
 | `ats_*` | name, notes, description, summary |
 | `crm_*` | name, description, notes, content |
@@ -531,7 +546,7 @@ pnpm build
 pnpm test:typecheck
 ```
 
-TypeScript 7 is the compiler for type checks and declaration builds. Both build commands run the source check before tsdown, which uses its native declaration option with the installed compiler’s platform-specific executable. The declaration option is experimental; the separate source check preserves semantic checking because the declaration subprocess uses `--noCheck`.
+TypeScript 7 runs the type checks and builds the declarations. `pnpm build` and `pnpm build:dev` type-check `src` first, then run tsdown. tsdown builds declarations with the installed TypeScript executable. That option is experimental and skips type checking (`--noCheck`), so the separate check is what catches type errors.
 
 ### Testing
 
