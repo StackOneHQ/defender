@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/StackOneHQ/defender/compare/defender-v0.9.3...defender-v0.9.4) (2026-10-21)
+
+
+### Bug Fixes
+
+* **ENG-3542:** drop SFE fields per element in list responses ([#118](https://github.com/StackOneHQ/defender/issues/118)) ([fd5be21](https://github.com/StackOneHQ/defender/commit/fd5be21fa34114a769f317ae3d5e674fc5a82cc5))
+
 ## [0.9.3](https://github.com/StackOneHQ/defender/compare/defender-v0.9.2...defender-v0.9.3) (2026-10-20)
 
 
