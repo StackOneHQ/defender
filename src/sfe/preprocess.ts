@@ -174,8 +174,16 @@ function valueType(v: unknown): (typeof VALUE_TYPES)[number] {
 	return "string";
 }
 
+// Training paths are at most 96 chars, so this never changes a real input. It bounds
+// the per-leaf work when a payload nests many long keys.
+const MAX_PATH_CHARS = 256;
+
 interface Field {
+	/** Path without array indices: the form the classifier was trained on. */
 	rawPath: string;
+	/** The leaf's container and key. A drop removes this leaf only, not its siblings in other elements. */
+	parent: object;
+	key: string | number;
 	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
 	valueTruncated: string;
@@ -187,7 +195,15 @@ interface Field {
  * container). Only leaf fields are passed to the classifier — the
  * classifier has no concept of "this whole subtree is irrelevant".
  */
-function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", depth = 0, stackDepth = 0): Field[] {
+function extractFields(
+	obj: unknown,
+	depthFlag: { hit: boolean },
+	path = "",
+	depth = 0,
+	stackDepth = 0,
+	parent: object = {},
+	key: string | number = "",
+): Field[] {
 	// `depth` is the semantic field-path depth fed into the FastText model
 	// (must match the training script's counting — arrays don't count as a
 	// level of nesting). `stackDepth` counts actual recursive calls for
@@ -202,18 +218,21 @@ function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", dep
 	// the JS argument-count limit and throws. A loop has no such cap.
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-			const child = path ? `${path}.${k}` : k;
-			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1)) out.push(f);
+			let child = path ? `${path}.${k}` : k;
+			if (child.length > MAX_PATH_CHARS) child = child.slice(-MAX_PATH_CHARS);
+			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1, obj, k)) out.push(f);
 		}
 	} else if (Array.isArray(obj)) {
-		for (const item of obj) {
-			for (const f of extractFields(item, depthFlag, path, depth, stackDepth + 1)) out.push(f);
+		for (let i = 0; i < obj.length; i++) {
+			for (const f of extractFields(obj[i], depthFlag, path, depth, stackDepth + 1, obj, i)) out.push(f);
 		}
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
 		out.push({
 			rawPath: path,
+			parent,
+			key,
 			value: obj,
 			valueType: vt,
 			valueTruncated: truncated,
@@ -234,29 +253,32 @@ function fieldToText(f: Field): string {
 	return text.replace(/[\r\n]/g, " ");
 }
 
-function filterByPaths<T>(obj: T, dropPaths: Set<string>, depthFlag: { hit: boolean }, path = "", depth = 0): T {
+type DropMap = Map<object, Set<string | number>>;
+
+function filterDrops<T>(obj: T, drops: DropMap, depthFlag: { hit: boolean }, depth = 0): T {
 	if (depth > MAX_TRAVERSAL_DEPTH) {
 		depthFlag.hit = true;
 		return obj;
 	}
 	if (Array.isArray(obj)) {
+		const dropped = drops.get(obj);
 		const out = new Array(obj.length);
-		for (let i = 0; i < obj.length; i++) out[i] = filterByPaths(obj[i], dropPaths, depthFlag, path, depth + 1);
+		for (let i = 0; i < obj.length; i++)
+			out[i] = dropped?.has(i) ? undefined : filterDrops(obj[i], drops, depthFlag, depth + 1);
 		return out as unknown as T;
 	}
 	if (obj !== null && typeof obj === "object") {
+		const dropped = drops.get(obj);
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			// Skip prototype-pollution-adjacent keys before copying to `{}`.
 			// Mirrors the main sanitizer's DANGEROUS_KEYS treatment.
 			if (DANGEROUS_KEYS.has(k)) continue;
-			const child = path ? `${path}.${k}` : k;
-			out[k] = filterByPaths(v, dropPaths, depthFlag, child, depth + 1);
+			out[k] = dropped?.has(k) ? undefined : filterDrops(v, drops, depthFlag, depth + 1);
 		}
 		return out as unknown as T;
 	}
-	// Leaf — drop if its path is in dropPaths
-	return (dropPaths.has(path) ? (undefined as unknown as T) : obj) as T;
+	return obj;
 }
 
 // After filtering leaves to undefined, compact: remove undefined values from
@@ -331,25 +353,35 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 
 	const texts = candidates.map(fieldToText);
 	const decisions = await predictor.predictBatch(texts);
-	const dropPaths = new Set<string>();
+	const drops: DropMap = new Map();
+	const keeps: DropMap = new Map();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
-		if (d.label === "drop" && d.prob >= threshold) {
-			dropPaths.add(candidates[i].rawPath);
-		}
+		const target = d.label === "drop" && d.prob >= threshold ? drops : keeps;
+		const { parent, key } = candidates[i];
+		let keys = target.get(parent);
+		if (!keys) target.set(parent, (keys = new Set()));
+		keys.add(key);
 	}
+	// An object reachable from two paths is one leaf: drop it only if no path kept it.
+	for (const [parent, keys] of keeps) {
+		const dropped = drops.get(parent);
+		if (!dropped) continue;
+		for (const k of keys) dropped.delete(k);
+		if (dropped.size === 0) drops.delete(parent);
+	}
+	const dropPaths = new Set<string>();
+	for (const { parent, key, rawPath } of candidates) if (drops.get(parent)?.has(key)) dropPaths.add(rawPath);
 
-	if (dropPaths.size === 0) {
+	if (drops.size === 0) {
 		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
 	}
 
-	// `dropped` is the sorted de-duplicated set of paths (paths from array
-	// elements share the element-free path form, so duplicates arise on
-	// list-response payloads — we report each distinct path once). Note the
-	// all-or-nothing behavior on arrays: when any element's leaf path is
-	// classified as drop, the field is removed from every sibling element.
+	// Each leaf is dropped on its own decision, so one ID-like value in a list
+	// doesn't remove that field from every other element. `dropped` reports
+	// each element-free path once, if any of its leaves was dropped.
 	const dropped = Array.from(dropPaths).sort();
 
-	const filtered = compactUndefined(filterByPaths(value, dropPaths, depthFlag), depthFlag);
+	const filtered = compactUndefined(filterDrops(value, drops, depthFlag), depthFlag);
 	return { filtered, dropped, truncatedAtDepth: depthFlag.hit || undefined };
 }
