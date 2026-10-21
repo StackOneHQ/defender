@@ -166,6 +166,26 @@ describe("SFE preprocessor", () => {
 				expect(JSON.stringify(result.filtered)).toContain(keep);
 			}
 		});
+
+		it("bounds the classifier text when a payload nests many long keys", async () => {
+			const leaves: Record<string, string> = {};
+			for (let i = 0; i < 1000; i++) leaves[`f${i}`] = i % 2 ? "deadbeef00" : "Some prose.";
+			let node: unknown = leaves;
+			for (let d = 0; d < 50; d++) node = { [`k${d}`.padEnd(1000, "x")]: node };
+			let longest = 0;
+			const predictor: SfePredictor = {
+				async predict(text) {
+					longest = Math.max(longest, text.length);
+					return idPredictor.predict(text);
+				},
+				async predictBatch(texts) {
+					return Promise.all(texts.map((t) => this.predict(t)));
+				},
+			};
+			const result = await sfePreprocess(node, { predictor });
+			expect(longest).toBeLessThan(300);
+			expect(result.dropped).toHaveLength(500);
+		});
 	});
 
 	describe("PromptDefense useSfe option", () => {

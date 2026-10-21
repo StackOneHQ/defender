@@ -174,11 +174,16 @@ function valueType(v: unknown): (typeof VALUE_TYPES)[number] {
 	return "string";
 }
 
+// Training paths are at most 96 chars, so this never changes a real input. It bounds
+// the per-leaf work when a payload nests many long keys.
+const MAX_PATH_CHARS = 256;
+
 interface Field {
 	/** Path without array indices: the form the classifier was trained on. */
 	rawPath: string;
-	/** Unambiguous path with array indices, so a drop removes this leaf and not its siblings in other elements. */
-	leafKey: string;
+	/** The leaf's container and key. A drop removes this leaf only, not its siblings in other elements. */
+	parent: object;
+	key: string | number;
 	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
 	valueTruncated: string;
@@ -196,7 +201,8 @@ function extractFields(
 	path = "",
 	depth = 0,
 	stackDepth = 0,
-	key = "",
+	parent: object = {},
+	key: string | number = "",
 ): Field[] {
 	// `depth` is the semantic field-path depth fed into the FastText model
 	// (must match the training script's counting — arrays don't count as a
@@ -212,20 +218,21 @@ function extractFields(
 	// the JS argument-count limit and throws. A loop has no such cap.
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-			const child = path ? `${path}.${k}` : k;
-			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1, objectKey(key, k)))
-				out.push(f);
+			let child = path ? `${path}.${k}` : k;
+			if (child.length > MAX_PATH_CHARS) child = child.slice(-MAX_PATH_CHARS);
+			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1, obj, k)) out.push(f);
 		}
 	} else if (Array.isArray(obj)) {
 		for (let i = 0; i < obj.length; i++) {
-			for (const f of extractFields(obj[i], depthFlag, path, depth, stackDepth + 1, `${key}[${i}]`)) out.push(f);
+			for (const f of extractFields(obj[i], depthFlag, path, depth, stackDepth + 1, obj, i)) out.push(f);
 		}
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
 		out.push({
 			rawPath: path,
-			leafKey: key,
+			parent,
+			key,
 			value: obj,
 			valueType: vt,
 			valueTruncated: truncated,
@@ -246,33 +253,32 @@ function fieldToText(f: Field): string {
 	return text.replace(/[\r\n]/g, " ");
 }
 
-// Object keys are JSON-quoted so a key like "a[0]" or "a.b" can't match another leaf's key.
-function objectKey(key: string, k: string): string {
-	return `${key}.${JSON.stringify(k)}`;
-}
+type DropMap = Map<object, Set<string | number>>;
 
-function filterByKeys<T>(obj: T, dropKeys: Set<string>, depthFlag: { hit: boolean }, key = "", depth = 0): T {
+function filterDrops<T>(obj: T, drops: DropMap, depthFlag: { hit: boolean }, depth = 0): T {
 	if (depth > MAX_TRAVERSAL_DEPTH) {
 		depthFlag.hit = true;
 		return obj;
 	}
 	if (Array.isArray(obj)) {
+		const dropped = drops.get(obj);
 		const out = new Array(obj.length);
 		for (let i = 0; i < obj.length; i++)
-			out[i] = filterByKeys(obj[i], dropKeys, depthFlag, `${key}[${i}]`, depth + 1);
+			out[i] = dropped?.has(i) ? undefined : filterDrops(obj[i], drops, depthFlag, depth + 1);
 		return out as unknown as T;
 	}
 	if (obj !== null && typeof obj === "object") {
+		const dropped = drops.get(obj);
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			// Skip prototype-pollution-adjacent keys before copying to `{}`.
 			// Mirrors the main sanitizer's DANGEROUS_KEYS treatment.
 			if (DANGEROUS_KEYS.has(k)) continue;
-			out[k] = filterByKeys(v, dropKeys, depthFlag, objectKey(key, k), depth + 1);
+			out[k] = dropped?.has(k) ? undefined : filterDrops(v, drops, depthFlag, depth + 1);
 		}
 		return out as unknown as T;
 	}
-	return (dropKeys.has(key) ? (undefined as unknown as T) : obj) as T;
+	return obj;
 }
 
 // After filtering leaves to undefined, compact: remove undefined values from
@@ -347,17 +353,20 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 
 	const texts = candidates.map(fieldToText);
 	const decisions = await predictor.predictBatch(texts);
-	const dropKeys = new Set<string>();
+	const drops: DropMap = new Map();
 	const dropPaths = new Set<string>();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
 		if (d.label === "drop" && d.prob >= threshold) {
-			dropKeys.add(candidates[i].leafKey);
-			dropPaths.add(candidates[i].rawPath);
+			const { parent, key, rawPath } = candidates[i];
+			let keys = drops.get(parent);
+			if (!keys) drops.set(parent, (keys = new Set()));
+			keys.add(key);
+			dropPaths.add(rawPath);
 		}
 	}
 
-	if (dropKeys.size === 0) {
+	if (drops.size === 0) {
 		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
 	}
 
@@ -366,6 +375,6 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	// each element-free path once, if any of its leaves was dropped.
 	const dropped = Array.from(dropPaths).sort();
 
-	const filtered = compactUndefined(filterByKeys(value, dropKeys, depthFlag), depthFlag);
+	const filtered = compactUndefined(filterDrops(value, drops, depthFlag), depthFlag);
 	return { filtered, dropped, truncatedAtDepth: depthFlag.hit || undefined };
 }
