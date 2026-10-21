@@ -354,17 +354,24 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	const texts = candidates.map(fieldToText);
 	const decisions = await predictor.predictBatch(texts);
 	const drops: DropMap = new Map();
-	const dropPaths = new Set<string>();
+	const keeps: DropMap = new Map();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
-		if (d.label === "drop" && d.prob >= threshold) {
-			const { parent, key, rawPath } = candidates[i];
-			let keys = drops.get(parent);
-			if (!keys) drops.set(parent, (keys = new Set()));
-			keys.add(key);
-			dropPaths.add(rawPath);
-		}
+		const target = d.label === "drop" && d.prob >= threshold ? drops : keeps;
+		const { parent, key } = candidates[i];
+		let keys = target.get(parent);
+		if (!keys) target.set(parent, (keys = new Set()));
+		keys.add(key);
 	}
+	// An object reachable from two paths is one leaf: drop it only if no path kept it.
+	for (const [parent, keys] of keeps) {
+		const dropped = drops.get(parent);
+		if (!dropped) continue;
+		for (const k of keys) dropped.delete(k);
+		if (dropped.size === 0) drops.delete(parent);
+	}
+	const dropPaths = new Set<string>();
+	for (const { parent, key, rawPath } of candidates) if (drops.get(parent)?.has(key)) dropPaths.add(rawPath);
 
 	if (drops.size === 0) {
 		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
