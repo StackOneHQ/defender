@@ -177,7 +177,7 @@ function valueType(v: unknown): (typeof VALUE_TYPES)[number] {
 interface Field {
 	/** Path without array indices: the form the classifier was trained on. */
 	rawPath: string;
-	/** Path with array indices, so a drop removes this leaf and not its siblings in other elements. */
+	/** Unambiguous path with array indices, so a drop removes this leaf and not its siblings in other elements. */
 	leafKey: string;
 	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
@@ -246,8 +246,9 @@ function fieldToText(f: Field): string {
 	return text.replace(/[\r\n]/g, " ");
 }
 
+// Object keys are JSON-quoted so a key like "a[0]" or "a.b" can't match another leaf's key.
 function objectKey(key: string, k: string): string {
-	return key ? `${key}.${k}` : k;
+	return `${key}.${JSON.stringify(k)}`;
 }
 
 function filterByKeys<T>(obj: T, dropKeys: Set<string>, depthFlag: { hit: boolean }, key = "", depth = 0): T {
