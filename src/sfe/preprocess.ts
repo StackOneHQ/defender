@@ -175,7 +175,10 @@ function valueType(v: unknown): (typeof VALUE_TYPES)[number] {
 }
 
 interface Field {
+	/** Path without array indices: the form the classifier was trained on. */
 	rawPath: string;
+	/** Path with array indices, so a drop removes this leaf and not its siblings in other elements. */
+	leafKey: string;
 	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
 	valueTruncated: string;
@@ -187,7 +190,14 @@ interface Field {
  * container). Only leaf fields are passed to the classifier — the
  * classifier has no concept of "this whole subtree is irrelevant".
  */
-function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", depth = 0, stackDepth = 0): Field[] {
+function extractFields(
+	obj: unknown,
+	depthFlag: { hit: boolean },
+	path = "",
+	depth = 0,
+	stackDepth = 0,
+	key = "",
+): Field[] {
 	// `depth` is the semantic field-path depth fed into the FastText model
 	// (must match the training script's counting — arrays don't count as a
 	// level of nesting). `stackDepth` counts actual recursive calls for
@@ -203,17 +213,19 @@ function extractFields(obj: unknown, depthFlag: { hit: boolean }, path = "", dep
 	if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
 		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
-			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1)) out.push(f);
+			for (const f of extractFields(v, depthFlag, child, depth + 1, stackDepth + 1, objectKey(key, k)))
+				out.push(f);
 		}
 	} else if (Array.isArray(obj)) {
-		for (const item of obj) {
-			for (const f of extractFields(item, depthFlag, path, depth, stackDepth + 1)) out.push(f);
+		for (let i = 0; i < obj.length; i++) {
+			for (const f of extractFields(obj[i], depthFlag, path, depth, stackDepth + 1, `${key}[${i}]`)) out.push(f);
 		}
 	} else {
 		const vt = valueType(obj);
 		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
 		out.push({
 			rawPath: path,
+			leafKey: key,
 			value: obj,
 			valueType: vt,
 			valueTruncated: truncated,
@@ -234,14 +246,19 @@ function fieldToText(f: Field): string {
 	return text.replace(/[\r\n]/g, " ");
 }
 
-function filterByPaths<T>(obj: T, dropPaths: Set<string>, depthFlag: { hit: boolean }, path = "", depth = 0): T {
+function objectKey(key: string, k: string): string {
+	return key ? `${key}.${k}` : k;
+}
+
+function filterByKeys<T>(obj: T, dropKeys: Set<string>, depthFlag: { hit: boolean }, key = "", depth = 0): T {
 	if (depth > MAX_TRAVERSAL_DEPTH) {
 		depthFlag.hit = true;
 		return obj;
 	}
 	if (Array.isArray(obj)) {
 		const out = new Array(obj.length);
-		for (let i = 0; i < obj.length; i++) out[i] = filterByPaths(obj[i], dropPaths, depthFlag, path, depth + 1);
+		for (let i = 0; i < obj.length; i++)
+			out[i] = filterByKeys(obj[i], dropKeys, depthFlag, `${key}[${i}]`, depth + 1);
 		return out as unknown as T;
 	}
 	if (obj !== null && typeof obj === "object") {
@@ -250,13 +267,11 @@ function filterByPaths<T>(obj: T, dropPaths: Set<string>, depthFlag: { hit: bool
 			// Skip prototype-pollution-adjacent keys before copying to `{}`.
 			// Mirrors the main sanitizer's DANGEROUS_KEYS treatment.
 			if (DANGEROUS_KEYS.has(k)) continue;
-			const child = path ? `${path}.${k}` : k;
-			out[k] = filterByPaths(v, dropPaths, depthFlag, child, depth + 1);
+			out[k] = filterByKeys(v, dropKeys, depthFlag, objectKey(key, k), depth + 1);
 		}
 		return out as unknown as T;
 	}
-	// Leaf — drop if its path is in dropPaths
-	return (dropPaths.has(path) ? (undefined as unknown as T) : obj) as T;
+	return (dropKeys.has(key) ? (undefined as unknown as T) : obj) as T;
 }
 
 // After filtering leaves to undefined, compact: remove undefined values from
@@ -331,25 +346,25 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 
 	const texts = candidates.map(fieldToText);
 	const decisions = await predictor.predictBatch(texts);
+	const dropKeys = new Set<string>();
 	const dropPaths = new Set<string>();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
 		if (d.label === "drop" && d.prob >= threshold) {
+			dropKeys.add(candidates[i].leafKey);
 			dropPaths.add(candidates[i].rawPath);
 		}
 	}
 
-	if (dropPaths.size === 0) {
+	if (dropKeys.size === 0) {
 		return { filtered: value, dropped: [], truncatedAtDepth: depthFlag.hit || undefined };
 	}
 
-	// `dropped` is the sorted de-duplicated set of paths (paths from array
-	// elements share the element-free path form, so duplicates arise on
-	// list-response payloads — we report each distinct path once). Note the
-	// all-or-nothing behavior on arrays: when any element's leaf path is
-	// classified as drop, the field is removed from every sibling element.
+	// Each leaf is dropped on its own decision, so one ID-like value in a list
+	// doesn't remove that field from every other element. `dropped` reports
+	// each element-free path once, if any of its leaves was dropped.
 	const dropped = Array.from(dropPaths).sort();
 
-	const filtered = compactUndefined(filterByPaths(value, dropPaths, depthFlag), depthFlag);
+	const filtered = compactUndefined(filterByKeys(value, dropKeys, depthFlag), depthFlag);
 	return { filtered, dropped, truncatedAtDepth: depthFlag.hit || undefined };
 }
