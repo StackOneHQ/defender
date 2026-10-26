@@ -563,6 +563,8 @@ Defender is built and maintained by [StackOne](https://www.stackone.com?utm_sour
 - **Defender site** — [defender.stackone.com](https://defender.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about)
 - **Overview & benchmarks** — [stackone.com/platform/prompt-injection-guard](https://www.stackone.com/platform/prompt-injection-guard/?utm_source=npm&utm_medium=readme&utm_campaign=about)
 - **StackOne platform** — [stackone.com](https://www.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about)
+- **Maintainers** — [MAINTAINERS.md](./MAINTAINERS.md)
+- **Security** — report vulnerabilities as described in [SECURITY.md](./SECURITY.md)
 
 ## License
 
