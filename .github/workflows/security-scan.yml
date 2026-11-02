@@ -22,6 +22,10 @@ env:
   GITLEAKS_VERSION: "8.30.1"
   OSV_SCANNER_VERSION: "2.7.0"
   ZIZMOR_VERSION: "1.31.1"
+  # Bump each version together with its hash. Hashes are pinned here, not read
+  # from the release, so a replaced release asset fails verification.
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  OSV_SCANNER_SHA256: "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
   ZIZMOR_SHA256: "d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99"
 
 jobs:
@@ -43,10 +47,8 @@ jobs:
           mkdir -p "$tool_dir"
           cd "$tool_dir"
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          curl -fsSL --retry 3 -o "$archive" "$base/$archive"
-          curl -fsSL --retry 3 -o checksums.txt "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          grep -F "  $archive" checksums.txt | sha256sum -c -
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "${GITLEAKS_SHA256}  $archive" | sha256sum -c -
           tar -xzf "$archive" gitleaks
           echo "$tool_dir" >> "$GITHUB_PATH"
 
@@ -68,7 +70,9 @@ jobs:
             args+=(--log-opts="${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}")
             scope="pushed commits"
           fi
-          gitleaks git --redact --no-banner --exit-code 0 \
+          # Trusted config from outside the checkout: a PR cannot allowlist its own findings.
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
+          gitleaks git --redact --no-banner --exit-code 0 --config "$RUNNER_TEMP/gitleaks.toml" \
             --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" \
             "${args[@]}"
           count=0
@@ -105,10 +109,8 @@ jobs:
           tool_dir="$RUNNER_TEMP/osv-scanner"
           mkdir -p "$tool_dir"
           cd "$tool_dir"
-          base="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}"
-          curl -fsSL --retry 3 -o osv-scanner_linux_amd64 "$base/osv-scanner_linux_amd64"
-          curl -fsSL --retry 3 -o osv-scanner_SHA256SUMS "$base/osv-scanner_SHA256SUMS"
-          grep -F "  osv-scanner_linux_amd64" osv-scanner_SHA256SUMS | sha256sum -c -
+          curl -fsSL --retry 3 -o osv-scanner_linux_amd64 "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  osv-scanner_linux_amd64" | sha256sum -c -
           install -m 0755 osv-scanner_linux_amd64 osv-scanner
           rm osv-scanner_linux_amd64
           echo "$tool_dir" >> "$GITHUB_PATH"
@@ -117,7 +119,16 @@ jobs:
         run: |
           set -uo pipefail
           report="$RUNNER_TEMP/osv.md"
-          osv-scanner scan source -r --format markdown . > "$report" || true
+          rc=0
+          osv-scanner scan source -r --format markdown . > "$report" || rc=$?
+          # 0 = clean, 1 = vulnerabilities found (report-only), 128 = no packages found.
+          case "$rc" in
+            0|1|128) ;;
+            *)
+              echo "osv-scanner failed with exit code $rc" >> "$GITHUB_STEP_SUMMARY"
+              exit "$rc"
+              ;;
+          esac
           {
             echo "## osv-scanner"
             echo
@@ -154,9 +165,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           report="$RUNNER_TEMP/zizmor.json"
-          zizmor --format json --no-exit-codes .github/workflows > "$report" 2> "$RUNNER_TEMP/zizmor.err" || true
+          zizmor --format json --no-exit-codes .github/workflows > "$report"
           {
             echo "## zizmor"
             echo
