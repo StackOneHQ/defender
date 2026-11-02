@@ -61,13 +61,14 @@ jobs:
           PUSH_AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          args=()
+          # -m includes merge commits, so conflict resolutions are scanned too.
+          args=(--log-opts="-m --full-history --all")
           scope="full history"
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            args+=(--log-opts="${PR_BASE_SHA}..${PR_HEAD_SHA}")
+            args=(--log-opts="-m ${PR_BASE_SHA}..${PR_HEAD_SHA}")
             scope="pull request commits"
           elif [ "$EVENT_NAME" = "push" ] && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            args+=(--log-opts="${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}")
+            args=(--log-opts="-m ${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}")
             scope="pushed commits"
           fi
           # Scan a bare clone with a trusted config. A PR cannot allowlist its own findings:
