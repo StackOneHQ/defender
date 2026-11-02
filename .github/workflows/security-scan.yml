@@ -170,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/zizmor.json"
-          zizmor --format json --no-exit-codes .github/workflows > "$report"
+          zizmor --format json --no-exit-codes --strict-collection .github > "$report"
           {
             echo "## zizmor"
             echo
