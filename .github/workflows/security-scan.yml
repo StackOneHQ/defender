@@ -61,13 +61,14 @@ jobs:
           PUSH_AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # -m includes merge commits, so conflict resolutions are scanned too.
+          # -m includes merge commits, so conflict resolutions are scanned too. A push whose
+          # previous commit is unavailable (new branch, force push) falls back to full history.
           args=(--log-opts="-m --full-history --all")
           scope="full history"
           if [ "$EVENT_NAME" = "pull_request" ]; then
             args=(--log-opts="-m ${PR_BASE_SHA}..${PR_HEAD_SHA}")
             scope="pull request commits"
-          elif [ "$EVENT_NAME" = "push" ] && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+          elif [ "$EVENT_NAME" = "push" ] && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
             args=(--log-opts="-m ${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}")
             scope="pushed commits"
           fi
