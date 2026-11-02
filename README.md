@@ -1,5 +1,12 @@
 <div align="center">
 
+  <a href="https://www.stackone.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/StackOneHQ/defender/a4aecf0fadc8b76fbdb6d966a21c2fc99331ba84/assets/stackone-logo-dark.svg" />
+      <img src="https://raw.githubusercontent.com/StackOneHQ/defender/a4aecf0fadc8b76fbdb6d966a21c2fc99331ba84/assets/stackone-logo-light.svg" alt="StackOne" width="180" />
+    </picture>
+  </a>
+
   <h1>Defender for TypeScript</h1>
   <p><strong>Prompt injection defense for AI tool calls.</strong></p>
   <p>Scan untrusted tool output before your agent acts on it.</p>
@@ -21,6 +28,8 @@
 
 ---
 
+Defender is an open source prompt injection defense library built and maintained by [StackOne](https://www.stackone.com).
+
 Emails, documents and pull requests can carry instructions that try to redirect an agent. Defender scans tool results before they enter the model's context, then returns a decision your application can enforce. Use it with MCP, CLI tools or direct function calls.
 
 | Run locally | Control what reaches the model | Add LLM review |
@@ -34,10 +43,10 @@ Emails, documents and pull requests can carry instructions that try to redirect 
 Requires Node.js 22 or later. Install Defender with the dependencies for its local classifier:
 
 ```bash
-npm install @stackone/defender onnxruntime-node @huggingface/transformers
+npm install @stackone/defender onnxruntime-node@1.21.0 @huggingface/transformers@3.8.1
 ```
 
-The ONNX model is bundled in the package. The default local scan needs no API key or external model call.
+These runtime versions match the repository's development dependencies and share one ONNX runtime. The ONNX model is bundled in the package. The default local scan needs no API key or external model call.
 
 ```typescript
 import { createPromptDefense } from '@stackone/defender';
@@ -62,15 +71,17 @@ if (!result.allowed) {
 }
 ```
 
-`blockHighRisk: true` enables blocking. `requireTier2: true` raises an error if the local classifier cannot load, so the example cannot silently lose that layer of detection.
+`blockHighRisk: true` enables blocking. `requireTier2: true` raises an error if the local classifier cannot load.
 
-Always gate on `result.allowed`. The `sanitized` field contains a best-effort cleaned copy; an allowed result is not a guarantee that content is safe. Set `sanitizeContent: false` to preserve the input verbatim while still checking the decision.
+Always gate on `result.allowed`. The `sanitized` field contains a best-effort cleaned copy; an allowed result is not a guarantee that content is safe. Set `sanitizeContent: false` to disable sentence cleaning. Boundary annotation is controlled separately by `annotateBoundary`.
 
 Find runnable examples for batch scanning, agent loops and optional LLM review in [`examples/`](./examples).
 
 ## Installation
 
-Tier 1 pattern detection and Tier 2 classification are enabled by default. Without the classifier dependencies, Defender warns, sets `result.tier2Available === false` and falls back to pattern detection. Use `requireTier2: true` to raise instead, or `enableTier2: false` for an intentional pattern-only setup.
+Tier 1 pattern detection and Tier 2 classification are enabled by default. If the classifier cannot load, Defender warns, sets `result.tier2Available === false` and falls back to pattern detection. Use `requireTier2: true` to raise instead, or `enableTier2: false` for an intentional pattern-only setup.
+
+Inspect `tier2SkipReason` for skipped analysis and `coverageDegraded` for reported coverage limits. `requireTier2` checks model loading; it does not turn every inference failure into an exception.
 
 The optional SFE preprocessor needs `fasttext.wasm`:
 
@@ -83,8 +94,8 @@ Enable it with `useSfe: true`. If the dependency is missing, SFE warns and passe
 ## How it works
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/demo-dark.svg" />
-  <img src="https://raw.githubusercontent.com/StackOneHQ/defender/main/assets/demo-light.svg" alt="Defender flow: a poisoned email with an injection payload is intercepted by @stackone/defender and blocked before reaching the LLM, with riskLevel: critical and tier2Score: 0.97" width="900" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/StackOneHQ/defender/a4aecf0fadc8b76fbdb6d966a21c2fc99331ba84/assets/readme-flow-dark.svg" />
+  <img src="https://raw.githubusercontent.com/StackOneHQ/defender/a4aecf0fadc8b76fbdb6d966a21c2fc99331ba84/assets/readme-flow-light.svg" alt="Tool output goes through Defender's local checks and optional LLM review. Your application checks result.allowed, forwards result.sanitized when true, and withholds the output when false. Blocking must be enabled in your configuration." width="1080" />
 </picture>
 
 Defender has two local detection layers, with optional LLM review:
@@ -95,40 +106,32 @@ Defender has two local detection layers, with optional LLM review:
 | Tier 2: classifier | Text scored by the bundled MiniLM model. | Locally on CPU. |
 | Tier 3: LLM review | Uncertain cases or every tool result, depending on your policy. | At the model endpoint you configure. |
 
-### Tier 1: pattern detection (sync, ~1 ms)
+### Tier 1: pattern detection (synchronous)
 
 Tier 1 uses patterns to score content and escalate risk. It does not rewrite the payload.
 
 - **Role markers**: detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
 - **Injection patterns**: detects phrases like "ignore previous instructions"
-- **Encoding**: detects Base64/URL/ROT/Morse-encoded payloads as a risk signal
+- **Encoding**: decodes supported encodings, then escalates risk only when the decoded text matches an attack pattern
 - **Unicode/leet normalization**: analysis-only (homoglyphs like Cyrillic 'а' → 'a', leetspeak) so obfuscated variants are still detected; the returned content is never normalized
-- **Boundary annotation**: opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it. This is the recommended structural mitigation.
+- **Boundary annotation**: opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
 
 ### Tier 2: ML classification (async)
 
-Fine-tuned multi-head MiniLM classifier with sentence-level analysis:
+Fine-tuned multi-head MiniLM classifier with chunked analysis:
 
-- Splits text into sentences and scores each one (0.0 = safe, 1.0 = injection)
+- Splits text into sentences, packs them into model-sized chunks and scores the chunks in batched ONNX calls. Higher scores indicate stronger injection signals.
 - Fine-tuned MiniLM-L6-v2, int8 quantized (~22MB), bundled in the package: no external download needed
-- Bundled model is **multi-head** (variant `jbv2-mh-grid-agpjb2pinstr-s2` since 0.9.3; it still lives in the `minilm-multihead-v5` folder so existing paths keep working). The auxiliary head identifies meta-discussion / documentation phrasing, so docs that quote injection text aren't over-flagged.
+- Bundled model is **multi-head** (variant `jbv2-mh-grid-agpjb2pinstr-s2` since 0.9.3; it still lives in the `minilm-multihead-v5` folder so existing paths keep working). The auxiliary head scores meta-discussion and documentation phrasing. The optional multi-head rule uses this signal to reduce false positives.
 - The bundled model carries calibrated thresholds (`highRiskThreshold` 0.52 at temperature 2.41) in its `classifier_config.json`; these override library defaults when the model is loaded. Thresholds are model-specific: 0.64 was right for the previous model, not this one.
-- Multi-head mode is off by default; Tier 2 then rates a chunk high at `highRiskThreshold` (blocking also needs `blockHighRisk: true`). To turn it on, pass a preset as `tier2Config: { multihead: { mainThreshold, auxThreshold } }`: a chunk then blocks when its main score >= `mainThreshold` and its aux score < `auxThreshold`, and the result reports `tier2AuxScore` and `tier2MultiheadBlocked`. Presets tuned for this model: High 0.77/0.325, Medium 0.88/0.325, Low 0.94/0.30. They're also in `classifier_config.json` under `multihead_presets`, but defender doesn't load them for you.
-- Catches attacks that evade pattern-based detection
-- Latency: about 10 ms per call after warmup (p50, short inputs)
+- Multi-head mode is off by default; Tier 2 then rates a chunk high at `highRiskThreshold` (blocking also needs `blockHighRisk: true`). To turn it on, pass a preset as `tier2Config: { multihead: { mainThreshold, auxThreshold } }`: the rule flags a chunk when its main score >= `mainThreshold` and its aux score < `auxThreshold`, and the result reports `tier2AuxScore` and `tier2MultiheadBlocked`. Presets tuned for this model: High 0.77/0.325, Medium 0.88/0.325, Low 0.94/0.30. They're also in `classifier_config.json` under `multihead_presets`, but defender doesn't load them for you.
+- Adds a learned detection signal alongside pattern matching
 
 ### Benchmarks
 
-Tier 2 only, through the package pipeline at the default threshold 0.52; measured 2026-10-20:
+See the [Defender benchmark page](https://defender.stackone.com/defense-benchmark) for published evaluations, detector comparisons and methodology.
 
-| Benchmark | F1 | Precision | Recall | Samples |
-|-----------|-----|-----------|--------|---------|
-| Qualifire (held-out test split; the dataset's train split is used in training) | 0.828 | 0.857 | 0.800 | 751 |
-| xxz224 (out-of-distribution) | 0.814 | 0.989 | 0.691 | ~22.5k |
-| jayavibhav (unseen rows; other rows of this split are used in training) | 0.955 | 0.960 | 0.950 | ~60k |
-| **Average** | **0.865** | | | |
-
-The previous model scores 0.843 on the same sets and method. Earlier READMEs showed 0.908 from a different method (raw scores, best threshold picked per dataset), which isn't comparable. Latency is about 10 ms per call (p50 on a 2-vCPU container, short inputs); long inputs that split into several chunks take longer.
+Results depend on the model version, dataset, threshold and hardware. Some published runs use earlier Defender versions; check the version and method before comparing them with your deployment. Evaluate your own tool results to choose a threshold and measure latency.
 
 <a id="tier-3--llm-review-opt-in-bring-your-own-llm"></a>
 
@@ -143,7 +146,7 @@ Two modes, set with `defenderMode`:
 
 #### Use any OpenAI-compatible endpoint
 
-Works with OpenAI, vLLM, Ollama, OpenRouter, LiteLLM and other compatible gateways:
+Use an endpoint that supports `/chat/completions`, such as OpenAI, vLLM, Ollama, OpenRouter or LiteLLM. Set `OPENAI_API_KEY` and `OPENAI_MODEL` for the example below; adjust `responseFormat` and token options to match your endpoint:
 
 ```typescript
 import { createOpenAICompatibleTier3Provider, createPromptDefense } from '@stackone/defender';
@@ -151,7 +154,7 @@ import { createOpenAICompatibleTier3Provider, createPromptDefense } from '@stack
 const provider = createOpenAICompatibleTier3Provider({
   baseURL: 'https://api.openai.com/v1',
   apiKey: process.env.OPENAI_API_KEY,
-  model: 'gpt-6-luna',
+  model: process.env.OPENAI_MODEL!, // Set to a model supported by your endpoint
 });
 
 const defense = createPromptDefense({
@@ -165,7 +168,7 @@ Options: `headers`, `responseFormat` (`"json_schema"` by default, or `"json_obje
 
 #### Use any other LLM
 
-`createLlmTier3Provider` takes one function that calls your model and returns its text. Defender builds the prompt and parses the reply. For example, with the Anthropic SDK:
+`createLlmTier3Provider` takes one function that calls your model and returns its text. Defender builds the prompt and parses the reply. For example, with the Anthropic SDK and `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` set:
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
@@ -178,7 +181,7 @@ const provider = createLlmTier3Provider({
     const system = messages.find((m) => m.role === 'system')?.content;
     const r = await anthropic.messages.create(
       {
-        model: 'claude-haiku-5-5',
+        model: process.env.ANTHROPIC_MODEL!, // Set to an available model ID
         max_tokens: 300,
         system,
         messages: messages.filter((m) => m.role === 'user').map((m) => ({ role: 'user' as const, content: m.content })),
@@ -197,7 +200,7 @@ What defender does for you:
 
 - **Prompt.** `DEFAULT_TIER3_PROMPT` is used unless you pass `prompt`, either `{ system, user }` with `{{content}}`, `{{toolName}}`, `{{userGoal}}` and `{{toolDescription}}` placeholders (all in `user`, which is the untrusted channel; `{{content}}` exactly once), or a function that returns messages. `result.tier3.promptVersion` reports which prompt ran.
 - **Delimiting.** The tool output is wrapped in marker lines with a random id per call, so it can't close its own wrapper. Look-alike markers inside it are rewritten. `userGoal` and `toolDescription` are wrapped the same way, and the tool name is cut down to identifier characters.
-- **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`, with one `decision` key. This stops JSON planted in the tool output from choosing the verdict.
+- **Parsing.** The reply must be exactly one JSON object, `{"decision":"block"|"allow","reason":"..."}`, with one `decision` key. The parser rejects extra prose, multiple objects and duplicate decision keys.
 - **Unusable replies block.** The attacker can cause these on purpose: a plain-text refusal, prose, two objects, or a reply cut off by the token limit. So they count as a block (`refused: true`), not as a failure. Give reasoning models enough `maxTokens`, or they get cut off and block.
 
 #### Write your own provider
@@ -293,7 +296,7 @@ tier3: {
 
 It receives scores and verdict metadata only, never the content, `reason` or `raw`. It must be synchronous. A throw or invalid return falls back to `"default"` and warns once. It can't undo a Tier 1 detection, override `onOversize`, or block when `blockHighRisk` is false.
 
-**Caller context.** A judge decides better when it knows the user's task. Pass it per call:
+**Caller context.** Give the reviewer the user's task and tool description per call:
 
 ```typescript
 await defense.defendToolResult(toolOutput, 'gmail_get_message', {
@@ -304,9 +307,9 @@ await defense.defendToolResult(toolOutput, 'gmail_get_message', {
 
 #### Choosing the operating point (`blockThreshold`)
 
-By default the model's `decision` word decides. That word is the model's argmax, an implicit 0.5 cut that nobody chose, and one that moves whenever the model is retrained.
+By default, Defender uses the provider's `decision` label. The label alone does not define a calibrated probability threshold.
 
-Set `tier3.blockThreshold` to decide on `verdict.score` (P(block)) instead. The cut becomes an explicit config value: raise it for fewer false positives, lower it for more recall. `0.5` reproduces argmax.
+Set `tier3.blockThreshold` to decide on `verdict.score` (P(block)) instead. Raise the threshold to require a higher score to block, or lower it to block at a lower score. Evaluate the trade-off on representative tool results.
 
 This needs a provider that reports `score` as a real P(block). A model's self-reported "confidence" is not one, so `createLlmTier3Provider` only sets `score` when your `complete` returns it. When `score` is missing, the `decision` is used and defender warns once.
 
@@ -328,18 +331,18 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 
 Use `allowed` for blocking decisions:
 
-- `allowed: true`: content passed the configured checks; this is not a guarantee of safety
+- `allowed: true`: the configured policy permits forwarding. With `blockHighRisk: false` (the default), this is always `true`, even when detections are present. It is not a guarantee of safety.
 - `allowed: false`: content blocked (requires `blockHighRisk: true`, which defaults to `false`)
 
-`riskLevel` is diagnostic metadata. It starts at `low` and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring. When Tier 3 runs, a cascade `allow` override can lower it back to the Tier 1 level, and in `tier3_only` it is `high` when the call blocks and `low` otherwise. Use it for logging and monitoring, not for allow/block logic.
+`riskLevel` is diagnostic metadata. It starts at `defaultRiskLevel` (default `low`) and is escalated by Tier 1 pattern detections, encoding detection, and Tier 2 ML scoring. When Tier 3 runs, a cascade `allow` override can lower it back to the Tier 1 level, and in `tier3_only` it is `high` when the call blocks and `low` otherwise. Use it for logging and monitoring, not for allow/block logic.
 
 Risk escalation from detections:
 
 | Level | Detection Trigger |
 |-------|-------------------|
-| `low` | No threats detected |
+| `low` | No strong detection signals |
 | `medium` | Suspicious patterns or role markers detected |
-| `high` | Injection patterns or suspicious encoding detected |
+| `high` | Strong injection patterns, decoded attack patterns or a high Tier 2 score |
 | `critical` | Severe injection attempt with multiple high-severity indicators |
 
 ## API
@@ -356,7 +359,7 @@ const defense = createPromptDefense({
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
   useSfe: false,                // SFE preprocessor — drops metadata/identifier fields before Tier 2 (default: false)
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
-  sanitizeContent: true,        // sanitized = sentence-cleaned copy; false = detect-and-gate (sanitized = content verbatim) (default: true)
+  sanitizeContent: true,        // Enable sentence cleaning (default: true); boundary annotation is separate
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
   tier2Config: {},              // Tier 2 overrides (default: the model's calibration, single-head); e.g. { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } } turns on multi-head
 
@@ -381,8 +384,8 @@ The primary method. Runs the enabled tiers and returns a `DefenseResult`. `optio
 ```typescript
 interface DefenseResult {
   allowed: boolean;                       // Use this for blocking decisions (respects blockHighRisk config)
-  riskLevel: RiskLevel;                   // Diagnostic: starts at 'low', escalated by detections (see docs above)
-  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (content verbatim when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
+  riskLevel: RiskLevel;                   // Diagnostic: combines detection signals and the configured policy
+  sanitized: unknown;                     // Tool result to forward — sentence-cleaned copy (cleaning disabled when sanitizeContent:false); dropped runs leave a `[CONTENT SANITISED]` marker; best-effort, still gate on `allowed`
   detections: string[];                   // Pattern names detected by Tier 1
   fieldsSanitized: string[];              // Fields whose content the cleaner changed in `sanitized` (empty when sanitizeContent:false or no Tier 2); for detections read `detections`/`patternsByField`
   patternsByField: Record<string, string[]>; // Patterns per field
@@ -395,7 +398,7 @@ interface DefenseResult {
   tier2MultiheadBlocked?: boolean;        // True when the multi-head rule (main >= mainThr AND aux < auxThr) fired
   tier2SkipReason?: string;               // Reason Tier 2 was skipped (e.g. "No strings extracted")
   tier2Available?: boolean;               // false when Tier 2 is enabled but the model/runtime failed to load (Tier 1 only); absent otherwise
-  maxSentence?: string;                   // The sentence with the highest Tier 2 score
+  maxSentence?: string;                   // The chunk selected by Tier 2 scoring (may contain multiple sentences)
 
   // Tier 3 outcome: present when Tier 3 ran or was wanted but skipped (use `"tier3" in result` to probe).
   // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
@@ -483,11 +486,13 @@ setDefaultTier3Provider(provider);
 setDefaultTier3Provider(null);
 ```
 
-`enableTier3: true` with no provider registered skips Tier 3 and logs one warning per instance. In `tier3_only` it falls back to the T1 + T2 cascade. See [Tier 3](#tier-3--llm-review-opt-in-bring-your-own-llm) for providers and policy.
+`enableTier3: true` with no provider registered skips Tier 3 and logs one warning per instance. In `tier3_only` it falls back to the T1 + T2 cascade unless `onError: "block"` is configured; that policy blocks instead when `blockHighRisk: true`. See [Tier 3](#tier-3--llm-review-opt-in-bring-your-own-llm) for providers and policy.
 
 ## Integration example
 
 ### With Vercel AI SDK
+
+This excerpt belongs inside your tool definition. Set `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`, and supply your Gmail client and tool input schema.
 
 ```typescript
 import { anthropic } from '@ai-sdk/anthropic';
@@ -496,11 +501,12 @@ import { createPromptDefense } from '@stackone/defender';
 
 const defense = createPromptDefense({
   blockHighRisk: true,
+  requireTier2: true,
 });
 await defense.warmupTier2(); // optional, avoids first-call latency
 
 const result = await generateText({
-  model: anthropic('claude-sonnet-5-5'),
+  model: anthropic(process.env.ANTHROPIC_MODEL!),
   tools: {
     gmail_get_message: tool({
       // ... tool definition
@@ -578,7 +584,7 @@ pnpm test
 
 ## Defender by StackOne
 
-Defender is built and maintained by [StackOne](https://www.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about), which connects AI agents to business applications. We run Defender in production to protect agent tool calls against indirect prompt injection.
+Defender is built and maintained by [StackOne](https://www.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about), which connects AI agents to business applications. The local detection layers work without a StackOne account.
 
 - **Defender site**: [defender.stackone.com](https://defender.stackone.com?utm_source=npm&utm_medium=readme&utm_campaign=about)
 - **Benchmarks**: [defender.stackone.com/defense-benchmark](https://defender.stackone.com/defense-benchmark)
