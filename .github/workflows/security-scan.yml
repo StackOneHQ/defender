@@ -1,6 +1,7 @@
 name: Security scan
 
 # Report-only: findings are written to the job summary and never fail the job.
+# Scanner errors (failed download, tool crash) do fail it, so a broken scan is not read as clean.
 # Tighten to blocking once the existing backlog is cleared.
 
 on:
@@ -62,10 +63,13 @@ jobs:
         run: |
           set -euo pipefail
           # -m includes merge commits, so conflict resolutions are scanned too. A push whose
-          # previous commit is unavailable (new branch, force push) falls back to full history.
+          # previous commit is unavailable (new branch, force push, rewritten PR base) falls back
+          # to full history.
           args=(--log-opts="-m --full-history --all")
           scope="full history"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null \
+            && git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
             args=(--log-opts="-m ${PR_BASE_SHA}..${PR_HEAD_SHA}")
             scope="pull request commits"
           elif [ "$EVENT_NAME" = "push" ] && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
