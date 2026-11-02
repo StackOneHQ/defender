@@ -187,11 +187,11 @@ jobs:
             echo "## zizmor"
             echo
             if jq -e 'type == "array"' "$report" > /dev/null 2>&1; then
-              echo "Findings: **$(jq '[.[] | select(.ignored | not)] | length' "$report")** (rule, severity and location only; source snippets are not printed)."
+              echo "Findings: **$(jq 'length' "$report")** (rule, severity and location only; source snippets are not printed)."
               echo
               echo "| Audit | Severity | Location |"
               echo "| --- | --- | --- |"
-              jq -r 'limit(300; .[] | select(.ignored | not) | .ident as $i | .determinations.severity as $s | (.locations[] | select(.symbolic.kind == "Primary") | "\(.symbolic.key.Local.verbatim_path // "?"):\(.concrete.location.start_point.row + 1)") as $l | "| \($i) | \($s) | \($l) |")' "$report"
+              jq -r 'limit(300; .[] | .ident as $i | .determinations.severity as $s | (.locations[] | select(.symbolic.kind == "Primary") | "\(.symbolic.key.Local.verbatim_path // "?"):\(.concrete.location.start_point.row + 1)") as $l | "| \($i) | \($s) | \($l) |")' "$report"
             else
               echo "No report produced; zizmor did not complete."
             fi
