@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-scan-${{ github.workflow }}-${{ github.ref }}
+  group: security-scan-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -124,8 +124,12 @@ jobs:
         run: |
           set -uo pipefail
           report="$RUNNER_TEMP/osv.md"
+          # An empty trusted config stops osv-scanner.toml files in the checkout from
+          # ignoring packages. Output goes to a file so progress lines stay out of the report.
+          : > "$RUNNER_TEMP/osv-trusted.toml"
           rc=0
-          osv-scanner scan source -r --format markdown . > "$report" || rc=$?
+          osv-scanner scan source -r --config "$RUNNER_TEMP/osv-trusted.toml" \
+            --format markdown --output-file "$report" . > /dev/null || rc=$?
           # 0 = clean, 1 = vulnerabilities found (report-only), 128 = no packages found.
           case "$rc" in
             0|1|128) ;;
@@ -172,7 +176,9 @@ jobs:
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/zizmor.json"
-          zizmor --format json --no-exit-codes --strict-collection .github > "$report"
+          # --no-config and --no-ignores stop a zizmor.yml or inline ignore comments in the checkout
+          # from hiding findings; --collect=all ignores .gitignore patterns.
+          zizmor --no-config --no-ignores --collect=all --format json --no-exit-codes --strict-collection .github > "$report"
           {
             echo "## zizmor"
             echo
