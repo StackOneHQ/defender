@@ -165,7 +165,7 @@ jobs:
               echo
               echo "| Audit | Severity | Location |"
               echo "| --- | --- | --- |"
-              jq -r '.[] | select(.ignored | not) | .ident as $i | .determinations.severity as $s | (.locations[] | select(.symbolic.kind == "Primary") | "\(.symbolic.key.Local.verbatim_path // "?"):\(.concrete.location.start_point.row + 1)") as $l | "| \($i) | \($s) | \($l) |"' "$report" | head -n 300
+              jq -r 'limit(300; .[] | select(.ignored | not) | .ident as $i | .determinations.severity as $s | (.locations[] | select(.symbolic.kind == "Primary") | "\(.symbolic.key.Local.verbatim_path // "?"):\(.concrete.location.start_point.row + 1)") as $l | "| \($i) | \($s) | \($l) |")' "$report"
             else
               echo "No report produced; zizmor did not complete."
             fi
