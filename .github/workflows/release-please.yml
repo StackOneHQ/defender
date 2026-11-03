@@ -41,7 +41,6 @@ jobs:
           node-version: '22.23.4'
           cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org'
-          always-auth: true
       - name: Build
         if: steps.release.outputs.paths_released != '[]'
         run: |
