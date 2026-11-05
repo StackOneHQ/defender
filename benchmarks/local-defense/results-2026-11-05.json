@@ -1,0 +1,176 @@
+{
+  "measured_on": "2026-11-05",
+  "scope": "Local Tier 1 + Tier 2, final allow/block decisions, no external LLM or hosted service",
+  "dataset": {
+    "id": "xxz224/prompt-injection-attack-dataset",
+    "revision": "3b49e90e56cdab5552ccec971d487ad4f2d393ad",
+    "file": "complete_dataset.csv",
+    "sha256": "315a1aa0c9f32fff8b220a9ed059a3c36d6050f790dcf84d37c588439da3b403",
+    "source_rows": 3747,
+    "benign": 3747,
+    "attacks": 18735
+  },
+  "model": {
+    "variant": "jbv2-mh-grid-agpjb2pinstr-s2",
+    "sha256": "3d4a1ba798c395c140202992c50e6c8de02fb1b9bd5aba6540848705b9c1e92c",
+    "bytes": 22984191,
+    "temperature": 2.41,
+    "high_risk_threshold": 0.52
+  },
+  "platform": "macOS arm64, local CPU",
+  "runs": [
+    {
+      "package": "@stackone/defender",
+      "version": "0.9.4",
+      "runtime": "v22.22.0",
+      "onnxruntime": "1.21.0",
+      "transformers": "3.8.1",
+      "datasetSha256": "8ad059d13d7715d4b37602b625dddfac8f222f68e6700dde777894737219f80b",
+      "samples": 22482,
+      "config": {
+        "enableTier1": true,
+        "enableTier2": true,
+        "requireTier2": true,
+        "blockHighRisk": true,
+        "enableTier3": false,
+        "useSfe": false,
+        "sanitizeContent": true
+      },
+      "toolName": "benchmark_tool",
+      "inputShape": "{ body: text }",
+      "decision": "!result.allowed",
+      "threshold": 0.52,
+      "multihead": false,
+      "coverageDegraded": 0,
+      "tier2Skipped": 42,
+      "skipReasons": {
+        "All strings skipped by classifier: Text below minTextLength": 42
+      },
+      "results": {
+        "tp": 13046,
+        "fp": 143,
+        "tn": 3604,
+        "fn": 5689,
+        "precision": 0.9891576313594662,
+        "recall": 0.6963437416599947,
+        "f1": 0.8173161257987721,
+        "falsePositiveRate": 0.03816386442487323
+      },
+      "groups": {
+        "target_text": {
+          "tp": 0,
+          "fp": 143,
+          "tn": 3604,
+          "fn": 0
+        },
+        "naive_attack": {
+          "tp": 1644,
+          "fp": 0,
+          "tn": 0,
+          "fn": 2103
+        },
+        "escape_attack": {
+          "tp": 1644,
+          "fp": 0,
+          "tn": 0,
+          "fn": 2103
+        },
+        "ignore_attack": {
+          "tp": 3747,
+          "fp": 0,
+          "tn": 0,
+          "fn": 0
+        },
+        "fake_comp_attack": {
+          "tp": 2264,
+          "fp": 0,
+          "tn": 0,
+          "fn": 1483
+        },
+        "combine_attack": {
+          "tp": 3747,
+          "fp": 0,
+          "tn": 0,
+          "fn": 0
+        }
+      }
+    },
+    {
+      "package": "stackone-defender",
+      "version": "0.9.4",
+      "runtime": "3.11.13",
+      "onnxruntime": "1.24.2",
+      "tokenizers": "0.22.2",
+      "numpy": "2.4.2",
+      "datasetSha256": "8ad059d13d7715d4b37602b625dddfac8f222f68e6700dde777894737219f80b",
+      "samples": 22482,
+      "config": {
+        "enable_tier1": true,
+        "enable_tier2": true,
+        "require_tier2": true,
+        "block_high_risk": true,
+        "enable_tier3": false,
+        "use_sfe": false,
+        "sanitize_content": true
+      },
+      "toolName": "benchmark_tool",
+      "inputShape": "{ body: text }",
+      "decision": "not result.allowed",
+      "threshold": 0.52,
+      "multihead": false,
+      "coverageDegraded": 0,
+      "tier2Skipped": 42,
+      "skipReasons": {
+        "All strings skipped by classifier: Text below minTextLength": 42
+      },
+      "results": {
+        "tp": 13194,
+        "fp": 154,
+        "tn": 3593,
+        "fn": 5541,
+        "precision": 0.9884626910398562,
+        "recall": 0.7042433947157726,
+        "f1": 0.8224916622510364,
+        "falsePositiveRate": 0.041099546303709635
+      },
+      "groups": {
+        "target_text": {
+          "tp": 0,
+          "fp": 154,
+          "tn": 3593,
+          "fn": 0
+        },
+        "naive_attack": {
+          "tp": 1677,
+          "fp": 0,
+          "tn": 0,
+          "fn": 2070
+        },
+        "escape_attack": {
+          "tp": 1677,
+          "fp": 0,
+          "tn": 0,
+          "fn": 2070
+        },
+        "ignore_attack": {
+          "tp": 3747,
+          "fp": 0,
+          "tn": 0,
+          "fn": 0
+        },
+        "fake_comp_attack": {
+          "tp": 2346,
+          "fp": 0,
+          "tn": 0,
+          "fn": 1401
+        },
+        "combine_attack": {
+          "tp": 3747,
+          "fp": 0,
+          "tn": 0,
+          "fn": 0
+        }
+      }
+    }
+  ]
+}
