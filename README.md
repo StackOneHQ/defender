@@ -203,7 +203,19 @@ const results = await defense.defendToolResults([
   { value: emailData, toolName: 'gmail_get_message' },
   { value: docData, toolName: 'documents_get' },
 ]);
+
+for (const result of results) {
+  if (!result.allowed) {
+    console.log('Blocked tool output:', result.riskLevel);
+    continue;
+  }
+
+  // Forward this value to your agent in place of the original tool output.
+  console.log(result.sanitized);
+}
 ```
+
+Batch methods return verdicts; your application must withhold blocked outputs and forward only allowed `sanitized` values. Set `blockHighRisk: true` to enable blocking.
 
 `defense.analyze(text)` runs Tier 1 analysis only. See the [complete API reference](./docs/api-reference.md) for advanced options and result fields.
 

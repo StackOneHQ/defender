@@ -18,7 +18,7 @@ const defense = createPromptDefense({
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
   tier2Config: {},              // Tier 2 overrides (default: the model's calibration, single-head); e.g. { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } } turns on multi-head
 
-  // Tier 3 — opt-in LLM classification. See the "Tier 3" section above for full semantics.
+  // Tier 3: opt-in LLM classification. See the optional LLM review reference for full semantics.
   enableTier3: false,           // (default: false)
   defenderMode: 'cascade',      // 'cascade' | 'tier3_only' (default: 'cascade'; ignored unless enableTier3 is true)
   tier3: {
@@ -55,8 +55,9 @@ interface DefenseResult {
   tier2Available?: boolean;               // false when Tier 2 is enabled but the model/runtime failed to load (Tier 1 only); absent otherwise
   maxSentence?: string;                   // The chunk selected by Tier 2 scoring (may contain multiple sentences)
 
-  // Tier 3 outcome: present when Tier 3 ran or was wanted but skipped (use `"tier3" in result` to probe).
-  // Either carries the verdict OR a skipReason when defender wanted to run T3 but couldn't.
+  // Tier 3 outcome: metadata from the Tier 3 path or an eligible cascade escalation.
+  // With no provider and non-blocking onError, tier3_only falls back to T1 + T2 and omits this key.
+  // When present without a verdict, it carries skipReason instead.
   tier3?: {
     decision?: 'block' | 'allow'; score?: number; reason?: string; refused?: boolean; promptVersion?: string;
     raw?: unknown; latencyMs?: number; usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -93,6 +94,8 @@ interface DefenseResult {
 
 Batch method: defends multiple tool results concurrently.
 
+Set `blockHighRisk: true` to enable blocking. The batch API returns verdicts; your application must check each one before forwarding its `sanitized` value.
+
 ```typescript
 const results = await defense.defendToolResults([
   { value: emailData, toolName: 'gmail_get_message' },
@@ -103,7 +106,11 @@ const results = await defense.defendToolResults([
 for (const result of results) {
   if (!result.allowed) {
     console.log(`Blocked: ${result.detections.join(', ')}`);
+    continue;
   }
+
+  // Forward this value to your agent in place of the original tool output.
+  console.log(result.sanitized);
 }
 ```
 

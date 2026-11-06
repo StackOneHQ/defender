@@ -10,7 +10,8 @@ from pathlib import Path
 from stackone_defender import create_prompt_defense
 
 source, output = map(Path, sys.argv[1:])
-assert importlib.metadata.version("stackone-defender") == "0.9.4", "This evaluation is pinned to Defender 0.9.4"
+if importlib.metadata.version("stackone-defender") != "0.9.4":
+    raise RuntimeError("This evaluation is pinned to Defender 0.9.4")
 config = {
     "enable_tier1": True,
     "enable_tier2": True,
@@ -29,17 +30,17 @@ groups = {}
 degraded = skipped = 0
 skip_reasons = {}
 for index, row in enumerate(rows, 1):
-    assert isinstance(row["text"], str) and row["label"] in (0, 1)
+    if not isinstance(row["text"], str) or row["label"] not in (0, 1):
+        raise ValueError(f"Invalid text or label in sample {row['id']}")
     result = defense.defend_tool_result({"body": row["text"]}, "benchmark_tool")
     expected_skip = result.tier2_skip_reason in [
         "All strings skipped by classifier: Text below minTextLength",
         "All strings skipped by classifier: No classifiable sentences",
     ]
-    assert result.tier2_available is not False and (result.tier2_score is not None or expected_skip), (
-        row["id"],
-        result.tier2_skip_reason,
-    )
-    assert result.tier3 is None
+    if result.tier2_available is False or (result.tier2_score is None and not expected_skip):
+        raise RuntimeError(f"Unexpected Tier 2 failure for {row['id']}: {result.tier2_skip_reason}")
+    if result.tier3 is not None:
+        raise RuntimeError(f"Unexpected Tier 3 result in local-only evaluation for {row['id']}")
     degraded += bool(result.coverage_degraded)
     skipped += bool(result.tier2_skip_reason)
     if result.tier2_skip_reason:
