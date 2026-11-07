@@ -15,6 +15,13 @@ minimumReleaseAgeExclude:
 # overrides:
 #   '<pkg>': '<version>'
 
+# Transformers 4.3.1 imports Tensor from onnxruntime-common in its Node bundle
+# but omits that dependency. Match its onnxruntime-node 1.30.0 runtime.
+packageExtensions:
+  '@huggingface/transformers@4.3.1':
+    dependencies:
+      onnxruntime-common: 1.30.0
+
 # Build-script policy (formerly "pnpm.onlyBuiltDependencies").
 # pnpm 11 requires an EXPLICIT allow/deny per package with install scripts,
 # or CI fails with ERR_PNPM_IGNORED_BUILDS. Prefer false where the package
