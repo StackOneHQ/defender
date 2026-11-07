@@ -15,7 +15,7 @@ Two modes, set with `defenderMode`:
 
 #### Use any OpenAI-compatible endpoint
 
-Use an endpoint that supports `/chat/completions`, such as OpenAI, vLLM, Ollama, OpenRouter or LiteLLM. Set `OPENAI_API_KEY` and `OPENAI_MODEL` for the example below; adjust `responseFormat` and token options to match your endpoint:
+Use an endpoint that supports `/chat/completions`, such as OpenAI, vLLM, Ollama, OpenRouter, [OrcaRouter](https://www.orcarouter.ai) (`https://api.orcarouter.ai/v1`) or LiteLLM. Set `OPENAI_API_KEY` and `OPENAI_MODEL` for the example below; adjust `responseFormat` and token options to match your endpoint:
 
 ```typescript
 import { createOpenAICompatibleTier3Provider, createPromptDefense } from '@stackone/defender';
