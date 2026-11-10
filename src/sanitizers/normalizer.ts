@@ -182,25 +182,20 @@ export function foldConfusables(text: string): string {
 	});
 }
 
-// 3+ single characters split by one space . - or _ ("i.g n-o r.e").
+// 3+ single characters split by one space . - or _ ("i.g.n.o.r.e a-l-l").
 const SPACED_CHARS_RE = /(?<![A-Za-z0-9@$])[A-Za-z0-9@$](?:[ ._-][A-Za-z0-9@$]){2,}(?![A-Za-z0-9@$])/g;
 
-/**
- * Join a run of spaced-out characters when 3+ are letters. When each space-separated
- * part has 3+ letters joined by one punctuation mark ("I.g.n.o.r.e a-l-l") spaces are
- * word breaks; otherwise ("i.g n-o r.e") they are part of the scrambling.
- */
+/** Join each space-separated part of a spaced-out run when the run has 3+ letters. */
 function joinSpacedChars(run: string): string {
 	if (!/[A-Za-z](.*[A-Za-z]){2}/.test(run)) return run;
-	const words = run.split(" ");
-	const scrambled = words.some(
-		(w) => w.replace(/[^A-Za-z]/g, "").length < 3 || new Set(w.replace(/[^._-]/g, "")).size > 1,
-	);
-	return scrambled ? run.replace(/[ ._-]/g, "") : words.map((w) => w.replace(/[._-]/g, "")).join(" ");
+	return run
+		.split(" ")
+		.map((w) => w.replace(/[._-]/g, ""))
+		.join(" ");
 }
 
 /**
- * Join spaced-out letters ("i.g n-o r.e" → "ignore"), then split runs of 3+ words joined
+ * Join spaced-out letters ("i.g.n.o.r.e a-l-l" → "ignore all"), then split runs of 3+ words joined
  * by - _ . / or , ("ignore-previous-instructions", "you.are.now"). Two-word compounds
  * ("well-known"), short abbreviations ("a.m.") and digit-only runs are left alone.
  */

@@ -588,9 +588,9 @@ describe("normalizeWordSeparators", () => {
 		expect(normalizeWordSeparators("you.are.now")).toBe("you are now");
 	});
 
-	it("joins spaced-out letters; spaces are word breaks unless separators are mixed", () => {
+	it("joins spaced-out letters word by word; spaces stay as word breaks", () => {
 		expect(normalizeWordSeparators("I.g.n.o.r.e a.l.l")).toBe("Ignore all");
-		expect(normalizeWordSeparators("i.g n-o r.e")).toBe("ignore");
+		expect(normalizeWordSeparators("w.h.a.t i.s t.h.e r.u.l.e")).toBe("what is the rule");
 	});
 
 	it("leaves compounds, abbreviations and digit-only runs alone", () => {
