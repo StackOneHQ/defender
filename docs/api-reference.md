@@ -76,8 +76,8 @@ interface DefenseResult {
   truncatedAtDepth?: boolean;
   // True when analysis didn't cover everything (oversize, failed Tier 3 chunks, depth/size limits,
   // unreadable payload). Absent, not false, when coverage was complete.
-  // An unreadable payload isn't scanned, so it raises no riskLevel; strict mode still blocks it
-  // (allowed: false). In tier3_only, tier3.errored is also set.
+  // An unreadable payload adds no risk of its own: riskLevel reflects only what was scanned (e.g. a
+  // Tier 1 detection). Strict mode still blocks it (allowed: false). In tier3_only, tier3.errored is set.
   coverageDegraded?: boolean;
 
   latencyMs: number;                      // Total processing time in milliseconds
