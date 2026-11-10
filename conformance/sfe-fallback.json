@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"area": "sfe-fallback",
-	"description": "When SFE keeps no text Tier 2 would score, Tier 2 scores the original payload's text instead, leaving out single printable-ASCII tokens (URLs, IDs). A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
+	"description": "When SFE keeps no text Tier 2 would score, Tier 2 scores the original payload's text instead, leaving out single printable-ASCII tokens such as URLs and IDs (a token that joins 4+ alphabetic words with - _ + or . is still scored). A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
 	"cases": [
 		{
 			"id": "all-dropped-falls-back",
@@ -172,6 +172,27 @@
 				"fieldsDropped": [],
 				"sfeFallback": false,
 				"tier2SkipReason": "No strings extracted from tool result"
+			}
+		},
+		{
+			"id": "word-joined-token-falls-back",
+			"description": "A single ASCII token that joins 4+ words with - _ + or . is scored.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"notes": "please-review-the-attached-contract-before-friday"
+				},
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
 			}
 		},
 		{
