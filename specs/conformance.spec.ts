@@ -18,6 +18,7 @@ import {
 	type DefenseResult,
 	type PromptDefenseOptions,
 	parseVerdictJson,
+	type SfePredictor,
 	type Tier3PromptTemplate,
 	type Tier3Provider,
 } from "../src/index";
@@ -179,6 +180,31 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 			...(r.tier3ChunkSummary ? { chunkSummary: r.tier3ChunkSummary } : {}),
 			// How many chunks the judge was actually asked about (stopOnFirstBlock skips the rest).
 			...(input.judge ? { judgeCalls: counter.calls } : {}),
+		};
+	},
+
+	// payload + scripted SFE drops → whether Tier 2 scored it. highRiskThreshold 0 makes any scored
+	// string block, so the outcome doesn't depend on model scores.
+	"sfe-fallback": async (input) => {
+		const drop = new Set<string>(input.dropKeys);
+		const predict = async (text: string) => {
+			const key = text.split(" ")[2];
+			return drop.has("*") || drop.has(key)
+				? { label: "drop" as const, prob: 0.99 }
+				: { label: "pass" as const, prob: 0.99 };
+		};
+		const predictor: SfePredictor = { predict, predictBatch: (texts) => Promise.all(texts.map(predict)) };
+		const r = await createPromptDefense({
+			enableTier1: false,
+			blockHighRisk: true,
+			tier2Config: { highRiskThreshold: 0 },
+			useSfe: { predictor },
+		}).defendToolResult(input.payload, input.toolName ?? "test_tool");
+		return {
+			allowed: r.allowed,
+			fieldsDropped: r.fieldsDropped,
+			sfeFallback: r.sfeFallback === true,
+			tier2SkipReason: r.tier2SkipReason ?? null,
 		};
 	},
 };

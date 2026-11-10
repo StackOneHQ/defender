@@ -1,0 +1,136 @@
+{
+	"version": 1,
+	"area": "sfe-fallback",
+	"description": "When SFE drops every text field, Tier 2 scores the payload's multi-word strings instead of skipping it. A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
+	"cases": [
+		{
+			"id": "all-dropped-falls-back",
+			"description": "Every field dropped: the original is scored, so it blocks.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"id": "rec_1",
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"id",
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "list-all-dropped-falls-back",
+			"requiresTier2": true,
+			"input": {
+				"payload": [
+					{
+						"notes": "First record notes here."
+					},
+					{
+						"notes": "Second record notes here."
+					}
+				],
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "some-kept-no-fallback",
+			"description": "SFE keeps a text field: no fallback, the kept text is scored.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"id": "rec_1",
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"id"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"id"
+				],
+				"sfeFallback": false,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "nothing-dropped-no-fallback",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": []
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [],
+				"sfeFallback": false,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "no-text-no-fallback",
+			"description": "No strings at all: still skipped.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"count": 3,
+					"ok": true
+				},
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": true,
+				"fieldsDropped": [],
+				"sfeFallback": false,
+				"tier2SkipReason": "No strings extracted from tool result"
+			}
+		},
+		{
+			"id": "single-tokens-no-fallback",
+			"description": "Only single-token strings (IDs, URLs): no fallback, still skipped.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"id": "rec_1",
+					"url": "https://graph.microsoft.com/v1.0/$metadata#users('u1')/events"
+				},
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": true,
+				"fieldsDropped": [
+					"id",
+					"url"
+				],
+				"sfeFallback": false,
+				"tier2SkipReason": "No strings extracted from tool result"
+			}
+		}
+	]
+}

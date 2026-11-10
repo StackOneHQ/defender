@@ -69,6 +69,8 @@ interface DefenseResult {
 
   // SFE preprocessor output (present when `useSfe: true`; empty array otherwise)
   fieldsDropped: string[];
+  // True when SFE dropped every text field, so Tier 2 scored the payload's multi-word strings instead
+  sfeFallback?: boolean;
 
   // Stack-safety guard — set when any recursive walk hit the depth limit
   truncatedAtDepth?: boolean;

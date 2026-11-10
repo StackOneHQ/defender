@@ -148,6 +148,11 @@ export interface DefenseResult {
 	 */
 	fieldsDropped: string[];
 	/**
+	 * True when SFE dropped every text field, so Tier 2 scored the payload's multi-word strings
+	 * instead. Absent otherwise.
+	 */
+	sfeFallback?: boolean;
+	/**
 	 * Tier 3 verdict, present when Tier 3 ran on this call (cascade gray-band
 	 * escalation OR tier3_only mode). The verdict is authoritative: in
 	 * cascade mode it overrides Tier 2's allow/block on the escalated chunk;
@@ -2175,6 +2180,7 @@ export class PromptDefense {
 		// operate on the original value so no data is lost downstream.
 		let sfeFilteredValue: unknown = value;
 		let fieldsDropped: string[] = [];
+		let sfeFallback = false;
 		if (this.sfeEnabled) {
 			try {
 				const predictor = this.sfeCustomPredictor ?? (await getDefaultPredictor());
@@ -2287,6 +2293,13 @@ export class PromptDefense {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+					// SFE dropped every text field: score the original rather than pass it unscanned.
+					// Multi-word strings only: single tokens (URLs, IDs) are what SFE is right to drop,
+					// and Tier 2 scores some of them high.
+					if (strings.length === 0 && fieldsDropped.length > 0) {
+						strings = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => /\s/.test(s.trim()));
+						sfeFallback = strings.length > 0;
+					}
 				} catch (err) {
 					payloadError = true;
 					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
@@ -2732,6 +2745,7 @@ export class PromptDefense {
 			...(tier2Available !== undefined ? { tier2Available } : {}),
 			maxSentence,
 			fieldsDropped,
+			...(sfeFallback ? { sfeFallback } : {}),
 			// Conditionally include the `tier3` key so consumers can use
 			// `"tier3" in result` as a "Tier 3 ran" check, matching the
 			// DefenseResult docstring. An always-present-but-undefined key
