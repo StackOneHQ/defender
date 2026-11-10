@@ -118,11 +118,11 @@
 		},
 		{
 			"id": "astral-kept-counts-utf16",
-			"description": "minTextLength counts UTF-16 units: 5 astral emoji are 10 units, so the kept string is scorable and there is no fallback.",
+			"description": "minTextLength counts UTF-16 units: 5 astral CJK characters are 10 units, so the kept string is scorable and there is no fallback.",
 			"requiresTier2": true,
 			"input": {
 				"payload": {
-					"status": "😀😀😀😀😀",
+					"status": "𠀀𠀁𠀂𠀃𠀄",
 					"notes": "Please review the attached contract before Friday."
 				},
 				"dropKeys": [
@@ -134,7 +134,7 @@
 				"fieldsDropped": [
 					"notes"
 				],
-				"sfeFallback": true,
+				"sfeFallback": false,
 				"tier2SkipReason": null
 			}
 		},
