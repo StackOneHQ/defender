@@ -117,6 +117,28 @@
 			}
 		},
 		{
+			"id": "astral-kept-counts-utf16",
+			"description": "minTextLength counts UTF-16 units: 5 astral emoji are 10 units, so the kept string is scorable and there is no fallback.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"status": "😀😀😀😀😀",
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"notes"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
 			"id": "some-kept-no-fallback",
 			"description": "SFE keeps a text field: no fallback, the kept text is scored.",
 			"requiresTier2": true,
