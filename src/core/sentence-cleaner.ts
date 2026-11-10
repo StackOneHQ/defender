@@ -8,7 +8,7 @@
  * per-sentence scores are available.
  */
 
-import type { Tier2Classifier } from "../classifiers/tier2-classifier";
+import { normalizeForClassification, type Tier2Classifier } from "../classifiers/tier2-classifier";
 import { MAX_TRAVERSAL_DEPTH } from "../config";
 import { stripRoleMarkers } from "../sanitizers/role-stripper";
 import type { DataBoundary } from "../types";
@@ -29,7 +29,8 @@ async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCle
 	// A single sentence can't be isolated to a bad part, and benign opaque tokens read
 	// as one sentence — leave it untouched; the verdict/`allowed` still gates it.
 	if (sentences.length <= 1) return raw;
-	const scores = await tier2.classifyChunksBatch(sentences);
+	// Score what Tier 2 scored: the normalised text.
+	const scores = await tier2.classifyChunksBatch(sentences.map(normalizeForClassification));
 	const isHighRisk = (i: number) => (scores[i] ?? 0) >= opts.highRiskThreshold;
 	// Nothing dropped — return the field verbatim, never a reconstruction (a
 	// rebuilt join can differ from the original and report a spurious change).

@@ -73,11 +73,6 @@ function normalizeSpecialCharacters(text: string): string {
 		// Zero-width characters (invisible)
 		[/[\u200B-\u200D\uFEFF]/g, ""], // Zero-width space, joiner, non-joiner, BOM
 
-		// ANSI escapes and C0 control characters (not tab, LF, CR). A space, not "": they are
-		// spliced in place of spaces ("ignore<ESC>all") to break \s+ patterns.
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-		[/\x1B\[[0-9;?]*[A-Za-z]|\x1B[@-_]|[\x00-\x08\x0B\x0C\x0E-\x1F]/g, " "],
-
 		// Homoglyphs - characters that look like ASCII but aren't
 		[/[\u0430]/g, "a"], // Cyrillic а
 		[/[\u0435]/g, "e"], // Cyrillic е
@@ -152,6 +147,15 @@ export function joinLineSplitWords(text: string): string {
 	return text.replace(/([a-zA-Z])[\r\n]+([a-zA-Z])/g, "$1$2");
 }
 
+/**
+ * Split two words joined by - _ or . ("ignore-previous", "ignore__all"). Tier 1 only:
+ * its patterns are specific, but Tier 2 would read every compound and hostname apart.
+ */
+export function splitJoinedWordPairs(text: string): string {
+	if (!text) return text;
+	return text.replace(/([A-Za-z])[-_.]+(?=[A-Za-z])/g, "$1 ");
+}
+
 // Greek and Cyrillic letters that look like Latin ones, and their Latin letter (the 8
 // common Cyrillic ones are mapped unconditionally in normalizeUnicode).
 const CONFUSABLE_FROM = "αγεικνορτυχωϲϳΑΒΕΖΗΙΚΜΝΟΡΤΥΧјѕԁһӏԛԝкАВЕКМНОРСТХУІЈЅıɡɑ";
@@ -160,17 +164,21 @@ const CONFUSABLES = new Map(Array.from(CONFUSABLE_FROM, (c, i) => [c, CONFUSABLE
 const CONFUSABLE_RE = new RegExp(`[${CONFUSABLE_FROM}]`, "u");
 const GREEK_CYRILLIC_RE = /[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F]/gu;
 
+const fold = (word: string) => Array.from(word, (c) => CONFUSABLES.get(c) ?? c).join("");
+
 /**
- * Fold Greek/Cyrillic look-alikes to Latin. Only inside words that also hold a Latin
- * letter, or anywhere when the text has no Greek/Cyrillic letter without a Latin
- * look-alike, so real Greek or Russian text is left alone.
+ * Fold Greek/Cyrillic look-alikes to Latin, in words that hold a Latin letter or only
+ * look-alikes. Words with any other Greek/Cyrillic letter are real Greek or Russian and
+ * are left alone, as are one-letter words ("Ο") in Greek or Russian text.
  */
 export function foldConfusables(text: string): string {
 	if (!text || !CONFUSABLE_RE.test(text)) return text;
-	const nativeScript = (text.match(GREEK_CYRILLIC_RE) ?? []).some((c) => !CONFUSABLES.has(c));
+	const isNative = (s: string) => (s.match(GREEK_CYRILLIC_RE) ?? []).some((c) => !CONFUSABLES.has(c));
+	const nativeText = isNative(text);
 	return text.replace(/[\p{L}\p{N}]+/gu, (word) => {
-		if (!CONFUSABLE_RE.test(word) || (nativeScript && !/[A-Za-z]/.test(word))) return word;
-		return Array.from(word, (c) => CONFUSABLES.get(c) ?? c).join("");
+		if (!CONFUSABLE_RE.test(word) || /[A-Za-z]/.test(word)) return fold(word);
+		if (isNative(word) || (nativeText && Array.from(word).length < 2)) return word;
+		return fold(word);
 	});
 }
 
@@ -178,17 +186,17 @@ export function foldConfusables(text: string): string {
 const SPACED_CHARS_RE = /(?<![A-Za-z0-9@$])[A-Za-z0-9@$](?:[ ._-][A-Za-z0-9@$]){2,}(?![A-Za-z0-9@$])/g;
 
 /**
- * Join a run of spaced-out characters when 3+ are letters. With one punctuation mark
- * ("I.g.n.o.r.e a.l.l") spaces are word breaks; with several mixed ("i.g n-o r.e")
- * they are part of the scrambling.
+ * Join a run of spaced-out characters when 3+ are letters. When each space-separated
+ * part has 3+ letters joined by one punctuation mark ("I.g.n.o.r.e a-l-l") spaces are
+ * word breaks; otherwise ("i.g n-o r.e") they are part of the scrambling.
  */
 function joinSpacedChars(run: string): string {
 	if (!/[A-Za-z](.*[A-Za-z]){2}/.test(run)) return run;
-	if (new Set(run.replace(/[^._-]/g, "")).size > 1) return run.replace(/[ ._-]/g, "");
-	return run
-		.split(" ")
-		.map((w) => w.replace(/[._-]/g, ""))
-		.join(" ");
+	const words = run.split(" ");
+	const scrambled = words.some(
+		(w) => w.replace(/[^A-Za-z]/g, "").length < 3 || new Set(w.replace(/[^._-]/g, "")).size > 1,
+	);
+	return scrambled ? run.replace(/[ ._-]/g, "") : words.map((w) => w.replace(/[._-]/g, "")).join(" ");
 }
 
 /**
@@ -207,6 +215,16 @@ export function normalizeWordSeparators(text: string): string {
 		});
 }
 
+// ANSI escapes (7- and 8-bit) and C0/C1 control characters (not tab, LF, CR, NEL). A space,
+// not "": they are spliced in place of spaces ("ignore<ESC>all") to break \s+ patterns.
+const CONTROL_RE =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+	/\x1B\[[0-9;?]*[A-Za-z]|\x9B[0-9;?]*[A-Za-z]|\x1B[@-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F]/g;
+// Invisible format characters normalizeUnicode keeps: soft hyphen, Mongolian vowel
+// separator, LRM/RLM, word joiner and invisible operators, variation selectors.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
+const INVISIBLE_RE = /[\u00AD\u180E\u200E\u200F\u2060-\u2064\uFE00-\uFE0F]/g;
+
 /**
  * The analysis copy both tiers scan: control characters, combining marks, unicode
  * variants, look-alikes, joined words, spaced letters and leet undone. Never returned
@@ -214,6 +232,7 @@ export function normalizeWordSeparators(text: string): string {
  */
 export function normalizeForDetection(text: string): string {
 	if (!text) return text;
+	text = text.replace(CONTROL_RE, " ").replace(INVISIBLE_RE, "");
 	return normalizeLeetSpeak(
 		collapseSpacedLetters(
 			normalizeWordSeparators(foldConfusables(normalizeUnicode(stripCombiningMarks(text.normalize("NFD"))))),

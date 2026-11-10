@@ -496,17 +496,20 @@ export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "ansi_escape_sequence",
-		// Hidden in a terminal or log viewer but read by the model.
+		// Hidden in a terminal or log viewer but read by the model. Obfuscation that uses it
+		// is caught on the normalised text.
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-		pattern: /\x1B\[[0-9;?]*[A-Za-z]|\x1B[@-_]/g,
+		pattern: /\x1B\[[0-9;?]*[A-Za-z]|\x9B[0-9;?]*[A-Za-z]|\x1B[@-_]/g,
 		category: "encoding_suspicious",
-		severity: "medium",
+		// Low: coloured CLI output is common in tool results.
+		severity: "low",
 		description: "ANSI/terminal escape sequence",
 	},
 	{
 		id: "c0_control_character",
+		// ESC is left to ansi_escape_sequence.
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-		pattern: /[\x00-\x08\x0B\x0C\x0E-\x1F]/g,
+		pattern: /[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F]/g,
 		category: "encoding_suspicious",
 		severity: "low",
 		description: "Non-whitespace C0 control character",
@@ -655,7 +658,7 @@ export const FAST_FILTER_KEYWORDS = [
 
 // Lets the control-character patterns run with no keyword present.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-const CONTROL_CHAR_PROBE = /[\x00-\x08\x0B\x0C\x0E-\x1F]/;
+const CONTROL_CHAR_PROBE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x9B]/;
 
 /**
  * Check if text contains any fast filter keywords (case-insensitive) or a control

@@ -5,7 +5,7 @@
  * Target latency: < 1-2ms per field
  */
 
-import { joinLineSplitWords, normalizeForDetection } from "../sanitizers/normalizer";
+import { joinLineSplitWords, normalizeForDetection, splitJoinedWordPairs } from "../sanitizers/normalizer";
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
@@ -78,8 +78,8 @@ export class PatternDetector {
 			text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
 
 		// Collapse obfuscation before pattern matching (shared with Tier 2), plus words split
-		// across lines. Analysis-only.
-		const analysisText = joinLineSplitWords(normalizeForDetection(rawText));
+		// across lines or joined in pairs. Analysis-only.
+		const analysisText = splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(rawText)));
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible
