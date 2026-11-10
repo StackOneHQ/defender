@@ -207,7 +207,7 @@ export const ROLE_ASSUMPTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "act_as",
-		pattern: /act\s+(as|like)\s+(a\s+)?(system|admin|developer|root|superuser)/gi,
+		pattern: /act\s+(as|like)\s+(an?\s+)?(system|admin|developer|root|superuser)/gi,
 		category: "role_assumption",
 		severity: "high",
 		description: "Attempt to make AI act as privileged role",
@@ -344,7 +344,7 @@ export const COMMAND_EXECUTION_PATTERNS: PatternDefinition[] = [
 export const ENCODING_SUSPICIOUS_PATTERNS: PatternDefinition[] = [
 	{
 		id: "base64_instruction",
-		pattern: /(?:decode|base64)\s*[:(]\s*[A-Za-z0-9+/=]{20,}/gi,
+		pattern: /(?:decode|base64)\s*[:(]\s*[A-Za-z0-9+/\-_=]{20,}/gi,
 		category: "encoding_suspicious",
 		severity: "high",
 		description: "Base64 encoded content with decode instruction",
@@ -495,6 +495,23 @@ export const INDIRECT_INJECTION_PATTERNS: PatternDefinition[] = [
 		description: "Text direction override characters",
 	},
 	{
+		id: "ansi_escape_sequence",
+		// Hidden in a terminal or log viewer but read by the model.
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+		pattern: /\x1B\[[0-9;?]*[A-Za-z]|\x1B[@-_]/g,
+		category: "encoding_suspicious",
+		severity: "medium",
+		description: "ANSI/terminal escape sequence",
+	},
+	{
+		id: "c0_control_character",
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+		pattern: /[\x00-\x08\x0B\x0C\x0E-\x1F]/g,
+		category: "encoding_suspicious",
+		severity: "low",
+		description: "Non-whitespace C0 control character",
+	},
+	{
 		id: "confusable_homoglyphs",
 		// Cherokee (U+13A0-U+13F4) and Phonetic Extensions (U+1D00-U+1D2B)
 		// blocks are essentially never in real customer content, so single-
@@ -636,11 +653,18 @@ export const FAST_FILTER_KEYWORDS = [
 	'"instruction"',
 ];
 
+// Lets the control-character patterns run with no keyword present.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+const CONTROL_CHAR_PROBE = /[\x00-\x08\x0B\x0C\x0E-\x1F]/;
+
 /**
- * Check if text contains any fast filter keywords (case-insensitive)
- * Used to short-circuit expensive pattern matching
+ * Check if text contains any fast filter keywords (case-insensitive) or a control
+ * character. Used to short-circuit expensive pattern matching.
  */
 export function containsFilterKeywords(text: string): boolean {
 	const lowerText = text.toLowerCase();
-	return FAST_FILTER_KEYWORDS.some((keyword) => lowerText.includes(keyword.toLowerCase()));
+	return (
+		FAST_FILTER_KEYWORDS.some((keyword) => lowerText.includes(keyword.toLowerCase())) ||
+		CONTROL_CHAR_PROBE.test(text)
+	);
 }

@@ -10,6 +10,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
 | `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
 | `sfe-fallback.json` | `sfe-fallback` | Tier 2 scores the original text when SFE keeps nothing it would score |
+| `obfuscation.json` | `obfuscation` | The normalised text Tier 1 and Tier 2 scan, and the Tier 1 patterns found in it |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
 
@@ -69,6 +70,18 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - The fallback runs when SFE dropped a field and Tier 2 would produce no chunk for any kept string (after its own normalisation and length rules), ignoring whitespace-only strings. It then scores the original's strings, leaving out whitespace-only strings and strings that, trimmed, are only printable ASCII (U+0021–U+007E), unless splitting on runs of `-`, `_` and `+` gives 4 or more parts that are 2+ ASCII letters only. This applies only when at least one of the remaining strings produces a chunk.
   - Expect `allowed`, `fieldsDropped`, `sfeFallback` (a boolean) and `tier2SkipReason` (or `null`).
   - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
+- **`obfuscation`**:
+  - `normalised`: the shared analysis copy (`normalizeForDetection(input.text)` in TS) that Tier 1 matches and Tier 2 scores. It is internal, so a port calls its own equivalent.
+  - `tier1Patterns`: the sorted `detections` of `createPromptDefense({ enableTier2: false }).defendToolResult({ notes: input.text }, "test_tool")`.
+  - The steps, in order:
+    1. NFD, then combining marks are stripped.
+    2. NFKC. Zero-width characters are removed. ANSI escapes and C0 control characters other than tab, LF and CR become a space. Quotes and dashes are folded and 8 common Cyrillic look-alikes mapped.
+    3. The other Greek and Cyrillic look-alikes are folded inside words that also hold an ASCII letter, or in every word when the text has no Greek or Cyrillic letter outside the map.
+    4. 3+ single characters split by one space, `.`, `-` or `_` are joined when 3+ of them are letters. Then runs of 3+ words joined by `-` `_` `.` `/` `,` are split with spaces when 2+ parts hold a letter.
+    5. Letters spaced one space apart are joined.
+    6. Leet is reversed in tokens with 2+ letters and no `2`, `6` or `9`. Hex and unicode escapes, `$(` and 20+ character base64 runs are left alone.
+  - Tier 1 also joins letters split by a line break before matching. The shared copy keeps line breaks, since Tier 2 splits sentences on them.
+  - Cases don't need the Tier-2 model.
 
 Option names are the TypeScript ones (`maxTextLength`, `onError`, …). The Python runner maps them to its snake_case names.
 

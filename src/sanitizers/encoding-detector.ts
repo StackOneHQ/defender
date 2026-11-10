@@ -173,8 +173,8 @@ export function detectEncoding(text: string, config: Partial<EncodingDetectorCon
 function detectBase64(text: string, minLength: number): EncodingDetection[] {
 	const detections: EncodingDetection[] = [];
 
-	// Pattern for Base64 strings (allowing padding)
-	const base64Pattern = /[A-Za-z0-9+/]{20,}={0,2}/g;
+	// Base64 strings, standard or URL-safe (-_) alphabet, allowing padding
+	const base64Pattern = /[A-Za-z0-9+/\-_]{20,}={0,2}/g;
 	let match: RegExpExecArray | null;
 
 	while ((match = base64Pattern.exec(text)) !== null) {
@@ -183,9 +183,12 @@ function detectBase64(text: string, minLength: number): EncodingDetection[] {
 		// Skip if too short
 		if (candidate.length < minLength) continue;
 
-		// Try to decode
+		// atob() takes only the standard alphabet: map base64url back and re-pad
 		try {
-			const decoded = atob(candidate);
+			const normalized = candidate.replace(/-/g, "+").replace(/_/g, "/");
+			const unpadded = normalized.replace(/=+$/, "");
+			const padded = unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4);
+			const decoded = atob(padded);
 
 			// Check if decoded content is mostly printable ASCII
 			const isPrintable = /^[\x20-\x7E\s]+$/.test(decoded);

@@ -81,8 +81,9 @@ function applyLeetMapTokenAware(text: string): string {
 	// "$y$tem" are processed as one unit. PROTECTED_SEQUENCE has already removed
 	// $( sequences before this runs, so standalone $ safely maps to s.
 	return text.replace(/[@a-zA-Z0-9!$]+/g, (token) => {
-		// Only normalize tokens that contain at least one letter
-		if (!/[a-zA-Z]/.test(token)) return token;
+		// Only words with 2+ letters whose digits are all leet digits: leaves IDs,
+		// hashes and versions ("user123", "d14f0615", "v2") alone.
+		if ((token.match(/[a-zA-Z]/g)?.length ?? 0) < 2 || /[269]/.test(token)) return token;
 		return applyLeetMapChars(token);
 	});
 }

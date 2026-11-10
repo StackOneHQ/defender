@@ -112,7 +112,7 @@ Tier 1 uses patterns to score content and escalate risk. It does not rewrite the
 - **Role markers**: detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
 - **Injection patterns**: detects phrases like "ignore previous instructions"
 - **Encoding**: decodes supported encodings, then escalates risk only when the decoded text matches an attack pattern
-- **Unicode/leet normalization**: analysis-only (homoglyphs like Cyrillic 'а' → 'a', leetspeak) so obfuscated variants are still detected; the returned content is never normalized
+- **Obfuscation normalization**: analysis-only. Undoes Greek and Cyrillic look-alikes, leetspeak, words joined by `-` `_` `.`, spaced-out letters and control characters, so obfuscated variants are still detected. Tier 2 scores the same normalized text. The returned content is never normalized
 - **Boundary annotation**: opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
 
 ### Tier 2: ML classification (async)
