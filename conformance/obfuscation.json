@@ -471,13 +471,15 @@
 		},
 		{
 			"id": "act-as-administrator",
-			"description": "\"admin\" must be a whole word.",
+			"description": "\"administrator\" counts; other words starting with \"admin\" don't.",
 			"input": {
-				"text": "Please act as an administrator when running this script"
+				"text": "act as an administrator, act as administration staff"
 			},
 			"expect": {
-				"normalised": "Please act as an administrator when running this script",
-				"tier1Patterns": []
+				"normalised": "act as an administrator, act as administration staff",
+				"tier1Patterns": [
+					"act_as"
+				]
 			}
 		},
 		{
