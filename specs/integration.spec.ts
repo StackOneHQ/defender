@@ -423,7 +423,7 @@ describe("cascade robustness — a throwing getter must not crash the primary AP
 		const defense = createPromptDefense({ enableTier2: false, blockHighRisk: true });
 		const result = await defense.defendToolResult(withThrowingGetter(), "docs_get");
 		expect(result.allowed).toBe(false); // un-analyzable → fail closed, not a crash
-		expect(result.riskLevel).toBe("high");
+		expect(result.riskLevel).toBe("low"); // nothing was scanned, so nothing was detected
 		expect(result.coverageDegraded).toBe(true);
 	});
 
@@ -431,6 +431,28 @@ describe("cascade robustness — a throwing getter must not crash the primary AP
 		const defense = createPromptDefense({ enableTier2: false, blockHighRisk: false });
 		const result = await defense.defendToolResult(withThrowingGetter(), "docs_get");
 		expect(result.allowed).toBe(true); // permissive invariant preserved
+		expect(result.riskLevel).toBe("low");
+		expect(result.coverageDegraded).toBe(true);
+	});
+
+	it("reports a payload only Tier 2 can't read as unscanned but still blocks it (strict mode)", async () => {
+		// Tier 1 skips class instances, so only Tier 2's extraction hits the getter.
+		class Evil {
+			note = "hello";
+			constructor() {
+				Object.defineProperty(this, "boom", {
+					enumerable: true,
+					get() {
+						throw new Error("boom");
+					},
+				});
+			}
+		}
+		const defense = createPromptDefense({ enableTier1: true, blockHighRisk: true });
+		const result = await defense.defendToolResult({ item: new Evil() }, "docs_get");
+		expect(result.tier2SkipReason).toMatch(/extraction error/);
+		expect(result.allowed).toBe(false);
+		expect(result.riskLevel).toBe("low");
 		expect(result.coverageDegraded).toBe(true);
 	});
 

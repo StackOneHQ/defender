@@ -2047,7 +2047,11 @@ export class PromptDefense {
 							refused: verdict.refused === true,
 							unreviewedChunks: chunkFailures + abortedChunks,
 						}
-					: { ran: false, errored: chunkFailures > 0, skipReason: skipReason ?? "Tier 3 skipped" },
+					: {
+							ran: false,
+							errored: chunkFailures > 0 || payloadError,
+							skipReason: skipReason ?? "Tier 3 skipped",
+						},
 				toolName,
 			});
 			decidedBy = d === "default" ? "options" : "policy";
@@ -2063,7 +2067,7 @@ export class PromptDefense {
 		// Chunks aborted by stopOnFirstBlock went unreviewed; that only matters if the call is allowed.
 		if (!blocked && abortedChunks > 0) depthFlag.coverageDegraded = true;
 		const meta: Tier3ResultMeta = {
-			...(chunkFailures > 0 ? { errored: true } : {}),
+			...(chunkFailures > 0 || payloadError ? { errored: true } : {}),
 			...(decidedBy ? { decidedBy } : {}),
 		};
 		// With a verdict, `skipReason` isn't reported, so say why the outcome isn't the verdict's alone.
@@ -2078,8 +2082,9 @@ export class PromptDefense {
 			}
 			if (notes.length > 0) meta.note = notes.join("; ");
 		}
-		// payloadError (serializer failed = un-analyzable input) is itself a risk signal.
-		const riskLevel: RiskLevel = blocked || payloadError ? "high" : "low";
+		// An unreadable payload (payloadError) wasn't scanned, so it raises no risk level; strict mode
+		// still blocks it through `allowed`.
+		const riskLevel: RiskLevel = blocked ? "high" : "low";
 		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when the payload
 		// couldn't be serialized (payloadError) or an onOversize policy blocked (oversizeBlock).
 		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
@@ -2104,13 +2109,13 @@ export class PromptDefense {
 	}
 
 	/**
-	 * Minimal result for a payload we can't traverse (e.g. a throwing getter). Fail closed in
-	 * strict mode (un-analyzable input is risky), open otherwise; never let the exception escape.
+	 * Minimal result for a payload we can't traverse (e.g. a throwing getter). Nothing was scanned,
+	 * so no risk level is raised; strict mode still blocks it. Never let the exception escape.
 	 */
 	private buildUnanalyzableResult(value: unknown, reason: string, startTime: number): DefenseResult {
 		return {
 			allowed: !this.config.blockHighRisk,
-			riskLevel: "high",
+			riskLevel: "low",
 			sanitized: value,
 			detections: [],
 			fieldsSanitized: [],
@@ -2691,11 +2696,6 @@ export class PromptDefense {
 		} else if (tier3OverrideBlock === false && tier2Index > tier1Index) {
 			riskLevel = riskLevels[tier1Index];
 		}
-		// Un-analyzable content (a payload traversal threw) is a risk signal.
-		if (payloadError && riskLevels.indexOf(riskLevel) < riskLevels.indexOf("high")) {
-			riskLevel = "high";
-		}
-
 		// Threat signals: Tier 1 detections and flagged fields (never undone by Tier 3), the
 		// Tier 2 threat unless Tier 3 removed it, and a Tier 3 block.
 		const tier3OverrodeToAllow = tier3OverrideBlock === false;
