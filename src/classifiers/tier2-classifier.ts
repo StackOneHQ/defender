@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { normalizeUnicode } from "../sanitizers/normalizer";
+import { normalizeForDetection, normalizeUnicode } from "../sanitizers/normalizer";
 import type { Tier2Result } from "../types";
 import { stripBoundaryPatterns } from "../utils/boundary";
 import { type BatchTokenStats, getDefaultModelPath, OnnxClassifier } from "./onnx-classifier";
@@ -162,6 +162,16 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
  * console.log(result.score); // 0.95 (high = likely injection)
  * ```
  */
+/**
+ * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload). Strips
+ * spoofed boundary markers, undoes obfuscation with the normaliser Tier 1 uses, then
+ * collapses decorative runs (4+ repeats of the same non-word char, like `─` or `===`) to 3:
+ * one-token-per-char rule lines land off-distribution under mean pooling and score high.
+ */
+export function normalizeForClassification(text: string): string {
+	return normalizeForDetection(stripBoundaryPatterns(normalizeUnicode(text))).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
+}
+
 export class Tier2Classifier {
 	private config: Tier2ClassifierConfig;
 	private onnxClassifier: OnnxClassifier;
@@ -232,7 +242,7 @@ export class Tier2Classifier {
 		// corrupt per-sentence scores because the tokenizer counts them as
 		// part of the sentence. Also strips spoofed boundary patterns an
 		// attacker might inject to confuse downstream LLM trust.
-		text = this.normalizeForClassification(text);
+		text = normalizeForClassification(text);
 
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
@@ -315,7 +325,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sentence
 		// splitting so tag tokens don't corrupt per-sentence scores.
-		text = this.normalizeForClassification(text);
+		text = normalizeForClassification(text);
 
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
@@ -416,7 +426,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = this.normalizeForClassification(text);
+		text = normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return {
@@ -558,7 +568,7 @@ export class Tier2Classifier {
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = this.normalizeForClassification(text);
+		text = normalizeForClassification(text);
 
 		if (text.length < this.config.minTextLength) {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
@@ -713,21 +723,6 @@ export class Tier2Classifier {
 	 * Split text into sentences for granular analysis.
 	 * Uses multiple strategies to handle various text formats.
 	 */
-	/**
-	 * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload).
-	 * NFKC-folds unicode (fullwidth / math-styled variants → ASCII) so obfuscated
-	 * attacks tokenize as real words instead of `[UNK]`; then strips spoofed
-	 * boundary markers and collapses decorative runs — 4+ repeats of the same
-	 * non-word char (box-drawing `─`, `===`, `---`, `###`) down to 3. Decorative
-	 * chars like `─` (U+2500) tokenize one-token-per-char, so a rule line becomes
-	 * ~85% one repeated token; under mean pooling the pooled vector lands
-	 * off-distribution and the head returns an arbitrary (often high) score.
-	 * No meaning lives in the 40th consecutive `─`. (ENG: Class-B chunking FP.)
-	 */
-	private normalizeForClassification(text: string): string {
-		return stripBoundaryPatterns(normalizeUnicode(text)).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
-	}
-
 	/** Split text into sentences (all of them, including short ones). Public for the sentence-cleaner. */
 	splitIntoSentences(text: string): string[] {
 		const sentences: string[] = [];

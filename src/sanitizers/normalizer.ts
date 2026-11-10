@@ -1,3 +1,5 @@
+import { normalizeLeetSpeak } from "./leet-normalizer";
+
 /**
  * Unicode Normalization
  *
@@ -126,13 +128,117 @@ function normalizeSpecialCharacters(text: string): string {
 export function normalizeWhitespace(text: string): string {
 	if (!text) return text;
 
-	// Collapse letter-by-letter spacing: "S Y S T E M" → "SYSTEM"
-	// Match a run of 3+ single letters each separated by exactly one space.
-	const result = text.replace(/\b([a-zA-Z] ){2,}[a-zA-Z]\b/g, (match) => match.replace(/ /g, ""));
+	return joinLineSplitWords(collapseSpacedLetters(text));
+}
 
-	// Remove embedded newlines/carriage-returns between immediately adjacent letters.
-	// \s* is intentionally omitted: consuming surrounding spaces would silently destroy
-	// word-boundary separators (e.g. "ignore\n previous" → "ignoreprevious"), which
-	// breaks multi-word pattern matching rather than fixing obfuscation.
-	return result.replace(/([a-zA-Z])[\r\n]+([a-zA-Z])/g, "$1$2");
+/** Collapse letter-by-letter spacing: "S Y S T E M" → "SYSTEM" (3+ single letters, one space apart). */
+export function collapseSpacedLetters(text: string): string {
+	if (!text) return text;
+	return text.replace(/\b([a-zA-Z] ){2,}[a-zA-Z]\b/g, (match) => match.replace(/ /g, ""));
+}
+
+/**
+ * Remove line breaks between adjacent letters ("ign\nore" → "ignore"). Tier 1 only: it also
+ * joins the words of ordinary multi-line text, which would hurt Tier 2's scoring.
+ * \s* is intentionally omitted: consuming surrounding spaces would destroy word boundaries.
+ */
+export function joinLineSplitWords(text: string): string {
+	if (!text) return text;
+	return text.replace(/([a-zA-Z])[\r\n]+([a-zA-Z])/g, "$1$2");
+}
+
+/**
+ * Split two words joined by - _ or . ("ignore-previous", "ignore__all"). Tier 1 only:
+ * its patterns are specific, but Tier 2 would read every compound and hostname apart.
+ */
+export function splitJoinedWordPairs(text: string): string {
+	if (!text) return text;
+	return text.replace(/([A-Za-z])[-_.]+(?=[A-Za-z])/g, "$1 ");
+}
+
+// Greek and Cyrillic letters that look like Latin ones, and their Latin letter (the 8
+// common Cyrillic ones are mapped unconditionally in normalizeUnicode).
+const CONFUSABLE_FROM = "αγεικνορτυχωϲϳΑΒΕΖΗΙΚΜΝΟΡΤΥΧјѕԁһӏԛԝкАВЕКМНОРСТХУІЈЅıɡɑ";
+const CONFUSABLE_TO = "ayeikvoptuxwcjABEZHIKMNOPTYXjsdhlqwkABEKMHOPCTXYIJSiga";
+const CONFUSABLES = new Map(Array.from(CONFUSABLE_FROM, (c, i) => [c, CONFUSABLE_TO[i]]));
+const CONFUSABLE_RE = new RegExp(`[${CONFUSABLE_FROM}]`, "u");
+const GREEK_CYRILLIC_RE = /[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F]/gu;
+
+const fold = (word: string) => Array.from(word, (c) => CONFUSABLES.get(c) ?? c).join("");
+
+/**
+ * Fold Greek/Cyrillic look-alikes to Latin, in words that hold a Latin letter or only
+ * look-alikes. Words with any other Greek/Cyrillic letter are real Greek or Russian and
+ * are left alone, as are one-letter words ("Ο") in Greek or Russian text.
+ */
+export function foldConfusables(text: string): string {
+	if (!text || !CONFUSABLE_RE.test(text)) return text;
+	const isNative = (s: string) => (s.match(GREEK_CYRILLIC_RE) ?? []).some((c) => !CONFUSABLES.has(c));
+	const nativeText = isNative(text);
+	return text.replace(/[\p{L}\p{N}]+/gu, (word) => {
+		if (!CONFUSABLE_RE.test(word) || /[A-Za-z]/.test(word)) return fold(word);
+		if (isNative(word) || (nativeText && Array.from(word).length < 2)) return word;
+		return fold(word);
+	});
+}
+
+// 3+ single characters split by one space . - or _ ("i.g.n.o.r.e a-l-l").
+const SPACED_CHARS_RE = /(?<![A-Za-z0-9@$])[A-Za-z0-9@$](?:[ ._-][A-Za-z0-9@$]){2,}(?![A-Za-z0-9@$])/g;
+
+/** Join each space-separated part of a spaced-out run when the run has 3+ letters. */
+function joinSpacedChars(run: string): string {
+	if (!/[A-Za-z](.*[A-Za-z]){2}/.test(run)) return run;
+	return run
+		.split(" ")
+		.map((w) => w.replace(/[._-]/g, ""))
+		.join(" ");
+}
+
+/**
+ * Join spaced-out letters ("i.g.n.o.r.e a-l-l" → "ignore all"), then split runs of 3+ words joined
+ * by - _ . / or , ("ignore-previous-instructions", "you.are.now"). Two-word compounds
+ * ("well-known"), short abbreviations ("a.m.") and digit-only runs are left alone.
+ */
+export function normalizeWordSeparators(text: string): string {
+	if (!text) return text;
+	return text
+		.replace(SPACED_CHARS_RE, joinSpacedChars)
+		.replace(/(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[-_./,][A-Za-z0-9]+){2,}(?![A-Za-z0-9])/g, (m) => {
+			const parts = m.split(/[-_./,]/);
+			// Digit-only runs (dates, zero GUIDs, versions) stay as they are.
+			return parts.filter((w) => /[A-Za-z]/.test(w)).length < 2 ? m : parts.join(" ");
+		});
+}
+
+// ANSI escapes (7- and 8-bit) and C0/C1 control characters (not tab, LF, CR). A space,
+// not "": they are spliced in place of spaces ("ignore<ESC>all") to break \s+ patterns.
+const CONTROL_RE =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+	/\x1B\[[0-9;?]*[A-Za-z]|\x9B[0-9;?]*[A-Za-z]|\x1B[@-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+// Invisible format characters normalizeUnicode keeps: soft hyphen, Mongolian vowel
+// separator, LRM/RLM, word joiner and invisible operators, variation selectors.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
+const INVISIBLE_RE = /[\u00AD\u180E\u200E\u200F\u2060-\u2064\uFE00-\uFE0F]/g;
+// The same plus the zero-width characters normalizeUnicode drops, for the alternate reading.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
+const ALL_INVISIBLE_RE = /[\u00AD\u180E\u200B-\u200F\u2060-\u2064\uFEFF\uFE00-\uFE0F]/g;
+
+/**
+ * The analysis copy both tiers scan: control characters, combining marks, unicode
+ * variants, look-alikes, joined words, spaced letters and leet undone. Never returned
+ * to callers.
+ *
+ * `alternate` gives the other reading of ambiguous text, for Tier 1: invisible characters
+ * as spaces rather than removed, and leet reversed in ID-like tokens too.
+ */
+export function normalizeForDetection(text: string, { alternate = false } = {}): string {
+	if (!text) return text;
+	text = text.replace(CONTROL_RE, " ");
+	text = alternate ? text.replace(ALL_INVISIBLE_RE, " ") : text.replace(INVISIBLE_RE, "");
+	return normalizeLeetSpeak(
+		collapseSpacedLetters(
+			normalizeWordSeparators(foldConfusables(normalizeUnicode(stripCombiningMarks(text.normalize("NFD"))))),
+		),
+		!alternate,
+	);
 }

@@ -5,8 +5,7 @@
  * Target latency: < 1-2ms per field
  */
 
-import { normalizeLeetSpeak } from "../sanitizers/leet-normalizer";
-import { normalizeUnicode, normalizeWhitespace, stripCombiningMarks } from "../sanitizers/normalizer";
+import { joinLineSplitWords, normalizeForDetection, splitJoinedWordPairs } from "../sanitizers/normalizer";
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
@@ -78,15 +77,14 @@ export class PatternDetector {
 		const rawText =
 			text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
 
-		// Normalisation chain: collapse obfuscation before injection pattern matching.
-		// Order matters: NFD-decompose + strip combining marks first (Zalgo defense),
-		// then unicode normalisation (homoglyphs/fullwidth → ASCII), then whitespace,
-		// then leet-speak. NFD-decomposition lives here (not in normalizeUnicode) because
-		// it strips legitimate accents like "café" → "cafe" — fine for analysis but would
-		// be data loss if returned to callers. The result is analysis-only and never returned.
-		const analysisText = normalizeLeetSpeak(
-			normalizeWhitespace(normalizeUnicode(stripCombiningMarks(rawText.normalize("NFD")))),
-		);
+		// Collapse obfuscation before pattern matching (shared with Tier 2), plus words split
+		// across lines or joined in pairs. Ambiguous text is also scanned in its other reading
+		// (invisible characters as spaces, leet in ID-like tokens): patterns are specific
+		// enough that scanning both costs little. Analysis-only.
+		const tier1Copy = (alternate: boolean) =>
+			splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(rawText, { alternate })));
+		const analysisText = tier1Copy(false);
+		const alternateText = tier1Copy(true);
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible
@@ -95,8 +93,10 @@ export class PatternDetector {
 		const shouldUseFastFilter = this.config.useFastFilter && !this.hasCustomPatterns;
 		const rawHasKeywords = !shouldUseFastFilter || containsFilterKeywords(rawText);
 		const normHasKeywords = !shouldUseFastFilter || containsFilterKeywords(analysisText);
+		const altHasKeywords =
+			alternateText !== analysisText && (!shouldUseFastFilter || containsFilterKeywords(alternateText));
 
-		if (!rawHasKeywords && !normHasKeywords) {
+		if (!rawHasKeywords && !normHasKeywords && !altHasKeywords) {
 			// Still check structural issues even without keyword matches
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
 			return this.createResult([], structuralFlags, startTime);
@@ -104,7 +104,7 @@ export class PatternDetector {
 
 		// Optimisation: if normalisation produced no change, a single pass is sufficient.
 		// This avoids doubling detectPatterns work for every plain-text input with keywords.
-		if (rawText === analysisText) {
+		if (rawText === analysisText && alternateText === analysisText) {
 			const matches = rawHasKeywords ? this.detectPatterns(rawText) : [];
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
 			return this.createResult(matches, structuralFlags, startTime);
@@ -115,7 +115,7 @@ export class PatternDetector {
 		// Run whenever EITHER the raw OR the normalised text has keywords: if only the
 		// normalised text has keywords (pure leet-speak with no other fast-filter hits),
 		// we still want the raw pass to fire obfuscation patterns like leetspeak_injection.
-		const rawMatches = rawHasKeywords || normHasKeywords ? this.detectPatterns(rawText) : [];
+		const rawMatches = rawHasKeywords || normHasKeywords || altHasKeywords ? this.detectPatterns(rawText) : [];
 
 		// Run patterns on normalised text — catches injection patterns hidden behind
 		// leet-speak, whitespace, or homoglyph obfuscation.
@@ -124,12 +124,17 @@ export class PatternDetector {
 		const normMatches = normHasKeywords
 			? this.detectPatterns(analysisText).map((m) => ({ ...m, normalised: true }))
 			: [];
+		const altMatches = altHasKeywords
+			? this.detectPatterns(alternateText).map((m) => ({ ...m, normalised: true }))
+			: [];
 
-		// Merge: normalised matches take priority. Raw-only matches are appended for
+		// Merge: normalised matches take priority, then the alternate reading's. Raw-only matches are appended for
 		// patterns that fired on the original text but not the normalised form
 		// (e.g. obfuscation-detection patterns that match the raw encoding characters).
 		const seenPatterns = new Set(normMatches.map((m) => m.pattern));
-		const mergedMatches = [...normMatches, ...rawMatches.filter((m) => !seenPatterns.has(m.pattern))];
+		const altOnly = altMatches.filter((m) => !seenPatterns.has(m.pattern));
+		for (const m of altOnly) seenPatterns.add(m.pattern);
+		const mergedMatches = [...normMatches, ...altOnly, ...rawMatches.filter((m) => !seenPatterns.has(m.pattern))];
 
 		// Structural detection runs on raw text for accurate entropy and length checks.
 		const structuralFlags = this.detectStructuralIssues(rawText, originalLength);

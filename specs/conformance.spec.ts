@@ -22,6 +22,7 @@ import {
 	type Tier3PromptTemplate,
 	type Tier3Provider,
 } from "../src/index";
+import { normalizeForDetection } from "../src/sanitizers/normalizer";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance");
 const FORMAT_VERSION = 1;
@@ -206,6 +207,15 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 			sfeFallback: r.sfeFallback === true,
 			tier2SkipReason: r.tier2SkipReason ?? null,
 		};
+	},
+
+	// text → the normalised analysis copy both tiers scan, and the Tier 1 patterns found.
+	obfuscation: async (input) => {
+		const r = await createPromptDefense({ enableTier2: false }).defendToolResult(
+			{ notes: input.text },
+			"test_tool",
+		);
+		return { normalised: normalizeForDetection(input.text), tier1Patterns: [...r.detections].sort() };
 	},
 };
 

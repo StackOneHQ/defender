@@ -65,6 +65,33 @@ function applyLeetMapChars(token: string): string {
 	return result;
 }
 
+// Short words attacks spell in leet with one letter left ("4n 4dm1n", "4r3", "7h3").
+// Other tokens with under 2 letters ("v1", "Q3") are IDs.
+const SHORT_WORDS = new Set(
+	"am an as at be by do go if in is it me my no of on or so to up us we act all and any are can for get has how its may new not now off our out own run set the use was who why you".split(
+		" ",
+	),
+);
+
+/**
+ * IDs, hashes and versions ("user123", "d14f0615", "v2"): under 2 letters (unless a short word), hex with a
+ * digit, or at either end 4+ digits, or 2-3 with a 2, 6 or 9 when the rest has no leet
+ * ("COVID19", "user123", not "rul35", "573al" or "22ign0re"). Leet in them would only
+ * produce noise.
+ */
+function isIdentifierLike(token: string): boolean {
+	if ((token.match(/[a-zA-Z]/g)?.length ?? 0) < 2) {
+		return !SHORT_WORDS.has(applyLeetMapChars(token).replace(/[269]/g, "").toLowerCase());
+	}
+	if (token.length >= 6 && /^[0-9a-fA-F]+$/.test(token) && /[0-9]/.test(token)) return true;
+	// A short digit run marks an ID only when the rest has no leet ("user123", not "22ign0re").
+	const edge = token.match(/^([0-9]+)(.*)$|^(.*?)([0-9]+)$/);
+	if (!edge) return false;
+	const run = edge[1] ?? edge[4];
+	const rest = edge[2] ?? edge[3];
+	return run.length >= 4 || (run.length >= 2 && /[269]/.test(run) && !/[0134578@!$]/.test(rest));
+}
+
 /**
  * Token-aware leet substitution.
  *
@@ -76,14 +103,15 @@ function applyLeetMapChars(token: string): string {
  * `@` is included in the token pattern so "@dm1n" forms a single mixed
  * token and is correctly normalized to "admin".
  */
-function applyLeetMapTokenAware(text: string): string {
+function applyLeetMapTokenAware(text: string, protectIds: boolean): string {
 	// Include !, @, $ in token splitting so mixed tokens like "adm!n", "@dm1n",
 	// "$y$tem" are processed as one unit. PROTECTED_SEQUENCE has already removed
 	// $( sequences before this runs, so standalone $ safely maps to s.
 	return text.replace(/[@a-zA-Z0-9!$]+/g, (token) => {
-		// Only normalize tokens that contain at least one letter
-		if (!/[a-zA-Z]/.test(token)) return token;
-		return applyLeetMapChars(token);
+		if (!/[a-zA-Z]/.test(token) || (protectIds && isIdentifierLike(token))) return token;
+		const mapped = applyLeetMapChars(token);
+		// Digits left in a leet word are padding ("d1sreg4rd2").
+		return mapped === token ? token : mapped.replace(/[269]/g, "");
 	});
 }
 
@@ -102,9 +130,10 @@ function applyLeetMapTokenAware(text: string): string {
  * corrupting legitimate numeric content.
  *
  * @param text - Text to normalize
+ * @param protectIds - Leave ID-like tokens ("user123", "d14f0615") alone
  * @returns Text with leet substitutions reversed
  */
-export function normalizeLeetSpeak(text: string): string {
+export function normalizeLeetSpeak(text: string, protectIds = true): string {
 	if (!text) return text;
 
 	const segments: string[] = [];
@@ -116,14 +145,14 @@ export function normalizeLeetSpeak(text: string): string {
 	let match: RegExpExecArray | null;
 	while ((match = PROTECTED_SEQUENCE.exec(text)) !== null) {
 		// Normalize the plain segment before this protected sequence
-		segments.push(applyLeetMapTokenAware(text.slice(lastIndex, match.index)));
+		segments.push(applyLeetMapTokenAware(text.slice(lastIndex, match.index), protectIds));
 		// Keep the protected segment verbatim
 		segments.push(match[0]);
 		lastIndex = match.index + match[0].length;
 	}
 
 	// Normalize the remaining plain segment after the last protected sequence
-	segments.push(applyLeetMapTokenAware(text.slice(lastIndex)));
+	segments.push(applyLeetMapTokenAware(text.slice(lastIndex), protectIds));
 
 	return segments.join("");
 }
