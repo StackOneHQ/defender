@@ -349,6 +349,15 @@ describe("SFE preprocessor", () => {
 			expect(result.sfeFallback).toBe(true);
 		});
 
+		it.each([["api.example.company.co.uk"], ["john.doe.company.example"], ["https://api.example.company.co.uk/v1"]])(
+			"does not score the dotted token %s",
+			async (url) => {
+				const defense = createPromptDefense({ enableTier1: false, useSfe: { predictor: dropAll } });
+				const result = await defense.defendToolResult({ url }, "test_tool");
+				expect(result.sfeFallback).toBeUndefined();
+			},
+		);
+
 		it("does not score single-token strings like URLs and IDs", async () => {
 			const defense = createPromptDefense({
 				enableTier1: false,

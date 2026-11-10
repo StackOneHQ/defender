@@ -234,11 +234,12 @@ export interface DefenseResult {
 // One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
 const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
 
-// A URL, ID or other single token, unless it joins several words with - _ + or .
+// A URL, ID or other single token, unless it joins several words with - _ or +
 // ("Ignore-all-previous-instructions", "IGNORE_ALL_...", a "+"-joined query string).
+// Dots don't count: they join hostname, email and path parts.
 function isMachineToken(t: string): boolean {
 	if (!ASCII_TOKEN_RE.test(t)) return false;
-	return t.split(/[-_+.]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
+	return t.split(/[-_+]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
 }
 
 /**
