@@ -75,14 +75,21 @@ const SHORT_WORDS = new Set(
 
 /**
  * IDs, hashes and versions ("user123", "d14f0615", "v2"): under 2 letters (unless a short word), hex with a
- * digit, or at either end 4+ digits or 2+ with a 2, 6 or 9 ("COVID19", "user123",
- * not "rul35" or "573al"). Leet in them would only produce noise.
+ * digit, or at either end 4+ digits, or 2-3 with a 2, 6 or 9 when the rest has no leet
+ * ("COVID19", "user123", not "rul35", "573al" or "22ign0re"). Leet in them would only
+ * produce noise.
  */
 function isIdentifierLike(token: string): boolean {
-	if ((token.match(/[a-zA-Z]/g)?.length ?? 0) < 2) return !SHORT_WORDS.has(applyLeetMapChars(token).toLowerCase());
+	if ((token.match(/[a-zA-Z]/g)?.length ?? 0) < 2) {
+		return !SHORT_WORDS.has(applyLeetMapChars(token).replace(/[269]/g, "").toLowerCase());
+	}
 	if (token.length >= 6 && /^[0-9a-fA-F]+$/.test(token) && /[0-9]/.test(token)) return true;
-	const edgeDigits = token.match(/^[0-9]+|[0-9]+$/g) ?? [];
-	return edgeDigits.some((run) => (run.length >= 2 && /[269]/.test(run)) || run.length >= 4);
+	// A short digit run marks an ID only when the rest has no leet ("user123", not "22ign0re").
+	const edge = token.match(/^([0-9]+)(.*)$|^(.*?)([0-9]+)$/);
+	if (!edge) return false;
+	const run = edge[1] ?? edge[4];
+	const rest = edge[2] ?? edge[3];
+	return run.length >= 4 || (run.length >= 2 && /[269]/.test(run) && !/[0134578@!$]/.test(rest));
 }
 
 /**
@@ -101,7 +108,7 @@ function applyLeetMapTokenAware(text: string): string {
 	// "$y$tem" are processed as one unit. PROTECTED_SEQUENCE has already removed
 	// $( sequences before this runs, so standalone $ safely maps to s.
 	return text.replace(/[@a-zA-Z0-9!$]+/g, (token) => {
-		if (isIdentifierLike(token)) return token;
+		if (!/[a-zA-Z]/.test(token) || isIdentifierLike(token)) return token;
 		const mapped = applyLeetMapChars(token);
 		// Digits left in a leet word are padding ("d1sreg4rd2").
 		return mapped === token ? token : mapped.replace(/[269]/g, "");

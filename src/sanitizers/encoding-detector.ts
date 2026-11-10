@@ -170,6 +170,22 @@ export function detectEncoding(text: string, config: Partial<EncodingDetectorCon
 /**
  * Detect Base64 encoded strings
  */
+/** Decode standard or URL-safe base64; null when it isn't valid base64. */
+function atobUrlSafe(candidate: string): string | null {
+	try {
+		// atob() takes only the standard alphabet: map base64url back and re-pad
+		const unpadded = candidate.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
+		return atob(unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4));
+	} catch {
+		return null;
+	}
+}
+
+const isPrintableText = (s: string | null): s is string => s !== null && /^[\x20-\x7E\s]+$/.test(s);
+
+// Retries per candidate when a word joined by - or _ makes the whole run undecodable.
+const MAX_BASE64_RETRIES = 16;
+
 function detectBase64(text: string, minLength: number): EncodingDetection[] {
 	const detections: EncodingDetection[] = [];
 
@@ -178,35 +194,37 @@ function detectBase64(text: string, minLength: number): EncodingDetection[] {
 	let match: RegExpExecArray | null;
 
 	while ((match = base64Pattern.exec(text)) !== null) {
-		const candidate = match[0];
-
-		// Skip if too short
+		let candidate = match[0];
 		if (candidate.length < minLength) continue;
 
-		// atob() takes only the standard alphabet: map base64url back and re-pad
-		try {
-			const normalized = candidate.replace(/-/g, "+").replace(/_/g, "/");
-			const unpadded = normalized.replace(/=+$/, "");
-			const padded = unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4);
-			const decoded = atob(padded);
-
-			// Check if decoded content is mostly printable ASCII
-			const isPrintable = /^[\x20-\x7E\s]+$/.test(decoded);
-
-			// Check if decoded content contains suspicious text
-			const isSuspicious = isPrintable && /system|ignore|instruction|assistant|bypass|override/i.test(decoded);
-
-			detections.push({
-				type: "base64",
-				original: candidate,
-				decoded: isPrintable ? decoded : undefined,
-				position: match.index,
-				length: candidate.length,
-				suspicious: isSuspicious,
-			});
-		} catch {
-			// Not valid Base64, skip
+		// "payload_<base64>": retry from each - or _ so a joined word can't hide the payload.
+		let offset = 0;
+		let raw = atobUrlSafe(candidate);
+		if (!isPrintableText(raw)) {
+			const cuts = [...candidate.matchAll(/[-_]/g)].map((m) => m.index).slice(0, MAX_BASE64_RETRIES);
+			for (const cut of cuts) {
+				const rest = candidate.slice(cut + 1);
+				if (rest.length < minLength) break;
+				const d = atobUrlSafe(rest);
+				if (isPrintableText(d)) {
+					offset = cut + 1;
+					candidate = rest;
+					raw = d;
+					break;
+				}
+			}
 		}
+		if (raw === null) continue; // not valid base64
+
+		const decoded = isPrintableText(raw) ? raw : undefined;
+		detections.push({
+			type: "base64",
+			original: candidate,
+			decoded,
+			position: match.index + offset,
+			length: candidate.length,
+			suspicious: decoded !== undefined && /system|ignore|instruction|assistant|bypass|override/i.test(decoded),
+		});
 	}
 
 	return detections;
