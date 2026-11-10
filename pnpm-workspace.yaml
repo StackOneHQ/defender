@@ -11,16 +11,9 @@ minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   - '@stackone/*'
 
-# Formerly package.json "pnpm.overrides" — none existed at migration time.
-# overrides:
-#   '<pkg>': '<version>'
-
-# Transformers 4.3.1 imports Tensor from onnxruntime-common in its Node bundle
-# but omits that dependency. Match its onnxruntime-node 1.30.0 runtime.
-packageExtensions:
-  '@huggingface/transformers@4.3.1':
-    dependencies:
-      onnxruntime-common: 1.30.0
+# Transformers 3.8.1 pins sharp 0.34, which has open advisories. We never load images.
+overrides:
+  sharp: 0.35.5
 
 # Build-script policy (formerly "pnpm.onlyBuiltDependencies").
 # pnpm 11 requires an EXPLICIT allow/deny per package with install scripts,
