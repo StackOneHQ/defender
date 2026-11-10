@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"area": "sfe-fallback",
-	"description": "When SFE drops every text field, Tier 2 scores the payload's multi-word strings instead of skipping it. A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
+	"description": "When SFE keeps no text Tier 2 would score, Tier 2 scores the original payload's text instead, leaving out single printable-ASCII tokens (URLs, IDs). A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
 	"cases": [
 		{
 			"id": "all-dropped-falls-back",
@@ -38,6 +38,49 @@
 						"notes": "Second record notes here."
 					}
 				],
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "short-kept-falls-back",
+			"description": "SFE keeps only a string below minTextLength: the fallback runs.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"status": "ok",
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"notes"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
+			"id": "cjk-falls-back",
+			"description": "Text without ASCII spaces is still scored.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"notes": "金曜日までに添付の契約書を確認してください。"
+				},
 				"dropKeys": [
 					"*"
 				]
@@ -111,7 +154,7 @@
 		},
 		{
 			"id": "single-tokens-no-fallback",
-			"description": "Only single-token strings (IDs, URLs): no fallback, still skipped.",
+			"description": "Only single printable-ASCII tokens (IDs, URLs): no fallback, still skipped.",
 			"requiresTier2": true,
 			"input": {
 				"payload": {

@@ -148,8 +148,8 @@ export interface DefenseResult {
 	 */
 	fieldsDropped: string[];
 	/**
-	 * True when SFE dropped every text field, so Tier 2 scored the payload's multi-word strings
-	 * instead. Absent otherwise.
+	 * True when SFE kept no text Tier 2 would score, so Tier 2 scored the original payload's text
+	 * instead (single ASCII tokens such as URLs and IDs excluded). Absent otherwise.
 	 */
 	sfeFallback?: boolean;
 	/**
@@ -236,6 +236,9 @@ export interface DefenseResult {
  * When `fields` is provided, only strings under matching field keys are collected;
  * the traversal still descends into non-matching keys to find matching ones deeper.
  */
+// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
+const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
+
 function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: { hit: boolean }): string[] {
 	const strings: string[] = [];
 
@@ -2293,12 +2296,17 @@ export class PromptDefense {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
-					// SFE dropped every text field: score the original rather than pass it unscanned.
-					// Multi-word strings only: single tokens (URLs, IDs) are what SFE is right to drop,
-					// and Tier 2 scores some of them high.
-					if (strings.length === 0 && fieldsDropped.length > 0) {
-						strings = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => /\s/.test(s.trim()));
-						sfeFallback = strings.length > 0;
+					// SFE kept nothing Tier 2 would score: score the original rather than pass it unscanned.
+					// Skip ASCII tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
+					const minLen = this.tier2Classifier?.getConfig().minTextLength ?? 0;
+					if (fieldsDropped.length > 0 && !strings.some((s) => s.length >= minLen)) {
+						const fallback = extractStrings(value, fieldsForTier2, depthFlag).filter(
+							(s) => s.length >= minLen && !ASCII_TOKEN_RE.test(s.trim()),
+						);
+						if (fallback.length > 0) {
+							strings = fallback;
+							sfeFallback = true;
+						}
 					}
 				} catch (err) {
 					payloadError = true;
