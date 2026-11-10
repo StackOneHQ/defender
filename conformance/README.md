@@ -9,6 +9,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-parse.json` | `tier3-parse` | Strict verdict parsing |
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
 | `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
+| `sfe-fallback.json` | `sfe-fallback` | Tier 2 scores the original text when SFE keeps nothing it would score |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
 
@@ -62,6 +63,12 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
     - `judgeCalls`, when there is a judge: how many chunks the judge was actually called for. This pins `stopOnFirstBlock`.
   - Cases with `requiresTier2: true` need the bundled Tier-2 model. They force Tier 2's verdict with `highRiskThreshold` 0 (would block) or 1 (would allow) and escalate everything. A runner without the model may skip them, but should say so.
   - Tier-2 scores differ slightly between runtimes (around 1e-3). Keep those case texts far from scores of exactly 0 and 1, and don't add a case whose outcome depends on a score near a threshold.
+- **`sfe-fallback`**:
+  - Build `createPromptDefense({ enableTier1: false, blockHighRisk: true, tier2Config: { highRiskThreshold: 0 }, useSfe: { predictor } })` and call `defendToolResult(input.payload, input.toolName ?? "test_tool")`.
+  - The predictor is scripted: it drops a field when the third space-separated token of its SFE text (the first path token) is in `input.dropKeys`, and drops every field when `dropKeys` contains `"*"`.
+  - The fallback runs when SFE dropped a field and Tier 2 would produce no chunk for any kept string (after its own normalisation and length rules), ignoring whitespace-only strings. It then scores the original's strings, leaving out whitespace-only strings and strings that, trimmed, are only printable ASCII (U+0021–U+007E), but only when at least one of them produces a chunk.
+  - Expect `allowed`, `fieldsDropped`, `sfeFallback` (a boolean) and `tier2SkipReason` (or `null`).
+  - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
 
 Option names are the TypeScript ones (`maxTextLength`, `onError`, …). The Python runner maps them to its snake_case names.
 
