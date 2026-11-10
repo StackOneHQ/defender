@@ -66,7 +66,7 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
 - **`sfe-fallback`**:
   - Build `createPromptDefense({ enableTier1: false, blockHighRisk: true, tier2Config: { highRiskThreshold: 0 }, useSfe: { predictor } })` and call `defendToolResult(input.payload, input.toolName ?? "test_tool")`.
   - The predictor is scripted: it drops a field when the third space-separated token of its SFE text (the first path token) is in `input.dropKeys`, and drops every field when `dropKeys` contains `"*"`.
-  - The fallback runs when SFE dropped a field and no kept string reaches `minTextLength` (UTF-16 length). It scores the original's strings of at least `minTextLength`, except those that, trimmed, are only printable ASCII (U+0021–U+007E).
+  - The fallback runs when SFE dropped a field and no kept string reaches `minTextLength` (UTF-16 length). It scores the original's strings that, trimmed, are at least `minTextLength` long and not only printable ASCII (U+0021–U+007E).
   - Expect `allowed`, `fieldsDropped`, `sfeFallback` (a boolean) and `tier2SkipReason` (or `null`).
   - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
 

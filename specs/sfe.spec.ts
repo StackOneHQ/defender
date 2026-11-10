@@ -348,6 +348,12 @@ describe("SFE preprocessor", () => {
 			expect(result.allowed).toBe(true);
 		});
 
+		it("does not score whitespace-only strings", async () => {
+			const defense = createPromptDefense({ enableTier1: false, useSfe: { predictor: dropAll } });
+			const result = await defense.defendToolResult({ notes: " ".repeat(20) }, "test_tool");
+			expect(result.sfeFallback).toBeUndefined();
+		});
+
 		it("still reports no strings when the payload has no text", async () => {
 			const defense = createPromptDefense({ enableTier1: false, useSfe: { predictor: dropAll } });
 			const result = await defense.defendToolResult({ count: 3, ok: true }, "test_tool");

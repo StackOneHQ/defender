@@ -2300,9 +2300,10 @@ export class PromptDefense {
 					// Skip ASCII tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
 					const minLen = this.tier2Classifier?.getConfig().minTextLength ?? 0;
 					if (fieldsDropped.length > 0 && !strings.some((s) => s.length >= minLen)) {
-						const fallback = extractStrings(value, fieldsForTier2, depthFlag).filter(
-							(s) => s.length >= minLen && !ASCII_TOKEN_RE.test(s.trim()),
-						);
+						const fallback = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => {
+							const t = s.trim();
+							return t.length >= minLen && !ASCII_TOKEN_RE.test(t);
+						});
 						if (fallback.length > 0) {
 							strings = fallback;
 							sfeFallback = true;
