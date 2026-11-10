@@ -75,11 +75,12 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - `tier1Patterns`: the sorted `detections` of `createPromptDefense({ enableTier2: false }).defendToolResult({ notes: input.text }, "test_tool")`.
   - The steps, in order:
     1. NFD, then combining marks are stripped.
-    2. NFKC. Zero-width characters are removed. ANSI escapes (`ESC [` and 8-bit `U+009B`) and C0/C1 control characters other than tab, LF, CR and NEL become a space. Quotes and dashes are folded and 8 common Cyrillic look-alikes mapped.
+    2. NFKC. Zero-width characters are removed. ANSI escapes (`ESC [` and 8-bit `U+009B`) and C0/C1 control characters other than tab, LF and CR become a space. Quotes and dashes are folded and 8 common Cyrillic look-alikes mapped.
     3. The other Greek and Cyrillic look-alikes are folded in words that hold an ASCII letter or only look-alikes. Words with any other Greek or Cyrillic letter are left alone.
     4. Runs of 3+ single characters split by one space, `.`, `-` or `_` are joined when 3+ of them are letters. Spaces stay as word breaks: each space-separated part is joined on its own. Then runs of 3+ words joined by `-` `_` `.` `/` `,` are split with spaces when 2+ parts hold a letter.
     5. Letters spaced one space apart are joined.
     6. Leet is reversed except in ID-like tokens: under 2 letters (unless the reversed token is one of the short words in `SHORT_WORDS`, `leet-normalizer.ts`), 6+ hex characters with a digit, or at either end 4+ digits, or 2–3 digits including a `2`, `6` or `9` when the rest of the token has no leet character. Tokens without a letter are left alone. When a token had leet reversed, its remaining `2`, `6` and `9` are dropped. Hex and unicode escapes, `$(` and 20+ character base64 runs are left alone.
+  - Tier 1 also matches an alternate reading of the same text, where invisible characters (including zero-width ones) become spaces instead of being removed, and leet is reversed in ID-like tokens too. `tier1Patterns` covers both readings.
   - Tier 1 also joins letters split by a line break before matching. The shared copy keeps line breaks, since Tier 2 splits sentences on them.
   - Cases don't need the Tier-2 model.
 

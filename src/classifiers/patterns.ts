@@ -207,7 +207,7 @@ export const ROLE_ASSUMPTION_PATTERNS: PatternDefinition[] = [
 	},
 	{
 		id: "act_as",
-		pattern: /act\s+(as|like)\s+(an?\s+)?(system|admin|developer|root|superuser)/gi,
+		pattern: /act\s+(as|like)\s+(an?\s+)?(system|admin|developer|root|superuser)\b/gi,
 		category: "role_assumption",
 		severity: "high",
 		description: "Attempt to make AI act as privileged role",

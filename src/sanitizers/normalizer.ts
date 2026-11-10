@@ -210,27 +210,35 @@ export function normalizeWordSeparators(text: string): string {
 		});
 }
 
-// ANSI escapes (7- and 8-bit) and C0/C1 control characters (not tab, LF, CR, NEL). A space,
+// ANSI escapes (7- and 8-bit) and C0/C1 control characters (not tab, LF, CR). A space,
 // not "": they are spliced in place of spaces ("ignore<ESC>all") to break \s+ patterns.
 const CONTROL_RE =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-	/\x1B\[[0-9;?]*[A-Za-z]|\x9B[0-9;?]*[A-Za-z]|\x1B[@-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F]/g;
+	/\x1B\[[0-9;?]*[A-Za-z]|\x9B[0-9;?]*[A-Za-z]|\x1B[@-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 // Invisible format characters normalizeUnicode keeps: soft hyphen, Mongolian vowel
 // separator, LRM/RLM, word joiner and invisible operators, variation selectors.
 // biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
 const INVISIBLE_RE = /[\u00AD\u180E\u200E\u200F\u2060-\u2064\uFE00-\uFE0F]/g;
+// The same plus the zero-width characters normalizeUnicode drops, for the alternate reading.
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
+const ALL_INVISIBLE_RE = /[\u00AD\u180E\u200B-\u200F\u2060-\u2064\uFEFF\uFE00-\uFE0F]/g;
 
 /**
  * The analysis copy both tiers scan: control characters, combining marks, unicode
  * variants, look-alikes, joined words, spaced letters and leet undone. Never returned
  * to callers.
+ *
+ * `alternate` gives the other reading of ambiguous text, for Tier 1: invisible characters
+ * as spaces rather than removed, and leet reversed in ID-like tokens too.
  */
-export function normalizeForDetection(text: string): string {
+export function normalizeForDetection(text: string, { alternate = false } = {}): string {
 	if (!text) return text;
-	text = text.replace(CONTROL_RE, " ").replace(INVISIBLE_RE, "");
+	text = text.replace(CONTROL_RE, " ");
+	text = alternate ? text.replace(ALL_INVISIBLE_RE, " ") : text.replace(INVISIBLE_RE, "");
 	return normalizeLeetSpeak(
 		collapseSpacedLetters(
 			normalizeWordSeparators(foldConfusables(normalizeUnicode(stripCombiningMarks(text.normalize("NFD"))))),
 		),
+		!alternate,
 	);
 }

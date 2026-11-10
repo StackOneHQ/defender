@@ -103,12 +103,12 @@ function isIdentifierLike(token: string): boolean {
  * `@` is included in the token pattern so "@dm1n" forms a single mixed
  * token and is correctly normalized to "admin".
  */
-function applyLeetMapTokenAware(text: string): string {
+function applyLeetMapTokenAware(text: string, protectIds: boolean): string {
 	// Include !, @, $ in token splitting so mixed tokens like "adm!n", "@dm1n",
 	// "$y$tem" are processed as one unit. PROTECTED_SEQUENCE has already removed
 	// $( sequences before this runs, so standalone $ safely maps to s.
 	return text.replace(/[@a-zA-Z0-9!$]+/g, (token) => {
-		if (!/[a-zA-Z]/.test(token) || isIdentifierLike(token)) return token;
+		if (!/[a-zA-Z]/.test(token) || (protectIds && isIdentifierLike(token))) return token;
 		const mapped = applyLeetMapChars(token);
 		// Digits left in a leet word are padding ("d1sreg4rd2").
 		return mapped === token ? token : mapped.replace(/[269]/g, "");
@@ -130,9 +130,10 @@ function applyLeetMapTokenAware(text: string): string {
  * corrupting legitimate numeric content.
  *
  * @param text - Text to normalize
+ * @param protectIds - Leave ID-like tokens ("user123", "d14f0615") alone
  * @returns Text with leet substitutions reversed
  */
-export function normalizeLeetSpeak(text: string): string {
+export function normalizeLeetSpeak(text: string, protectIds = true): string {
 	if (!text) return text;
 
 	const segments: string[] = [];
@@ -144,14 +145,14 @@ export function normalizeLeetSpeak(text: string): string {
 	let match: RegExpExecArray | null;
 	while ((match = PROTECTED_SEQUENCE.exec(text)) !== null) {
 		// Normalize the plain segment before this protected sequence
-		segments.push(applyLeetMapTokenAware(text.slice(lastIndex, match.index)));
+		segments.push(applyLeetMapTokenAware(text.slice(lastIndex, match.index), protectIds));
 		// Keep the protected segment verbatim
 		segments.push(match[0]);
 		lastIndex = match.index + match[0].length;
 	}
 
 	// Normalize the remaining plain segment after the last protected sequence
-	segments.push(applyLeetMapTokenAware(text.slice(lastIndex)));
+	segments.push(applyLeetMapTokenAware(text.slice(lastIndex), protectIds));
 
 	return segments.join("");
 }
