@@ -607,6 +607,15 @@ describe("normalizeForDetection", () => {
 		);
 	});
 
+	it("turns NEL and 8-bit CSI into spaces", () => {
+		expect(normalizeForDetection("ignore\x9b2Kall\x85previous")).toBe("ignore all previous");
+	});
+
+	it("gives the alternate reading: invisibles as spaces, leet in ID-like tokens", () => {
+		expect(normalizeForDetection("ignore\u00adall", { alternate: true })).toBe("ignore all");
+		expect(normalizeForDetection("act as r007", { alternate: true })).toBe("act as root");
+	});
+
 	it("keeps line breaks (only Tier 1 joins words across them)", () => {
 		expect(normalizeForDetection("line one\nline two")).toBe("line one\nline two");
 	});
