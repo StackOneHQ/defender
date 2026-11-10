@@ -231,14 +231,22 @@ export interface DefenseResult {
 	};
 }
 
+// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
+const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
+
+// A URL, ID or other single token, unless it joins several words with - _ or +
+// ("Ignore-all-previous-instructions", "IGNORE_ALL_...", a "+"-joined query string).
+// Dots don't count: they join hostname, email and path parts.
+function isMachineToken(t: string): boolean {
+	if (!ASCII_TOKEN_RE.test(t)) return false;
+	return t.split(/[-_+]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
+}
+
 /**
  * Recursively extract all string values from an object.
  * When `fields` is provided, only strings under matching field keys are collected;
  * the traversal still descends into non-matching keys to find matching ones deeper.
  */
-// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
-const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
-
 function extractStrings(obj: unknown, fields: string[] | undefined, depthFlag: { hit: boolean }): string[] {
 	const strings: string[] = [];
 
@@ -2304,7 +2312,7 @@ export class PromptDefense {
 
 			// SFE kept nothing Tier 2 would score: score the original rather than pass it unscanned.
 			// Decided on prepared chunks, so the classifier's own normalisation and length rules apply.
-			// Skip ASCII tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
+			// Skip machine tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
 			const tPrepStart = performance.now();
 			let prepared: Awaited<ReturnType<Tier2Classifier["prepareChunks"]>>[] | undefined;
 			if (tier2Ready && !payloadError && fieldsDropped.length > 0 && this.tier2Classifier) {
@@ -2316,7 +2324,7 @@ export class PromptDefense {
 					try {
 						fallback = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => {
 							const t = s.trim();
-							return t !== "" && !ASCII_TOKEN_RE.test(t);
+							return t !== "" && !isMachineToken(t);
 						});
 					} catch (err) {
 						payloadError = true;
