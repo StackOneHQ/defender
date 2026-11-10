@@ -77,7 +77,7 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
     1. NFD, then combining marks are stripped.
     2. NFKC. Zero-width characters are removed. ANSI escapes and C0 control characters other than tab, LF and CR become a space. Quotes and dashes are folded and 8 common Cyrillic look-alikes mapped.
     3. The other Greek and Cyrillic look-alikes are folded inside words that also hold an ASCII letter, or in every word when the text has no Greek or Cyrillic letter outside the map.
-    4. 3+ single characters split by one space, `.`, `-` or `_` are joined when 3+ of them are letters. Then runs of 3+ words joined by `-` `_` `.` `/` `,` are split with spaces when 2+ parts hold a letter.
+    4. Runs of 3+ single characters split by one space, `.`, `-` or `_` are joined when 3+ of them are letters. If the run uses only one of `.` `-` `_`, its spaces stay as word breaks and each space-separated part is joined. If it mixes them, the spaces go too. Then runs of 3+ words joined by `-` `_` `.` `/` `,` are split with spaces when 2+ parts hold a letter.
     5. Letters spaced one space apart are joined.
     6. Leet is reversed in tokens with 2+ letters and no `2`, `6` or `9`. Hex and unicode escapes, `$(` and 20+ character base64 runs are left alone.
   - Tier 1 also joins letters split by a line break before matching. The shared copy keeps line breaks, since Tier 2 splits sentences on them.

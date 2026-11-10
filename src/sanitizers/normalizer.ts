@@ -174,8 +174,22 @@ export function foldConfusables(text: string): string {
 	});
 }
 
-// 3+ single characters split by one space . - or _ ("i.g n-o r.e"); joined when 3+ are letters.
+// 3+ single characters split by one space . - or _ ("i.g n-o r.e").
 const SPACED_CHARS_RE = /(?<![A-Za-z0-9@$])[A-Za-z0-9@$](?:[ ._-][A-Za-z0-9@$]){2,}(?![A-Za-z0-9@$])/g;
+
+/**
+ * Join a run of spaced-out characters when 3+ are letters. With one punctuation mark
+ * ("I.g.n.o.r.e a.l.l") spaces are word breaks; with several mixed ("i.g n-o r.e")
+ * they are part of the scrambling.
+ */
+function joinSpacedChars(run: string): string {
+	if (!/[A-Za-z](.*[A-Za-z]){2}/.test(run)) return run;
+	if (new Set(run.replace(/[^._-]/g, "")).size > 1) return run.replace(/[ ._-]/g, "");
+	return run
+		.split(" ")
+		.map((w) => w.replace(/[._-]/g, ""))
+		.join(" ");
+}
 
 /**
  * Join spaced-out letters ("i.g n-o r.e" → "ignore"), then split runs of 3+ words joined
@@ -185,7 +199,7 @@ const SPACED_CHARS_RE = /(?<![A-Za-z0-9@$])[A-Za-z0-9@$](?:[ ._-][A-Za-z0-9@$]){
 export function normalizeWordSeparators(text: string): string {
 	if (!text) return text;
 	return text
-		.replace(SPACED_CHARS_RE, (m) => (/[A-Za-z](.*[A-Za-z]){2}/.test(m) ? m.replace(/[ ._-]/g, "") : m))
+		.replace(SPACED_CHARS_RE, joinSpacedChars)
 		.replace(/(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[-_./,][A-Za-z0-9]+){2,}(?![A-Za-z0-9])/g, (m) => {
 			const parts = m.split(/[-_./,]/);
 			// Digit-only runs (dates, zero GUIDs, versions) stay as they are.

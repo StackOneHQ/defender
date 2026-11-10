@@ -571,7 +571,8 @@ describe("normalizeWordSeparators", () => {
 		expect(normalizeWordSeparators("you.are.now")).toBe("you are now");
 	});
 
-	it("joins 3+ spaced-out letters with mixed separators", () => {
+	it("joins spaced-out letters; spaces are word breaks unless separators are mixed", () => {
+		expect(normalizeWordSeparators("I.g.n.o.r.e a.l.l")).toBe("Ignore all");
 		expect(normalizeWordSeparators("i.g n-o r.e")).toBe("ignore");
 	});
 
