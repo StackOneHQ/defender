@@ -2047,11 +2047,7 @@ export class PromptDefense {
 							refused: verdict.refused === true,
 							unreviewedChunks: chunkFailures + abortedChunks,
 						}
-					: {
-							ran: false,
-							errored: chunkFailures > 0 || payloadError,
-							skipReason: skipReason ?? "Tier 3 skipped",
-						},
+					: { ran: false, errored: chunkFailures > 0, skipReason: skipReason ?? "Tier 3 skipped" },
 				toolName,
 			});
 			decidedBy = d === "default" ? "options" : "policy";
