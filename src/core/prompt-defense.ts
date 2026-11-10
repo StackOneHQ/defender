@@ -2078,9 +2078,9 @@ export class PromptDefense {
 			}
 			if (notes.length > 0) meta.note = notes.join("; ");
 		}
-		// An unreadable payload (payloadError) wasn't scanned, so it raises no risk level; strict mode
-		// still blocks it through `allowed`.
-		const riskLevel: RiskLevel = blocked ? "high" : "low";
+		// An unreadable payload (payloadError) wasn't reviewed, so only what Tier 1 detected counts;
+		// strict mode still blocks it through `allowed`.
+		const riskLevel: RiskLevel = blocked ? "high" : payloadError && detections.length > 0 ? tier1RiskLevel : "low";
 		// Invariant: blockHighRisk:false always allows. In strict mode, fail closed when the payload
 		// couldn't be serialized (payloadError) or an onOversize policy blocked (oversizeBlock).
 		const allowed = !this.config.blockHighRisk || (!blocked && !payloadError);
@@ -2117,7 +2117,7 @@ export class PromptDefense {
 			fieldsSanitized: [],
 			patternsByField: {},
 			detectedFieldCount: 0,
-			tier2SkipReason: reason,
+			tier2SkipReason: redactErrorText(reason),
 			fieldsDropped: [],
 			coverageDegraded: true,
 			latencyMs: performance.now() - startTime,
