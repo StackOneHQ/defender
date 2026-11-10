@@ -348,6 +348,20 @@ describe("SFE preprocessor", () => {
 			expect(result.allowed).toBe(true);
 		});
 
+		it.each([
+			["accent-composed text that normalises below minTextLength", "Cafe\u0301 cafe\u0301"],
+			["a whitespace-only string", " ".repeat(20)],
+		])("falls back when the only kept text is %s", async (_name, status) => {
+			const defense = createPromptDefense({
+				enableTier1: false,
+				blockHighRisk: true,
+				useSfe: { predictor: dropNotes },
+			});
+			const result = await defense.defendToolResult({ status, notes: injection }, "test_tool");
+			expect(result.sfeFallback).toBe(true);
+			expect(result.allowed).toBe(false);
+		});
+
 		it("does not score whitespace-only strings", async () => {
 			const defense = createPromptDefense({ enableTier1: false, useSfe: { predictor: dropAll } });
 			const result = await defense.defendToolResult({ notes: " ".repeat(20) }, "test_tool");

@@ -74,6 +74,28 @@
 			}
 		},
 		{
+			"id": "normalised-short-kept-falls-back",
+			"description": "The kept string is long enough raw but below minTextLength after Tier 2's normalisation: the fallback runs.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"status": "Café café",
+					"notes": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"notes"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"notes"
+				],
+				"sfeFallback": true,
+				"tier2SkipReason": null
+			}
+		},
+		{
 			"id": "cjk-falls-back",
 			"description": "Text without ASCII spaces is still scored.",
 			"requiresTier2": true,

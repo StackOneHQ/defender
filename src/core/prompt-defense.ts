@@ -2296,22 +2296,38 @@ export class PromptDefense {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
-					// SFE kept nothing Tier 2 would score: score the original rather than pass it unscanned.
-					// Skip ASCII tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
-					const minLen = this.tier2Classifier?.getConfig().minTextLength ?? 0;
-					if (fieldsDropped.length > 0 && !strings.some((s) => s.length >= minLen)) {
-						const fallback = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => {
-							const t = s.trim();
-							return t.length >= minLen && !ASCII_TOKEN_RE.test(t);
-						});
-						if (fallback.length > 0) {
-							strings = fallback;
-							sfeFallback = true;
-						}
-					}
 				} catch (err) {
 					payloadError = true;
 					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
+				}
+			}
+
+			// SFE kept nothing Tier 2 would score: score the original rather than pass it unscanned.
+			// Decided on prepared chunks, so the classifier's own normalisation and length rules apply.
+			// Skip ASCII tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
+			const tPrepStart = performance.now();
+			let prepared: Awaited<ReturnType<Tier2Classifier["prepareChunks"]>>[] | undefined;
+			if (tier2Ready && !payloadError && fieldsDropped.length > 0 && this.tier2Classifier) {
+				const tier2 = this.tier2Classifier;
+				const kept = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
+				prepared = kept;
+				if (kept.every((p, i) => p.skipped || strings[i].trim() === "")) {
+					let fallback: string[] = [];
+					try {
+						fallback = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => {
+							const t = s.trim();
+							return t !== "" && !ASCII_TOKEN_RE.test(t);
+						});
+					} catch (err) {
+						payloadError = true;
+						tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
+					}
+					const fallbackPrepared = await Promise.all(fallback.map((s) => tier2.prepareChunks(s)));
+					if (fallbackPrepared.some((p) => !p.skipped)) {
+						strings = fallback;
+						prepared = fallbackPrepared;
+						sfeFallback = true;
+					}
 				}
 			}
 
@@ -2335,8 +2351,7 @@ export class PromptDefense {
 
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
-				const tPrepStart = performance.now();
-				const preps = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
+				const preps = prepared ?? (await Promise.all(strings.map((s) => tier2.prepareChunks(s))));
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();
