@@ -162,17 +162,24 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
  * console.log(result.score); // 0.95 (high = likely injection)
  * ```
  */
-/** WordPiece vocabulary per model directory, read from its `tokenizer.json` once. */
-const _vocabCache = new Map<string, Set<string>>();
+/**
+ * WordPiece vocabulary per model directory, read from its `tokenizer.json` once. `null` when the
+ * model has no WordPiece tokenizer: the leet gate then can't count tokens and is skipped.
+ */
+const _vocabCache = new Map<string, Set<string> | null>();
 
-function wordPieceVocab(modelDir: string): Set<string> {
-	let vocab = _vocabCache.get(modelDir);
-	if (!vocab) {
-		const tokenizer = JSON.parse(readFileSync(resolve(modelDir, "tokenizer.json"), "utf8"));
-		vocab = new Set(Object.keys(tokenizer.model.vocab));
+function wordPieceVocab(modelDir: string): Set<string> | null {
+	if (!_vocabCache.has(modelDir)) {
+		let vocab: Set<string> | null = null;
+		try {
+			const model = JSON.parse(readFileSync(resolve(modelDir, "tokenizer.json"), "utf8")).model;
+			if (model?.type === "WordPiece") vocab = new Set(Object.keys(model.vocab));
+		} catch {
+			// No readable tokenizer.json: decode leet as Tier 1 does.
+		}
 		_vocabCache.set(modelDir, vocab);
 	}
-	return vocab;
+	return _vocabCache.get(modelDir) ?? null;
 }
 
 /**
@@ -211,12 +218,15 @@ export function countWordPieces(word: string, vocab: Set<string>): number {
  * Unlike Tier 1's copy, URLs and emails keep their separators, and a leet token is decoded
  * only when the model reads it in at most half the tokens ("1gn0r3" → "ignore", while
  * "8a1c" stays): decoded IDs and split-up URLs read as words the model never saw there.
+ * A model without a WordPiece tokenizer gets every leet token decoded.
  */
 export function normalizeForClassification(text: string, modelDir = getDefaultModelPath()): string {
 	const vocab = wordPieceVocab(modelDir);
 	return normalizeForDetection(stripBoundaryPatterns(normalizeUnicode(text)), {
 		keepLinks: true,
-		leetGate: (token, decoded) => 2 * countWordPieces(decoded, vocab) <= countWordPieces(token, vocab),
+		leetGate: vocab
+			? (token, decoded) => 2 * countWordPieces(decoded, vocab) <= countWordPieces(token, vocab)
+			: undefined,
 	}).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
 }
 
