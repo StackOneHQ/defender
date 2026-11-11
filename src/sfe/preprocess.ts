@@ -184,9 +184,7 @@ interface Field {
 	/** The leaf's container and key. A drop removes this leaf only, not its siblings in other elements. */
 	parent: object;
 	key: string | number;
-	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
-	valueTruncated: string;
 	depth: number;
 }
 
@@ -228,14 +226,11 @@ function extractFields(
 		}
 	} else {
 		const vt = valueType(obj);
-		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
 		out.push({
 			rawPath: path,
 			parent,
 			key,
-			value: obj,
 			valueType: vt,
-			valueTruncated: truncated,
 			depth,
 		});
 	}
@@ -243,14 +238,15 @@ function extractFields(
 }
 
 /**
- * Encode a field into the text format the FastText model was trained on.
- * Must match `record_to_text()` in solaris-labels/modal_validate_fasttext.py.
+ * Encode a field into the text format the FastText model was trained on. Must match
+ * `to_text()` in solaris-labels/modal_train_path_model.py (semantic-field-extractor).
+ * The value is left out on purpose: whether a field is writable belongs to the field, and
+ * an attacker controls the value, so reading it let them make a writable field look like
+ * system data.
  */
 function fieldToText(f: Field): string {
 	const pathTokens = f.rawPath.replace(/[._-]/g, " ");
-	const val = f.valueTruncated.slice(0, 200);
-	const text = `${f.valueType} d${f.depth} ${pathTokens} ${val}`;
-	return text.replace(/[\r\n]/g, " ");
+	return `${f.valueType} d${f.depth} ${pathTokens}`.replace(/[\r\n]/g, " ");
 }
 
 type DropMap = Map<object, Set<string | number>>;
