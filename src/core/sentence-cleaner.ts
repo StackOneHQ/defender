@@ -30,7 +30,7 @@ async function cleanField(raw: string, tier2: Tier2Classifier, opts: SentenceCle
 	// as one sentence — leave it untouched; the verdict/`allowed` still gates it.
 	if (sentences.length <= 1) return raw;
 	// Score what Tier 2 scored: the normalised text.
-	const scores = await tier2.classifyChunksBatch(sentences.map(normalizeForClassification));
+	const scores = await tier2.classifyChunksBatch(sentences.map((s) => normalizeForClassification(s)));
 	const isHighRisk = (i: number) => (scores[i] ?? 0) >= opts.highRiskThreshold;
 	// Nothing dropped — return the field verbatim, never a reconstruction (a
 	// rebuilt join can differ from the original and report a spurious change).

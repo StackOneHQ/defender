@@ -22,6 +22,7 @@ import {
 	type Tier3PromptTemplate,
 	type Tier3Provider,
 } from "../src/index";
+import { normalizeForClassification } from "../src/classifiers/tier2-classifier";
 import { normalizeForDetection } from "../src/sanitizers/normalizer";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance");
@@ -215,7 +216,11 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 			{ notes: input.text },
 			"test_tool",
 		);
-		return { normalised: normalizeForDetection(input.text), tier1Patterns: [...r.detections].sort() };
+		return {
+			normalised: normalizeForDetection(input.text),
+			tier2Text: normalizeForClassification(input.text),
+			tier1Patterns: [...r.detections].sort(),
+		};
 	},
 };
 

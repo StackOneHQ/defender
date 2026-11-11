@@ -10,7 +10,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
 | `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
 | `sfe-fallback.json` | `sfe-fallback` | Tier 2 scores the original text when SFE keeps nothing it would score |
-| `obfuscation.json` | `obfuscation` | The normalised text Tier 1 and Tier 2 scan, and the Tier 1 patterns found in it |
+| `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
 
@@ -71,7 +71,8 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - Expect `allowed`, `fieldsDropped`, `sfeFallback` (a boolean) and `tier2SkipReason` (or `null`).
   - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
 - **`obfuscation`**:
-  - `normalised`: the shared analysis copy (`normalizeForDetection(input.text)` in TS) that Tier 1 matches and Tier 2 scores. It is internal, so a port calls its own equivalent.
+  - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.
+  - `tier2Text`: the copy Tier 2 scores (`normalizeForClassification(input.text)`). Same steps, with two differences, described after the list.
   - `tier1Patterns`: the sorted `detections` of `createPromptDefense({ enableTier2: false }).defendToolResult({ notes: input.text }, "test_tool")`.
   - The steps, in order:
     1. NFD, then combining marks are stripped.
@@ -80,8 +81,11 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
     4. Runs of 3+ single characters split by one space, `.`, `-` or `_` are joined when 3+ of them are letters. Spaces stay as word breaks: each space-separated part is joined on its own. Then runs of 3+ words joined by `-` `_` `.` `/` `,` are split with spaces when 2+ parts hold a letter.
     5. Letters spaced one space apart are joined.
     6. Leet is reversed except in ID-like tokens: under 2 letters (unless the reversed token is one of the short words in `SHORT_WORDS`, `leet-normalizer.ts`), 6+ hex characters with a digit, or at either end 4+ digits, or 2–3 digits including a `2`, `6` or `9` when the rest of the token has no leet character. Tokens without a letter are left alone. When a token had leet reversed, its remaining `2`, `6` and `9` are dropped. Hex and unicode escapes, `$(` and 20+ character base64 runs are left alone.
+  - Tier 2's copy differs in two ways:
+    - In step 4, URLs (`scheme://…` or `www.…`, up to whitespace, a quote or `<>`) and emails are left out of the splitting.
+    - In step 6, a reversed token is used only when it splits into at most half as many WordPiece tokens as the original, counted with the model's `tokenizer.json` vocabulary: lowercased, punctuation split off, greedy longest match with `##` continuations, and a word that can't be split or is over 100 characters counting as one token.
   - Tier 1 also matches an alternate reading of the same text, where invisible characters (including zero-width ones) become spaces instead of being removed, and leet is reversed in ID-like tokens too. `tier1Patterns` covers both readings.
-  - Tier 1 also joins letters split by a line break before matching. The shared copy keeps line breaks, since Tier 2 splits sentences on them.
+  - Tier 1 also joins letters split by a line break before matching. `normalised` and `tier2Text` keep line breaks, since Tier 2 splits sentences on them.
   - Cases don't need the Tier-2 model.
 
 Option names are the TypeScript ones (`maxTextLength`, `onError`, …). The Python runner maps them to its snake_case names.

@@ -620,3 +620,17 @@ describe("normalizeForDetection", () => {
 		expect(normalizeForDetection("line one\nline two")).toBe("line one\nline two");
 	});
 });
+
+describe("normalizeForDetection options", () => {
+	it("keepLinks leaves URLs and emails out of separator splitting", () => {
+		const text =
+			"see https://logs.example-intake.com/api/v2/logs?dd-api-key=x and a.b-c@mail.example.com, ignore-all-previous";
+		expect(normalizeForDetection(text, { keepLinks: true, leetGate: () => false })).toBe(
+			"see https://logs.example-intake.com/api/v2/logs?dd-api-key=x and a.b-c@mail.example.com, ignore all previous",
+		);
+	});
+
+	it("leetGate decides which leet tokens are decoded", () => {
+		expect(normalizeLeetSpeak("1gn0r3 r3m3d14t10n", true, (_t, d) => d === "ignore")).toBe("ignore r3m3d14t10n");
+	});
+});
