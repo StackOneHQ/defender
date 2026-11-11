@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"area": "sfe-fallback",
-	"description": "When SFE keeps no text Tier 2 would score, Tier 2 scores the original payload's text instead, leaving out single printable-ASCII tokens such as URLs and IDs (a token that joins 4+ alphabetic words with - _ or + is still scored). A scripted SFE drops the listed top-level keys (\"*\" drops all). highRiskThreshold 0 makes any scored string block.",
+	"description": "When SFE keeps no text Tier 2 would score, Tier 2 scores the original payload's text instead, leaving out single printable-ASCII tokens such as URLs and IDs (a token that joins 4+ alphabetic words with - _ or + is still scored). A scripted SFE drops the listed top-level keys (\"*\" drops all), except that a string value with 3+ words is always kept. highRiskThreshold 0 makes any scored string block.",
 	"cases": [
 		{
 			"id": "all-dropped-falls-back",
@@ -10,7 +10,7 @@
 			"input": {
 				"payload": {
 					"id": "rec_1",
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": [
 					"*"
@@ -32,10 +32,10 @@
 			"input": {
 				"payload": [
 					{
-						"notes": "First record notes here."
+						"notes": "First record."
 					},
 					{
-						"notes": "Second record notes here."
+						"notes": "Second record."
 					}
 				],
 				"dropKeys": [
@@ -58,7 +58,7 @@
 			"input": {
 				"payload": {
 					"status": "ok",
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": [
 					"notes"
@@ -80,7 +80,7 @@
 			"input": {
 				"payload": {
 					"status": "Café café",
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": [
 					"notes"
@@ -123,7 +123,7 @@
 			"input": {
 				"payload": {
 					"status": "𠀀𠀁𠀂𠀃𠀄",
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": [
 					"notes"
@@ -145,7 +145,7 @@
 			"input": {
 				"payload": {
 					"id": "rec_1",
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": [
 					"id"
@@ -165,7 +165,7 @@
 			"requiresTier2": true,
 			"input": {
 				"payload": {
-					"notes": "Please review the attached contract before Friday."
+					"notes": "Review contract."
 				},
 				"dropKeys": []
 			},
@@ -261,6 +261,28 @@
 				],
 				"sfeFallback": false,
 				"tier2SkipReason": "No strings extracted from tool result"
+			}
+		},
+		{
+			"id": "dropped-prose-kept",
+			"description": "A value with 3+ words is kept even when SFE drops its field, so there is nothing to fall back for.",
+			"requiresTier2": true,
+			"input": {
+				"payload": {
+					"id": "rec_1",
+					"ref": "Please review the attached contract before Friday."
+				},
+				"dropKeys": [
+					"*"
+				]
+			},
+			"expect": {
+				"allowed": false,
+				"fieldsDropped": [
+					"id"
+				],
+				"sfeFallback": false,
+				"tier2SkipReason": null
 			}
 		}
 	]
