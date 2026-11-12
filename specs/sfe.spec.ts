@@ -331,6 +331,12 @@ describe("SFE preprocessor", () => {
 			expect(await dropped(value)).toEqual([]);
 		});
 
+		it("stays fast on a 10M-character joined token", async () => {
+			const start = performance.now();
+			expect(await dropped("a-".repeat(5_000_000))).toEqual(["v"]);
+			expect(performance.now() - start).toBeLessThan(1000);
+		});
+
 		it("scores a short injection in a field the model drops", async () => {
 			const defense = createPromptDefense({
 				enableTier1: false,

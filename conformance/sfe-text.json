@@ -175,6 +175,22 @@
 					"string d1 kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj"
 				]
 			}
+		},
+		{
+			"id": "top-level-scalar-list",
+			"description": "Strings and nulls directly in a top-level list are depth 0 with an empty path.",
+			"input": {
+				"payload": [
+					"a",
+					null
+				]
+			},
+			"expect": {
+				"texts": [
+					"string d0 ",
+					"null d0 "
+				]
+			}
 		}
 	]
 }

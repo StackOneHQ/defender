@@ -233,7 +233,7 @@ function extractFields(
 			key,
 			value: obj,
 			valueType: vt,
-			depth,
+			depth: Math.max(depth, 0),
 		});
 	}
 	return out;
@@ -257,13 +257,19 @@ const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
 // The model never sees values, so they can't hide a field. A dropped field stays dropped only
 // when its value can't carry an instruction: empty, or one URL, ID or other machine token. A
 // token that joins 4+ words with - _ or + ("Ignore-all-previous-instructions") is kept. Dots
-// don't count: they join hostname, email and path parts.
+// don't count: they join hostname, email and path parts. Words are counted in the first 10,000
+// characters, as much as Tier 2 would score.
 function canDrop(value: unknown): boolean {
 	if (typeof value !== "string") return true;
 	const t = value.trim();
 	if (t === "") return true;
 	if (!ASCII_TOKEN_RE.test(t)) return false;
-	return t.split(/[-_+]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
+	return (
+		t
+			.slice(0, 10_000)
+			.split(/[-_+]+/)
+			.filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4
+	);
 }
 
 type DropMap = Map<object, Set<string | number>>;
