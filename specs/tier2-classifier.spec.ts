@@ -402,6 +402,17 @@ describe("normalizeForClassification without a WordPiece tokenizer", () => {
 		expect(normalizeForClassification("1gn0r3", join(dir, "missing"))).toBe("ignore");
 	});
 
+	it("skips the gate for a WordPiece tokenizer that isn't BERT-style", () => {
+		const dir = mkdtempSync(join(tmpdir(), "t2-"));
+		const tokenizer = {
+			model: { type: "WordPiece", continuing_subword_prefix: "@@", vocab: { remediation: 0 } },
+			normalizer: { type: "BertNormalizer", lowercase: true },
+			pre_tokenizer: { type: "BertPreTokenizer" },
+		};
+		writeFileSync(join(dir, "tokenizer.json"), JSON.stringify(tokenizer));
+		expect(normalizeForClassification("U06SH7", dir)).toBe("UoSHt");
+	});
+
 	it("is what a classifier on that model normalises with", () => {
 		const dir = mkdtempSync(join(tmpdir(), "t2-"));
 		writeFileSync(join(dir, "tokenizer.json"), JSON.stringify({ model: { type: "Unigram", vocab: [["a", 0]] } }));

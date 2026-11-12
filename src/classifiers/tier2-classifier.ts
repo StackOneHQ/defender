@@ -163,8 +163,8 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
  * ```
  */
 /**
- * WordPiece vocabulary per model directory, read from its `tokenizer.json` once. `null` when the
- * model has no WordPiece tokenizer: the leet gate then can't count tokens and is skipped.
+ * WordPiece vocabulary per model directory, read from its `tokenizer.json` once. `null` unless the
+ * tokenizer is BERT-style WordPiece, the one `countWordPieces` mirrors: the leet gate is then skipped.
  */
 const _vocabCache = new Map<string, Set<string> | null>();
 
@@ -172,8 +172,17 @@ function wordPieceVocab(modelDir: string): Set<string> | null {
 	if (!_vocabCache.has(modelDir)) {
 		let vocab: Set<string> | null = null;
 		try {
-			const model = JSON.parse(readFileSync(resolve(modelDir, "tokenizer.json"), "utf8")).model;
-			if (model?.type === "WordPiece") vocab = new Set(Object.keys(model.vocab));
+			const { model, normalizer, pre_tokenizer } = JSON.parse(
+				readFileSync(resolve(modelDir, "tokenizer.json"), "utf8"),
+			);
+			const bert =
+				model?.type === "WordPiece" &&
+				(model.continuing_subword_prefix ?? "##") === "##" &&
+				(model.max_input_chars_per_word ?? 100) === 100 &&
+				normalizer?.type === "BertNormalizer" &&
+				normalizer.lowercase === true &&
+				pre_tokenizer?.type === "BertPreTokenizer";
+			if (bert) vocab = new Set(Object.keys(model.vocab));
 		} catch {
 			// No readable tokenizer.json: decode leet as Tier 1 does.
 		}
