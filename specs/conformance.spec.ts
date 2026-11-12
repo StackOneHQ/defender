@@ -185,9 +185,9 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 		};
 	},
 
-	// payload + scripted SFE drops → whether Tier 2 scored it. highRiskThreshold 0 makes any scored
-	// string block, so the outcome doesn't depend on model scores.
-	"sfe-fallback": async (input) => {
+	// payload + scripted SFE drops → which fields SFE dropped and whether Tier 2 scored the rest.
+	// highRiskThreshold 0 makes any scored string block, so the outcome doesn't depend on model scores.
+	"sfe-floor": async (input) => {
 		const drop = new Set<string>(input.dropKeys);
 		const predict = async (text: string) => {
 			const key = text.split(" ")[2];
@@ -205,7 +205,6 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 		return {
 			allowed: r.allowed,
 			fieldsDropped: r.fieldsDropped,
-			sfeFallback: r.sfeFallback === true,
 			tier2SkipReason: r.tier2SkipReason ?? null,
 		};
 	},

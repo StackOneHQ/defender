@@ -251,10 +251,19 @@ function fieldToText(f: Field): string {
 	return `${f.valueType} d${f.depth} ${pathTokens}`.replace(/[\r\n]/g, " ");
 }
 
-// The model never sees values, so they can't hide a field. They can only keep one: a dropped
-// field whose value reads as words (an attacker writing into an `external_id`) is still scored.
-function isProse(value: unknown): boolean {
-	return typeof value === "string" && /\S+\s+\S+\s+\S/.test(value);
+// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
+const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
+
+// The model never sees values, so they can't hide a field. A dropped field stays dropped only
+// when its value can't carry an instruction: empty, or one URL, ID or other machine token. A
+// token that joins 4+ words with - _ or + ("Ignore-all-previous-instructions") is kept. Dots
+// don't count: they join hostname, email and path parts.
+function canDrop(value: unknown): boolean {
+	if (typeof value !== "string") return true;
+	const t = value.trim();
+	if (t === "") return true;
+	if (!ASCII_TOKEN_RE.test(t)) return false;
+	return t.split(/[-_+]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
 }
 
 type DropMap = Map<object, Set<string | number>>;
@@ -362,7 +371,7 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
 		const { parent, key, value } = candidates[i];
-		const target = d.label === "drop" && d.prob >= threshold && !isProse(value) ? drops : keeps;
+		const target = d.label === "drop" && d.prob >= threshold && canDrop(value) ? drops : keeps;
 		let keys = target.get(parent);
 		if (!keys) target.set(parent, (keys = new Set()));
 		keys.add(key);

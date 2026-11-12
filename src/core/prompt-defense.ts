@@ -148,11 +148,6 @@ export interface DefenseResult {
 	 */
 	fieldsDropped: string[];
 	/**
-	 * True when SFE kept no text Tier 2 would score, so Tier 2 scored the original payload's text
-	 * instead (single ASCII tokens such as URLs and IDs excluded). Absent otherwise.
-	 */
-	sfeFallback?: boolean;
-	/**
 	 * Tier 3 verdict, present when Tier 3 ran on this call (cascade gray-band
 	 * escalation OR tier3_only mode). The verdict is authoritative: in
 	 * cascade mode it overrides Tier 2's allow/block on the escalated chunk;
@@ -229,17 +224,6 @@ export interface DefenseResult {
 		blockingChunk?: number;
 		oversize?: boolean;
 	};
-}
-
-// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
-const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
-
-// A URL, ID or other single token, unless it joins several words with - _ or +
-// ("Ignore-all-previous-instructions", "IGNORE_ALL_...", a "+"-joined query string).
-// Dots don't count: they join hostname, email and path parts.
-function isMachineToken(t: string): boolean {
-	if (!ASCII_TOKEN_RE.test(t)) return false;
-	return t.split(/[-_+]+/).filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4;
 }
 
 /**
@@ -2192,7 +2176,6 @@ export class PromptDefense {
 		// operate on the original value so no data is lost downstream.
 		let sfeFilteredValue: unknown = value;
 		let fieldsDropped: string[] = [];
-		let sfeFallback = false;
 		if (this.sfeEnabled) {
 			try {
 				const predictor = this.sfeCustomPredictor ?? (await getDefaultPredictor());
@@ -2311,34 +2294,7 @@ export class PromptDefense {
 				}
 			}
 
-			// SFE kept nothing Tier 2 would score: score the original rather than pass it unscanned.
-			// Decided on prepared chunks, so the classifier's own normalisation and length rules apply.
-			// Skip machine tokens (URLs, IDs): SFE is right to drop them and Tier 2 scores some high.
 			const tPrepStart = performance.now();
-			let prepared: Awaited<ReturnType<Tier2Classifier["prepareChunks"]>>[] | undefined;
-			if (tier2Ready && !payloadError && fieldsDropped.length > 0 && this.tier2Classifier) {
-				const tier2 = this.tier2Classifier;
-				const kept = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
-				prepared = kept;
-				if (kept.every((p, i) => p.skipped || strings[i].trim() === "")) {
-					let fallback: string[] = [];
-					try {
-						fallback = extractStrings(value, fieldsForTier2, depthFlag).filter((s) => {
-							const t = s.trim();
-							return t !== "" && !isMachineToken(t);
-						});
-					} catch (err) {
-						payloadError = true;
-						tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
-					}
-					const fallbackPrepared = await Promise.all(fallback.map((s) => tier2.prepareChunks(s)));
-					if (fallbackPrepared.some((p) => !p.skipped)) {
-						strings = fallback;
-						prepared = fallbackPrepared;
-						sfeFallback = true;
-					}
-				}
-			}
 
 			if (strings.length > 0) {
 				// Per-string classification with BATCHED inference.
@@ -2360,7 +2316,7 @@ export class PromptDefense {
 
 				// Phase 1: compute chunks per string (warmup + tokenize + pack),
 				// track where each string's chunks live in the flat chunk array.
-				const preps = prepared ?? (await Promise.all(strings.map((s) => tier2.prepareChunks(s))));
+				const preps = await Promise.all(strings.map((s) => tier2.prepareChunks(s)));
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();
@@ -2773,7 +2729,6 @@ export class PromptDefense {
 			...(tier2Available !== undefined ? { tier2Available } : {}),
 			maxSentence,
 			fieldsDropped,
-			...(sfeFallback ? { sfeFallback } : {}),
 			// Conditionally include the `tier3` key so consumers can use
 			// `"tier3" in result` as a "Tier 3 ran" check, matching the
 			// DefenseResult docstring. An always-present-but-undefined key
