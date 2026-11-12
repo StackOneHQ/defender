@@ -10,6 +10,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
 | `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
 | `sfe-floor.json` | `sfe-floor` | Which string values SFE may drop: only empty values and single machine tokens |
+| `sfe-text.json` | `sfe-text` | The exact text SFE sends its model for each field, which must match the training input |
 | `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
@@ -70,6 +71,9 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - SFE keeps a field the predictor drops unless its value is not a string, or, trimmed, is empty or only printable ASCII (U+0021–U+007E). Even then it is kept when splitting on runs of `-`, `_` and `+` gives 4 or more parts that are 2+ ASCII letters only. The model reads only paths, so a value can keep its field but never hide it.
   - Expect `allowed`, `fieldsDropped` and `tier2SkipReason` (or `null`).
   - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
+- **`sfe-text`**:
+  - Call `sfePreprocess(input.payload, { predictor })` with a predictor that records every text it is asked about and keeps every field.
+  - Expect `texts`: the recorded texts, in order.
 - **`obfuscation`**:
   - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.
   - `tier2Text`: the copy Tier 2 scores (`normalizeForClassification(input.text)`). Same steps, with two differences, described after the list.

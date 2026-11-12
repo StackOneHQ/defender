@@ -198,14 +198,14 @@ function extractFields(
 	obj: unknown,
 	depthFlag: { hit: boolean },
 	path = "",
-	depth = 0,
+	depth = -1,
 	stackDepth = 0,
 	parent: object = {},
 	key: string | number = "",
 ): Field[] {
 	// `depth` is the semantic field-path depth fed into the FastText model
-	// (must match the training script's counting — arrays don't count as a
-	// level of nesting). `stackDepth` counts actual recursive calls for
+	// (must match the training script's counting: top-level keys are 0, and
+	// arrays don't count as a level of nesting). `stackDepth` counts actual recursive calls for
 	// stack-safety; it increments on arrays too, so a pathological
 	// [[[[...]]]] payload still trips the cap.
 	if (stackDepth > MAX_TRAVERSAL_DEPTH) {

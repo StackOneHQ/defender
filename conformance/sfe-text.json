@@ -1,0 +1,180 @@
+{
+	"version": 1,
+	"area": "sfe-text",
+	"description": "The text SFE sends the model for each string or null field: `{type} d{depth} {path}`, where top-level keys are depth 0, lists add no depth or index, and `.`, `_`, `-`, CR and LF in the path become spaces. The value is never included. This must match the training input exactly.",
+	"cases": [
+		{
+			"id": "top-level-depth-0",
+			"description": "Top-level keys are depth 0.",
+			"input": {
+				"payload": {
+					"id": "x",
+					"notes": "y"
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 id",
+					"string d0 notes"
+				]
+			}
+		},
+		{
+			"id": "nested",
+			"input": {
+				"payload": {
+					"a": {
+						"b": {
+							"c": "y"
+						}
+					}
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d2 a b c"
+				]
+			}
+		},
+		{
+			"id": "list-of-objects",
+			"description": "Lists add no depth and no index; each element's leaves are sent.",
+			"input": {
+				"payload": {
+					"data": [
+						{
+							"id": "x",
+							"name": "y"
+						},
+						{
+							"id": "z"
+						}
+					]
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d1 data id",
+					"string d1 data name",
+					"string d1 data id"
+				]
+			}
+		},
+		{
+			"id": "list-of-strings",
+			"input": {
+				"payload": {
+					"tags": [
+						"a",
+						"b"
+					]
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 tags",
+					"string d0 tags"
+				]
+			}
+		},
+		{
+			"id": "top-level-list",
+			"input": {
+				"payload": [
+					{
+						"id": "x"
+					}
+				]
+			},
+			"expect": {
+				"texts": [
+					"string d0 id"
+				]
+			}
+		},
+		{
+			"id": "separators",
+			"description": "`.`, `_` and `-` in the path become spaces.",
+			"input": {
+				"payload": {
+					"first_name": "x",
+					"last-name": "y",
+					"a.b": {
+						"c_d-e": "z"
+					}
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 first name",
+					"string d0 last name",
+					"string d1 a b c d e"
+				]
+			}
+		},
+		{
+			"id": "value-types",
+			"description": "Only string and null leaves are sent.",
+			"input": {
+				"payload": {
+					"s": "x",
+					"n": 1,
+					"b": true,
+					"z": null,
+					"o": {},
+					"l": []
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 s",
+					"null d0 z"
+				]
+			}
+		},
+		{
+			"id": "newline-in-key",
+			"input": {
+				"payload": {
+					"line\r\nbreak": "x"
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 line  break"
+				]
+			}
+		},
+		{
+			"id": "non-ascii-key",
+			"input": {
+				"payload": {
+					"名前": "x",
+					"𠀀key": "y"
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d0 名前",
+					"string d0 𠀀key"
+				]
+			}
+		},
+		{
+			"id": "long-path-capped",
+			"description": "A path over 256 UTF-16 units keeps its last 256.",
+			"input": {
+				"payload": {
+					"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": {
+						"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj": "x"
+					}
+				}
+			},
+			"expect": {
+				"texts": [
+					"string d1 kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj"
+				]
+			}
+		}
+	]
+}

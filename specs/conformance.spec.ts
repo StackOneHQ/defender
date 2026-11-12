@@ -19,6 +19,7 @@ import {
 	type PromptDefenseOptions,
 	parseVerdictJson,
 	type SfePredictor,
+	sfePreprocess,
 	type Tier3PromptTemplate,
 	type Tier3Provider,
 } from "../src/index";
@@ -207,6 +208,20 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 			fieldsDropped: r.fieldsDropped,
 			tier2SkipReason: r.tier2SkipReason ?? null,
 		};
+	},
+
+	// payload → the exact text SFE sends the model for each field, in order.
+	"sfe-text": async (input) => {
+		const texts: string[] = [];
+		const predictor: SfePredictor = {
+			predict: async () => ({ label: "pass", prob: 1 }),
+			predictBatch: async (batch) => {
+				texts.push(...batch);
+				return batch.map(() => ({ label: "pass" as const, prob: 1 }));
+			},
+		};
+		await sfePreprocess(input.payload, { predictor });
+		return { texts };
 	},
 
 	// text → the normalised analysis copy both tiers scan, and the Tier 1 patterns found.
