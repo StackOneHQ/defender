@@ -779,6 +779,11 @@ export class Tier2Classifier {
 		return chunks;
 	}
 
+	/** The text Tier 2 scores, normalised with this model's tokenizer. */
+	normalize(text: string): string {
+		return normalizeForClassification(text, this.modelDir);
+	}
+
 	/**
 	 * Split text into sentences for granular analysis.
 	 * Uses multiple strategies to handle various text formats.

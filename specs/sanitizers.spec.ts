@@ -630,6 +630,17 @@ describe("normalizeForDetection options", () => {
 		);
 	});
 
+	it.each([
+		["letters", "a".repeat(100_000)],
+		["dotted", "a.".repeat(50_000)],
+		["after an @", `x@${"a".repeat(100_000)}`],
+		["hyphens", "-".repeat(100_000)],
+	])("keepLinks stays linear on a long run of %s", (_name, text) => {
+		const start = performance.now();
+		normalizeForDetection(text, { keepLinks: true, leetGate: () => false });
+		expect(performance.now() - start).toBeLessThan(500);
+	});
+
 	it("leetGate decides which leet tokens are decoded", () => {
 		expect(normalizeLeetSpeak("1gn0r3 r3m3d14t10n", true, (_t, d) => d === "ignore")).toBe("ignore r3m3d14t10n");
 	});

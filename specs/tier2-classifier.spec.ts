@@ -401,6 +401,13 @@ describe("normalizeForClassification without a WordPiece tokenizer", () => {
 		expect(normalizeForClassification("1gn0r3 r3m3d14t10n", dir)).toBe("ignore remediation");
 		expect(normalizeForClassification("1gn0r3", join(dir, "missing"))).toBe("ignore");
 	});
+
+	it("is what a classifier on that model normalises with", () => {
+		const dir = mkdtempSync(join(tmpdir(), "t2-"));
+		writeFileSync(join(dir, "tokenizer.json"), JSON.stringify({ model: { type: "Unigram", vocab: [["a", 0]] } }));
+		expect(createTier2Classifier({ onnxModelPath: dir }).normalize("U06SH7")).toBe("UoSHt");
+		expect(createTier2Classifier().normalize("U06SH7")).toBe("U06SH7");
+	});
 });
 
 describe("countWordPieces", () => {

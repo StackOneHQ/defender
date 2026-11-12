@@ -223,9 +223,10 @@ const INVISIBLE_RE = /[\u00AD\u180E\u200E\u200F\u2060-\u2064\uFE00-\uFE0F]/g;
 // biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
 const ALL_INVISIBLE_RE = /[\u00AD\u180E\u200B-\u200F\u2060-\u2064\uFEFF\uFE00-\uFE0F]/g;
 
-// URLs and emails, which separator splitting would turn into prose.
+// URLs and emails, which separator splitting would turn into prose. A match starts only where
+// its run of characters starts, so a long run is scanned once, not once per position.
 const LINK_RE =
-	/((?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s"'<>]+|[A-Za-z0-9_.+-]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)/;
+	/((?<![A-Za-z0-9+.-])(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s"'<>]+|(?<![A-Za-z0-9_.+-])[A-Za-z0-9_.+-]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)/;
 
 export interface DetectionOptions {
 	/** The other reading of ambiguous text, for Tier 1: invisible characters as spaces, leet reversed in ID-like tokens too. */
