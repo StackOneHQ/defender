@@ -16,7 +16,7 @@ const defense = createPromptDefense({
   annotateBoundary: false,      // Wrap sanitized strings in [UD-{id}]...[/UD-{id}] tags (default: false)
   sanitizeContent: true,        // Enable sentence cleaning (default: true); boundary annotation is separate
   defaultRiskLevel: 'low',      // Base risk before escalation (default: 'low')
-  tier2Config: {},              // Tier 2 overrides (default: the model's calibration, single-head); e.g. { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } } turns on multi-head; { onnxThreads: 1 } limits ONNX Runtime to one thread per process (default: one per core), which helps when several processes share a machine but slows a single call on an idle one
+  tier2Config: {},              // Tier 2 overrides (default: the model's calibration, single-head); e.g. { multihead: { mainThreshold: 0.77, auxThreshold: 0.325 } } turns on multi-head; { onnxThreads: 1 } limits each Tier 2 session to one ONNX Runtime thread (default: one per core), which helps when several processes share a machine but slows a single call on an idle one
 
   // Tier 3: opt-in LLM classification. See the optional LLM review reference for full semantics.
   enableTier3: false,           // (default: false)
