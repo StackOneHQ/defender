@@ -69,8 +69,6 @@ interface DefenseResult {
 
   // SFE preprocessor output (present when `useSfe: true`; empty array otherwise)
   fieldsDropped: string[];
-  // True when SFE kept no text Tier 2 would score, so Tier 2 scored the original text instead (URLs/IDs excluded)
-  sfeFallback?: boolean;
 
   // Stack-safety guard — set when any recursive walk hit the depth limit
   truncatedAtDepth?: boolean;

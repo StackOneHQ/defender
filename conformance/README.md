@@ -9,7 +9,8 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-parse.json` | `tier3-parse` | Strict verdict parsing |
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
 | `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
-| `sfe-fallback.json` | `sfe-fallback` | Tier 2 scores the original text when SFE keeps nothing it would score |
+| `sfe-floor.json` | `sfe-floor` | Which string values SFE may drop: only empty values and single machine tokens |
+| `sfe-text.json` | `sfe-text` | The exact text SFE sends its model for each field, which must match the training input |
 | `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
@@ -64,12 +65,15 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
     - `judgeCalls`, when there is a judge: how many chunks the judge was actually called for. This pins `stopOnFirstBlock`.
   - Cases with `requiresTier2: true` need the bundled Tier-2 model. They force Tier 2's verdict with `highRiskThreshold` 0 (would block) or 1 (would allow) and escalate everything. A runner without the model may skip them, but should say so.
   - Tier-2 scores differ slightly between runtimes (around 1e-3). Keep those case texts far from scores of exactly 0 and 1, and don't add a case whose outcome depends on a score near a threshold.
-- **`sfe-fallback`**:
+- **`sfe-floor`**:
   - Build `createPromptDefense({ enableTier1: false, blockHighRisk: true, tier2Config: { highRiskThreshold: 0 }, useSfe: { predictor } })` and call `defendToolResult(input.payload, input.toolName ?? "test_tool")`.
   - The predictor is scripted: it drops a field when the third space-separated token of its SFE text (the first path token) is in `input.dropKeys`, and drops every field when `dropKeys` contains `"*"`.
-  - The fallback runs when SFE dropped a field and Tier 2 would produce no chunk for any kept string (after its own normalisation and length rules), ignoring whitespace-only strings. It then scores the original's strings, leaving out whitespace-only strings and strings that, trimmed, are only printable ASCII (U+0021–U+007E), unless splitting on runs of `-`, `_` and `+` gives 4 or more parts that are 2+ ASCII letters only. This applies only when at least one of the remaining strings produces a chunk.
-  - Expect `allowed`, `fieldsDropped`, `sfeFallback` (a boolean) and `tier2SkipReason` (or `null`).
+  - SFE keeps a field the predictor drops unless its value is not a string, or, trimmed, is empty or only printable ASCII (U+0021–U+007E). Even then it is kept when splitting on runs of `-`, `_` and `+` gives 4 or more parts that are 2+ ASCII letters only. The model reads only paths, so a value can keep its field but never hide it.
+  - Expect `allowed`, `fieldsDropped` and `tier2SkipReason` (or `null`).
   - All cases need the bundled Tier-2 model. `highRiskThreshold` 0 makes any scored string block, so outcomes don't depend on scores.
+- **`sfe-text`**:
+  - Call `sfePreprocess(input.payload, { predictor })` with a predictor that records every text it is asked about and keeps every field.
+  - Expect `texts`: the recorded texts, in order.
 - **`obfuscation`**:
   - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.
   - `tier2Text`: the copy Tier 2 scores (`normalizeForClassification(input.text)`). Same steps, with two differences, described after the list.

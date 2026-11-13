@@ -186,7 +186,6 @@ interface Field {
 	key: string | number;
 	value: unknown;
 	valueType: (typeof VALUE_TYPES)[number];
-	valueTruncated: string;
 	depth: number;
 }
 
@@ -199,14 +198,14 @@ function extractFields(
 	obj: unknown,
 	depthFlag: { hit: boolean },
 	path = "",
-	depth = 0,
+	depth = -1,
 	stackDepth = 0,
 	parent: object = {},
 	key: string | number = "",
 ): Field[] {
 	// `depth` is the semantic field-path depth fed into the FastText model
-	// (must match the training script's counting — arrays don't count as a
-	// level of nesting). `stackDepth` counts actual recursive calls for
+	// (must match the training script's counting: top-level keys are 0, and
+	// arrays don't count as a level of nesting). `stackDepth` counts actual recursive calls for
 	// stack-safety; it increments on arrays too, so a pathological
 	// [[[[...]]]] payload still trips the cap.
 	if (stackDepth > MAX_TRAVERSAL_DEPTH) {
@@ -228,29 +227,49 @@ function extractFields(
 		}
 	} else {
 		const vt = valueType(obj);
-		const truncated = obj === null || obj === undefined ? "" : String(obj).slice(0, 500);
 		out.push({
 			rawPath: path,
 			parent,
 			key,
 			value: obj,
 			valueType: vt,
-			valueTruncated: truncated,
-			depth,
+			depth: Math.max(depth, 0),
 		});
 	}
 	return out;
 }
 
 /**
- * Encode a field into the text format the FastText model was trained on.
- * Must match `record_to_text()` in solaris-labels/modal_validate_fasttext.py.
+ * Encode a field into the text format the FastText model was trained on. Must match
+ * `to_text()` in solaris-labels/modal_train_path_model.py (semantic-field-extractor).
+ * The value is left out on purpose: whether a field is writable belongs to the field, and
+ * an attacker controls the value, so reading it let them make a writable field look like
+ * system data.
  */
 function fieldToText(f: Field): string {
 	const pathTokens = f.rawPath.replace(/[._-]/g, " ");
-	const val = f.valueTruncated.slice(0, 200);
-	const text = `${f.valueType} d${f.depth} ${pathTokens} ${val}`;
-	return text.replace(/[\r\n]/g, " ");
+	return `${f.valueType} d${f.depth} ${pathTokens}`.replace(/[\r\n]/g, " ");
+}
+
+// One printable-ASCII token with no whitespace: a URL, ID or token, not prose.
+const ASCII_TOKEN_RE = /^[\x21-\x7e]+$/;
+
+// The model never sees values, so they can't hide a field. A dropped field stays dropped only
+// when its value can't carry an instruction: empty, or one URL, ID or other machine token. A
+// token that joins 4+ words with - _ or + ("Ignore-all-previous-instructions") is kept. Dots
+// don't count: they join hostname, email and path parts. Words are counted in the first 10,000
+// characters, as much as Tier 2 would score.
+function canDrop(value: unknown): boolean {
+	if (typeof value !== "string") return true;
+	const t = value.trim();
+	if (t === "") return true;
+	if (!ASCII_TOKEN_RE.test(t)) return false;
+	return (
+		t
+			.slice(0, 10_000)
+			.split(/[-_+]+/)
+			.filter((w) => /^[A-Za-z]{2,}$/.test(w)).length < 4
+	);
 }
 
 type DropMap = Map<object, Set<string | number>>;
@@ -357,8 +376,8 @@ export async function sfePreprocess<T>(value: T, options: SfePreprocessOptions =
 	const keeps: DropMap = new Map();
 	for (let i = 0; i < candidates.length; i++) {
 		const d = decisions[i];
-		const target = d.label === "drop" && d.prob >= threshold ? drops : keeps;
-		const { parent, key } = candidates[i];
+		const { parent, key, value } = candidates[i];
+		const target = d.label === "drop" && d.prob >= threshold && canDrop(value) ? drops : keeps;
 		let keys = target.get(parent);
 		if (!keys) target.set(parent, (keys = new Set()));
 		keys.add(key);
