@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.5](https://github.com/StackOneHQ/defender/compare/defender-v0.9.4...defender-v0.9.5) (2026-11-13)
+
+
+### Features
+
+* **ENG-3595:** let callers pin ONNX Runtime threads for Tier 2 ([#147](https://github.com/StackOneHQ/defender/issues/147)) ([a714c44](https://github.com/StackOneHQ/defender/commit/a714c444214a661b513fcb8d0b1e0dd78595f92b))
+* **ENG-3690:** pass the tool's connector and call arguments to Tier 3 providers ([#146](https://github.com/StackOneHQ/defender/issues/146)) ([609aa59](https://github.com/StackOneHQ/defender/commit/609aa591198b3dc0df285f4ed4378da4aeeb182d))
+
+
+### Bug Fixes
+
+* **deps:** pin @huggingface/transformers back to 3.8.1 ([#141](https://github.com/StackOneHQ/defender/issues/141)) ([5501569](https://github.com/StackOneHQ/defender/commit/550156993358df463f14d6ae85a2e3f64baf2b6c))
+* **ENG-3677:** score the payload when SFE keeps no scorable text ([#137](https://github.com/StackOneHQ/defender/issues/137)) ([11f48d6](https://github.com/StackOneHQ/defender/commit/11f48d6599088c26475e77f991b3018315348234))
+* **ENG-3677:** score word-joined tokens in the SFE fallback ([#140](https://github.com/StackOneHQ/defender/issues/140)) ([addc93b](https://github.com/StackOneHQ/defender/commit/addc93bbf93e58c07d5384662059a022961cb8f7))
+* **ENG-3867:** classify SFE fields by path, not value ([#145](https://github.com/StackOneHQ/defender/issues/145)) ([0e0bc0a](https://github.com/StackOneHQ/defender/commit/0e0bc0a57d186944e740f5f6e2032ac406e92a7d))
+* **ENG-3868:** stop Tier 2 cleanup from mangling IDs, emails and URLs ([#143](https://github.com/StackOneHQ/defender/issues/143)) ([088fe8b](https://github.com/StackOneHQ/defender/commit/088fe8b052a8ba63bc72b068b691954bac6f1556))
+* **ENG-3868:** undo obfuscation before Tier 1 and Tier 2 scan text ([#142](https://github.com/StackOneHQ/defender/issues/142)) ([621108e](https://github.com/StackOneHQ/defender/commit/621108ee7d55ac6d80c82f795eeb41f96ea7da04))
+* **ENG-4070:** report unreadable payloads as unscanned, not high risk ([#139](https://github.com/StackOneHQ/defender/issues/139)) ([1be6a62](https://github.com/StackOneHQ/defender/commit/1be6a62e2870328c76935cef809970b713d28d11))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.9.5 ([#148](https://github.com/StackOneHQ/defender/issues/148)) ([1df36fc](https://github.com/StackOneHQ/defender/commit/1df36fc98347bc269a1dafb067856ae1bc4e95e5))
+
 ## [0.9.4](https://github.com/StackOneHQ/defender/compare/defender-v0.9.3...defender-v0.9.4) (2026-10-21)
 
 
