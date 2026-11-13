@@ -185,7 +185,9 @@ export class OnnxClassifier {
 		this.modelPath = modelPath ?? getDefaultModelPath();
 		if (onnxThreads !== undefined) {
 			if (!Number.isInteger(onnxThreads) || onnxThreads < 1) {
-				throw new Error(`OnnxClassifier: onnxThreads must be a positive integer, got ${JSON.stringify(onnxThreads)}`);
+				throw new Error(
+					`OnnxClassifier: onnxThreads must be a positive integer, got ${JSON.stringify(onnxThreads)}`,
+				);
 			}
 			this.onnxThreads = onnxThreads;
 		}
