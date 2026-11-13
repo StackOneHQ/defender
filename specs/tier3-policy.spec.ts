@@ -658,6 +658,35 @@ describe("tier3.timeoutMs, cancellation and concurrency", () => {
 		expect(seen[0]).not.toHaveProperty("args");
 		expect(seen[0]).not.toHaveProperty("connector");
 	});
+
+	it("leaves out empty args and doesn't split a surrogate pair at the 2,000-character cut", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		const defense = tier3Only(provider);
+		await defense.defendToolResult({ body: "x" }, "t", { context: { args: "" } });
+		await defense.defendToolResult({ body: "x" }, "t", { context: { args: `${"a".repeat(1999)}😀` } });
+		expect(seen[0]).not.toHaveProperty("args");
+		expect(seen[1]?.args).toBe("a".repeat(1999));
+	});
+
+	it("passes connector and call args in cascade mode too", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		await cascade(provider).defendToolResult({ body: INJ }, "gmail_get_message", {
+			context: { connector: "gmail", args: { id: "m1" } },
+		});
+		expect(seen[0]).toMatchObject({ toolName: "gmail_get_message", mode: "cascade", connector: "gmail", args: '{"id":"m1"}' });
+	});
 });
 
 describe("tier3 result hygiene", () => {

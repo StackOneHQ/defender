@@ -311,7 +311,7 @@ function serializeCallArgs(args: unknown): string | undefined {
 	} catch {
 		return undefined;
 	}
-	return text === undefined ? undefined : truncate(text, MAX_CALL_ARGS_CHARS);
+	return text ? truncate(text, MAX_CALL_ARGS_CHARS) : undefined;
 }
 
 /** Copy only the caller-context fields, so a caller object can't overwrite toolName, mode or chunk. */
