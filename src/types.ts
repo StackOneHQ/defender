@@ -151,18 +151,25 @@ export interface Tier3Verdict {
 
 /**
  * Optional caller context for one `defendToolResult` call. Passed through to
- * the Tier 3 provider; defender itself does not read it. Both fields can carry
- * untrusted text (a poisoned MCP tool description, earlier untrusted turns).
+ * the Tier 3 provider; defender itself does not read it. Every field can carry
+ * untrusted text (a poisoned MCP tool description, earlier untrusted turns,
+ * arguments the agent built from earlier tool output).
  */
 export interface Tier3CallerContext {
 	/** What the user asked the agent to do. */
 	userGoal?: string;
 	/** Description of the tool that produced the result. */
 	toolDescription?: string;
+	/** The integration or server the tool belongs to. */
+	connector?: string;
+	/** The arguments of the call that produced the result. The provider gets them as a JSON string, cut to 2,000 characters. */
+	args?: unknown;
 }
 
 /** Context passed to `Tier3Provider.classify`. All fields are optional. */
-export interface Tier3Context extends Tier3CallerContext {
+export interface Tier3Context extends Omit<Tier3CallerContext, "args"> {
+	/** The call's arguments, JSON-serialized (a string argument is passed as is) and cut to 2,000 characters. */
+	args?: string;
 	toolName?: string;
 	/** Aborted at the deadline, on caller cancellation, or when the result is no longer needed. */
 	signal?: AbortSignal;

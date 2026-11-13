@@ -610,6 +610,54 @@ describe("tier3.timeoutMs, cancellation and concurrency", () => {
 			toolDescription: "reads mail",
 		});
 	});
+
+	it("passes connector and call args to the provider, args as a JSON string", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		await tier3Only(provider).defendToolResult({ body: "x" }, "gmail_list_messages", {
+			context: { connector: "gmail", args: { query: "from:alice invoice", maxResults: 10 } },
+		});
+		expect(seen[0]).toMatchObject({ connector: "gmail", args: '{"query":"from:alice invoice","maxResults":10}' });
+	});
+
+	it("passes string args as is and cuts long args to 2,000 characters", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		const defense = tier3Only(provider);
+		await defense.defendToolResult({ body: "x" }, "t", { context: { args: "id=42" } });
+		await defense.defendToolResult({ body: "x" }, "t", { context: { args: { body: "a".repeat(5000) } } });
+		expect(seen[0]?.args).toBe("id=42");
+		expect(seen[1]?.args).toHaveLength(2000);
+		expect(seen[1]?.args?.startsWith('{"body":"aaa')).toBe(true);
+	});
+
+	it("leaves out args that can't be serialized and a connector that isn't a string", async () => {
+		const seen: Tier3Context[] = [];
+		const provider: Tier3Provider = {
+			classify: async (_t, ctx) => {
+				if (ctx) seen.push(ctx);
+				return { decision: "allow" };
+			},
+		};
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		await tier3Only(provider).defendToolResult({ body: "x" }, "t", {
+			context: { args: circular, connector: 42 as unknown as string, toolDescription: "d" },
+		});
+		expect(seen[0]).toMatchObject({ toolDescription: "d" });
+		expect(seen[0]).not.toHaveProperty("args");
+		expect(seen[0]).not.toHaveProperty("connector");
+	});
 });
 
 describe("tier3 result hygiene", () => {
