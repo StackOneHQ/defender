@@ -1,4 +1,4 @@
-import { normalizeLeetSpeak } from "./leet-normalizer";
+import { type LeetGate, normalizeLeetSpeak } from "./leet-normalizer";
 
 /**
  * Unicode Normalization
@@ -223,22 +223,38 @@ const INVISIBLE_RE = /[\u00AD\u180E\u200E\u200F\u2060-\u2064\uFE00-\uFE0F]/g;
 // biome-ignore lint/suspicious/noMisleadingCharacterClass: variation selectors are matched alone, on purpose
 const ALL_INVISIBLE_RE = /[\u00AD\u180E\u200B-\u200F\u2060-\u2064\uFEFF\uFE00-\uFE0F]/g;
 
+// URLs and emails, which separator splitting would turn into prose. A match starts only where
+// its run of characters starts, so a long run is scanned once, not once per position.
+const LINK_RE =
+	/((?<![A-Za-z0-9+.-])(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s"'<>]+|(?<![A-Za-z0-9_.+-])[A-Za-z0-9_.+-]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)/;
+
+export interface DetectionOptions {
+	/** The other reading of ambiguous text, for Tier 1: invisible characters as spaces, leet reversed in ID-like tokens too. */
+	alternate?: boolean;
+	/** Leave URLs and emails out of separator splitting. */
+	keepLinks?: boolean;
+	/** Decode a leet token only when this returns true. */
+	leetGate?: LeetGate;
+}
+
 /**
  * The analysis copy both tiers scan: control characters, combining marks, unicode
  * variants, look-alikes, joined words, spaced letters and leet undone. Never returned
  * to callers.
- *
- * `alternate` gives the other reading of ambiguous text, for Tier 1: invisible characters
- * as spaces rather than removed, and leet reversed in ID-like tokens too.
  */
-export function normalizeForDetection(text: string, { alternate = false } = {}): string {
+export function normalizeForDetection(
+	text: string,
+	{ alternate = false, keepLinks = false, leetGate }: DetectionOptions = {},
+): string {
 	if (!text) return text;
 	text = text.replace(CONTROL_RE, " ");
 	text = alternate ? text.replace(ALL_INVISIBLE_RE, " ") : text.replace(INVISIBLE_RE, "");
-	return normalizeLeetSpeak(
-		collapseSpacedLetters(
-			normalizeWordSeparators(foldConfusables(normalizeUnicode(stripCombiningMarks(text.normalize("NFD"))))),
-		),
-		!alternate,
-	);
+	text = foldConfusables(normalizeUnicode(stripCombiningMarks(text.normalize("NFD"))));
+	text = keepLinks
+		? text
+				.split(LINK_RE)
+				.map((part, i) => (i % 2 ? part : normalizeWordSeparators(part)))
+				.join("")
+		: normalizeWordSeparators(text);
+	return normalizeLeetSpeak(collapseSpacedLetters(text), !alternate, leetGate);
 }

@@ -163,18 +163,86 @@ export const DEFAULT_TIER2_CLASSIFIER_CONFIG: Tier2ClassifierConfig = {
  * ```
  */
 /**
- * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload). Strips
- * spoofed boundary markers, undoes obfuscation with the normaliser Tier 1 uses, then
- * collapses decorative runs (4+ repeats of the same non-word char, like `─` or `===`) to 3:
- * one-token-per-char rule lines land off-distribution under mean pooling and score high.
+ * WordPiece vocabulary per model directory, read from its `tokenizer.json` once. `null` unless the
+ * tokenizer is BERT-style WordPiece, the one `countWordPieces` mirrors: the leet gate is then skipped.
  */
-export function normalizeForClassification(text: string): string {
-	return normalizeForDetection(stripBoundaryPatterns(normalizeUnicode(text))).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
+const _vocabCache = new Map<string, Set<string> | null>();
+
+function wordPieceVocab(modelDir: string): Set<string> | null {
+	if (!_vocabCache.has(modelDir)) {
+		let vocab: Set<string> | null = null;
+		try {
+			const { model, normalizer, pre_tokenizer } = JSON.parse(
+				readFileSync(resolve(modelDir, "tokenizer.json"), "utf8"),
+			);
+			const bert =
+				model?.type === "WordPiece" &&
+				(model.continuing_subword_prefix ?? "##") === "##" &&
+				(model.max_input_chars_per_word ?? 100) === 100 &&
+				normalizer?.type === "BertNormalizer" &&
+				normalizer.lowercase === true &&
+				pre_tokenizer?.type === "BertPreTokenizer";
+			if (bert) vocab = new Set(Object.keys(model.vocab));
+		} catch {
+			// No readable tokenizer.json: decode leet as Tier 1 does.
+		}
+		_vocabCache.set(modelDir, vocab);
+	}
+	return _vocabCache.get(modelDir) ?? null;
+}
+
+/**
+ * How many WordPiece tokens the model's tokenizer splits a word into: lowercased, punctuation
+ * split off, greedy longest match. A word it can't split (or over 100 chars) is one unknown token.
+ */
+export function countWordPieces(word: string, vocab: Set<string>): number {
+	let count = 0;
+	for (const part of word.toLowerCase().split(/([^a-z0-9])/)) {
+		if (!part) continue;
+		if (part.length > 100) {
+			count++;
+			continue;
+		}
+		let pieces = 0;
+		for (let i = 0; i < part.length; pieces++) {
+			let j = part.length;
+			while (j > i && !vocab.has(i === 0 ? part.slice(0, j) : `##${part.slice(i, j)}`)) j--;
+			if (j === i) {
+				pieces = 1;
+				break;
+			}
+			i = j;
+		}
+		count += pieces;
+	}
+	return count;
+}
+
+/**
+ * Normalize text for CLASSIFICATION ONLY (never mutates the returned payload). Strips
+ * spoofed boundary markers, undoes obfuscation, then collapses decorative runs (4+ repeats
+ * of the same non-word char, like `─` or `===`) to 3: one-token-per-char rule lines land
+ * off-distribution under mean pooling and score high.
+ *
+ * Unlike Tier 1's copy, URLs and emails keep their separators, and a leet token is decoded
+ * only when the model reads it in at most half the tokens ("1gn0r3" → "ignore", while
+ * "8a1c" stays): decoded IDs and split-up URLs read as words the model never saw there.
+ * A model without a WordPiece tokenizer gets every leet token decoded.
+ */
+export function normalizeForClassification(text: string, modelDir = getDefaultModelPath()): string {
+	const vocab = wordPieceVocab(modelDir);
+	return normalizeForDetection(stripBoundaryPatterns(normalizeUnicode(text)), {
+		keepLinks: true,
+		leetGate: vocab
+			? (token, decoded) => 2 * countWordPieces(decoded, vocab) <= countWordPieces(token, vocab)
+			: undefined,
+	}).replace(/([^\w\s])\1{3,}/gu, "$1$1$1");
 }
 
 export class Tier2Classifier {
 	private config: Tier2ClassifierConfig;
 	private onnxClassifier: OnnxClassifier;
+	private modelDir: string;
 
 	constructor(config: Partial<Tier2ClassifierConfig> = {}) {
 		// Three-tier precedence for thresholds and temperature:
@@ -187,6 +255,7 @@ export class Tier2Classifier {
 		// know which model the caller is loading. Legacy models without a
 		// classifier_config.json (e.g. `minilm-full-aug`) skip step 2.
 		const modelDir = config.onnxModelPath ?? getDefaultModelPath();
+		this.modelDir = modelDir;
 		const modelDefaults = readCalibrationDefaults(modelDir);
 		const merged: Tier2ClassifierConfig = { ...DEFAULT_TIER2_CLASSIFIER_CONFIG };
 		if (modelDefaults) {
@@ -242,7 +311,7 @@ export class Tier2Classifier {
 		// corrupt per-sentence scores because the tokenizer counts them as
 		// part of the sentence. Also strips spoofed boundary patterns an
 		// attacker might inject to confuse downstream LLM trust.
-		text = normalizeForClassification(text);
+		text = normalizeForClassification(text, this.modelDir);
 
 		// Skip very short texts
 		if (text.length < this.config.minTextLength) {
@@ -325,7 +394,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sentence
 		// splitting so tag tokens don't corrupt per-sentence scores.
-		text = normalizeForClassification(text);
+		text = normalizeForClassification(text, this.modelDir);
 
 		// Split into sentences using multiple delimiters
 		const sentences = this.splitIntoSentences(text);
@@ -426,7 +495,7 @@ export class Tier2Classifier {
 
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = normalizeForClassification(text);
+		text = normalizeForClassification(text, this.modelDir);
 
 		if (text.length < this.config.minTextLength) {
 			return {
@@ -568,7 +637,7 @@ export class Tier2Classifier {
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
-		text = normalizeForClassification(text);
+		text = normalizeForClassification(text, this.modelDir);
 
 		if (text.length < this.config.minTextLength) {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
@@ -717,6 +786,11 @@ export class Tier2Classifier {
 			chunks.push(current.join(" "));
 		}
 		return chunks;
+	}
+
+	/** The text Tier 2 scores, normalised with this model's tokenizer. */
+	normalize(text: string): string {
+		return normalizeForClassification(text, this.modelDir);
 	}
 
 	/**

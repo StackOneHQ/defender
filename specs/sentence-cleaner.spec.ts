@@ -85,6 +85,7 @@ describe("cleanHighRiskContent walk traversal safety (multi-agent review)", () =
 				.split(". ")
 				.map((x) => x.trim())
 				.filter(Boolean),
+		normalize: (s: string) => s,
 		classifyChunksBatch: async (arr: string[]) => arr.map((x) => (x.includes("BAD") ? 0.99 : 0.01)),
 		// biome-ignore lint/suspicious/noExplicitAny: minimal Tier2 stand-in for the cleaner's needs
 	} as any;
