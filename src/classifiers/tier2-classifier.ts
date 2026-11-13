@@ -137,6 +137,13 @@ export interface Tier2ClassifierConfig {
 	 * (via decode) encoded attacks. Set > 1 to disable.
 	 */
 	degeneracyMaxTokenShare: number;
+	/**
+	 * ONNX Runtime threads for Tier 2 inference (default: ONNX Runtime's, one per core). Set 1 when
+	 * several processes share a machine, so they don't compete for every core; a single call on an
+	 * idle machine is then slower. Instances in one process with the same model and value share a session;
+	 * each different value loads the model and tokenizer again (memory and load time).
+	 */
+	onnxThreads?: number;
 }
 
 /**
@@ -277,6 +284,7 @@ export class Tier2Classifier {
 			this.config.onnxModelPath,
 			this.config.temperatureT,
 			this.config.degeneracyMaxTokenShare,
+			this.config.onnxThreads,
 		);
 	}
 
