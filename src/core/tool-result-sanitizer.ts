@@ -64,6 +64,8 @@ export interface ToolResultSanitizerConfig {
 	 * `metadata.analysisTruncated` is set. Default: 50000.
 	 */
 	maxFieldAnalysisLength: number;
+	/** Run the opt-in ATR rule pack on each field (detect-only). Default: false. */
+	enableAtrPatterns: boolean;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
@@ -84,6 +86,7 @@ export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	useTier1Classification: true,
 	annotateBoundary: false,
 	maxFieldAnalysisLength: DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
+	enableAtrPatterns: false,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
@@ -126,7 +129,7 @@ export class ToolResultSanitizer {
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.patternDetector = createPatternDetector();
+		this.patternDetector = createPatternDetector({ atr: this.config.enableAtrPatterns });
 	}
 
 	/**
@@ -523,6 +526,9 @@ export class ToolResultSanitizer {
 			let tier1Patterns: string[] = [];
 			if (this.config.useTier1Classification) {
 				const classificationResult = this.patternDetector.analyze(analysisValue);
+				if (classificationResult.atrRules) {
+					(metadata.atrRulesByField ??= {})[context.path] = classificationResult.atrRules;
+				}
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];

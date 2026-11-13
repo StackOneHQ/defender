@@ -7,6 +7,7 @@
 
 import { joinLineSplitWords, normalizeForDetection, splitJoinedWordPairs } from "../sanitizers/normalizer";
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
+import { matchAtrRules } from "./atr-matcher";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
 /**
@@ -25,6 +26,8 @@ export interface PatternDetectorConfig {
 	maxFieldLength: number;
 	/** Custom patterns to add */
 	customPatterns?: PatternDefinition[];
+	/** Also run the opt-in ATR rule pack (detect-only) on the normalised text. */
+	atr?: boolean;
 }
 
 /**
@@ -85,6 +88,10 @@ export class PatternDetector {
 			splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(rawText, { alternate })));
 		const analysisText = tier1Copy(false);
 		const alternateText = tier1Copy(true);
+		// ATR rules are written for the text as it arrives; normalising (e.g. splitting emails and URLs)
+		// loses most of their matches.
+		const atrRules = this.config.atr ? matchAtrRules(rawText) : undefined;
+		const done = (r: Tier1Result): Tier1Result => (atrRules?.length ? { ...r, atrRules } : r);
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible
@@ -99,7 +106,7 @@ export class PatternDetector {
 		if (!rawHasKeywords && !normHasKeywords && !altHasKeywords) {
 			// Still check structural issues even without keyword matches
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
-			return this.createResult([], structuralFlags, startTime);
+			return done(this.createResult([], structuralFlags, startTime));
 		}
 
 		// Optimisation: if normalisation produced no change, a single pass is sufficient.
@@ -107,7 +114,7 @@ export class PatternDetector {
 		if (rawText === analysisText && alternateText === analysisText) {
 			const matches = rawHasKeywords ? this.detectPatterns(rawText) : [];
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
-			return this.createResult(matches, structuralFlags, startTime);
+			return done(this.createResult(matches, structuralFlags, startTime));
 		}
 
 		// Run patterns on raw text — catches obfuscation-specific patterns
@@ -139,7 +146,7 @@ export class PatternDetector {
 		// Structural detection runs on raw text for accurate entropy and length checks.
 		const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
 
-		return this.createResult(mergedMatches, structuralFlags, startTime);
+		return done(this.createResult(mergedMatches, structuralFlags, startTime));
 	}
 
 	/**

@@ -77,6 +77,11 @@ export interface DefenseResult {
 	/** All unique pattern detections from Tier 1 */
 	detections: string[];
 	/**
+	 * ATR rule ids that matched, when `enableAtrPatterns` is on. Detect-only: they never change
+	 * `riskLevel` or `allowed`, and are not in `detections`.
+	 */
+	atrMatches?: string[];
+	/**
 	 * Fields whose content the cleaner actually changed in `sanitized` (e.g.
 	 * ['summary']). Empty under `sanitizeContent: false` or without Tier 2. For
 	 * where a threat was *detected*, read `detections` / `patternsByField`.
@@ -312,6 +317,10 @@ function serializeCallArgs(args: unknown): string | undefined {
 		return undefined;
 	}
 	return text ? truncate(text, MAX_CALL_ARGS_CHARS) : undefined;
+}
+
+function atrMatchesOf(byField: Record<string, string[]> | undefined): string[] | undefined {
+	return byField ? [...new Set(Object.values(byField).flat())] : undefined;
 }
 
 /** Copy only the caller-context fields, so a caller object can't overwrite toolName, mode or chunk. */
@@ -921,6 +930,11 @@ export interface PromptDefenseOptions {
 	config?: Partial<PromptDefenseConfig>;
 	/** Enable Tier 1 classification */
 	enableTier1?: boolean;
+	/**
+	 * Also run the opt-in ATR (Agent Threat Rules) pack with Tier 1 (default: false). Detect-only:
+	 * matches are reported in `atrMatches` and never block.
+	 */
+	enableAtrPatterns?: boolean;
 	/** Enable Tier 2 ML classification (default: true — set false to disable) */
 	enableTier2?: boolean;
 	/**
@@ -1266,6 +1280,7 @@ export class PromptDefense {
 			traversal: this.config.traversal,
 			defaultRiskLevel: options.defaultRiskLevel ?? "low",
 			useTier1Classification: options.enableTier1 ?? true,
+			enableAtrPatterns: options.enableAtrPatterns ?? false,
 			annotateBoundary: options.annotateBoundary ?? false,
 			cumulativeRiskThresholds: this.config.cumulativeRiskThresholds,
 		});
@@ -2023,6 +2038,7 @@ export class PromptDefense {
 		// it degrades coverage but must NOT override an obtained verdict, so it sets no payloadError.
 		let patternsRemovedByField: Record<string, string[]> = {};
 		let detections: string[] = [];
+		let atrMatches: string[] | undefined;
 		let sanitizedContent: unknown = value;
 		let analysisDegraded = false;
 		let tier1RiskLevel: RiskLevel = "low";
@@ -2031,6 +2047,7 @@ export class PromptDefense {
 			tier1RiskLevel = sanitized.metadata.overallRiskLevel;
 			patternsRemovedByField = sanitized.metadata.patternsRemovedByField;
 			detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+			atrMatches = atrMatchesOf(sanitized.metadata.atrRulesByField);
 			sanitizedContent = sanitized.sanitized;
 			analysisDegraded =
 				sanitized.metadata.analysisTruncated === true ||
@@ -2100,6 +2117,7 @@ export class PromptDefense {
 			riskLevel,
 			sanitized: sanitizedContent,
 			detections,
+			...(atrMatches ? { atrMatches } : {}),
 			fieldsSanitized: [],
 			patternsByField: patternsRemovedByField,
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
@@ -2241,6 +2259,7 @@ export class PromptDefense {
 		// Collect Tier 1 metadata
 		const { patternsRemovedByField, methodsByField } = sanitized.metadata;
 		const detections = [...new Set(Object.values(patternsRemovedByField).flat())];
+		const atrMatches = atrMatchesOf(sanitized.metadata.atrRulesByField);
 		// Fields where Tier 1 detected a threat (detect-only — Tier 1 no longer
 		// rewrites content). Used as a verdict signal below; the returned
 		// `fieldsSanitized` reports the fields the Tier 2 cleaner actually changed.
@@ -2736,6 +2755,7 @@ export class PromptDefense {
 			riskLevel,
 			sanitized: cleanResult.content,
 			detections,
+			...(atrMatches ? { atrMatches } : {}),
 			fieldsSanitized: cleanResult.changedFields,
 			patternsByField: patternsRemovedByField,
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,

@@ -173,8 +173,11 @@ const defense = createPromptDefense({
   sanitizeContent: true,   // Best-effort sentence cleaning (default: true)
   annotateBoundary: false, // Optional untrusted-data wrappers (default: false)
   useSfe: false,           // Optional field selection before classification
+  enableAtrPatterns: false, // Optional ATR rule pack, detect-only (default: false)
 });
 ```
+
+`enableAtrPatterns` adds rules from [Agent Threat Rules](https://github.com/Agent-Threat-Rule/agent-threat-rules) (MIT, pinned release): prompt injection, tool poisoning, context exfiltration and agent manipulation. Matches are reported in `atrMatches` and don't change `riskLevel` or `allowed`. Only regexes free of catastrophic backtracking are included, and rules that matched benign tool results in our tests are left out.
 
 Use `tier2Fields` to scope classification to specific field names, or `tier2Config` to override classifier settings. Omit both to use the default local scan.
 

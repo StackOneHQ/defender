@@ -9,6 +9,7 @@ Create a defense instance.
 ```typescript
 const defense = createPromptDefense({
   enableTier1: true,            // Pattern detection (default: true)
+  enableAtrPatterns: false,     // Opt-in ATR (Agent Threat Rules) pack, detect-only: matches go to `atrMatches` and never block (default: false)
   enableTier2: true,            // ML classification (default: true) — set false to disable
   blockHighRisk: true,          // Block high/critical content (default: false)
   tier2Fields: ['subject', 'body', 'snippet'], // Scope Tier 2 to specific fields (default: all fields)
@@ -66,6 +67,10 @@ interface DefenseResult {
   };
   // tier3_only chunk telemetry — present only when the chunk-review path ran.
   tier3ChunkSummary?: { chunks: number; blocked: number; blockingChunk?: number; oversize?: boolean };
+
+  // ATR rule ids that matched (present when `enableAtrPatterns: true` and a rule matched). Detect-only:
+  // they don't change riskLevel or allowed, and aren't in `detections`.
+  atrMatches?: string[];
 
   // SFE preprocessor output (present when `useSfe: true`; empty array otherwise)
   fieldsDropped: string[];

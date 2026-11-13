@@ -103,7 +103,11 @@ function run() {
 	copyFileSync(sfeSrc, sfeDst);
 	console.log("[copy-models] copied sfe/model.ftz");
 
-	console.log(`[copy-models] done (${copied} model dir(s) + sfe).`);
+	// Opt-in ATR rule pack, read from next to the bundle on first use.
+	copyFileSync(resolve(ROOT, "src", "classifiers", "atr-pack.json"), resolve(ROOT, "dist", "atr-pack.json"));
+	console.log("[copy-models] copied atr-pack.json");
+
+	console.log(`[copy-models] done (${copied} model dir(s) + sfe + atr).`);
 }
 
 module.exports = {
