@@ -34,7 +34,7 @@ const defense = createPromptDefense({
 
 ### `defense.defendToolResult(value, toolName, options?)`
 
-The primary method. Runs the enabled tiers and returns a `DefenseResult`. `options` takes `context` (`{ userGoal, toolDescription }`, passed to Tier 3) and `signal` (cancels in-flight Tier 3 calls):
+The primary method. Runs the enabled tiers and returns a `DefenseResult`. `options` takes `context` (`{ userGoal, toolDescription, connector, args }`, passed to Tier 3; `args` reaches the provider as a JSON string cut to 2,000 characters) and `signal` (cancels in-flight Tier 3 calls):
 
 ```typescript
 interface DefenseResult {

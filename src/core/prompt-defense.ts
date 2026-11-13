@@ -300,12 +300,29 @@ function isNonStringScalar(v: unknown): boolean {
 	return v === null || v === undefined || t === "number" || t === "boolean" || t === "bigint" || t === "symbol";
 }
 
+const MAX_CALL_ARGS_CHARS = 2000;
+
+/** The call's arguments as a string for the provider, or `undefined` when they can't be serialized. */
+function serializeCallArgs(args: unknown): string | undefined {
+	if (args === undefined) return undefined;
+	let text: string | undefined;
+	try {
+		text = typeof args === "string" ? args : JSON.stringify(args);
+	} catch {
+		return undefined;
+	}
+	return text ? truncate(text, MAX_CALL_ARGS_CHARS) : undefined;
+}
+
 /** Copy only the caller-context fields, so a caller object can't overwrite toolName, mode or chunk. */
-function pickCallerContext(context: Tier3CallerContext | undefined): Tier3CallerContext {
+function pickCallerContext(context: Tier3CallerContext | undefined): Omit<Tier3Context, "toolName"> {
 	if (!context) return {};
+	const args = serializeCallArgs(context.args);
 	return {
 		...(typeof context.userGoal === "string" ? { userGoal: context.userGoal } : {}),
 		...(typeof context.toolDescription === "string" ? { toolDescription: context.toolDescription } : {}),
+		...(typeof context.connector === "string" ? { connector: context.connector } : {}),
+		...(args !== undefined ? { args } : {}),
 	};
 }
 
@@ -1115,7 +1132,7 @@ export interface PromptDefenseOptions {
 
 /** Per-call options for `defendToolResult`. */
 export interface DefendToolResultOptions {
-	/** Passed to the Tier 3 provider as `ctx.userGoal` / `ctx.toolDescription`. */
+	/** Passed to the Tier 3 provider as `ctx.userGoal`, `ctx.toolDescription`, `ctx.connector` and `ctx.args`. */
 	context?: Tier3CallerContext;
 	/** Cancels in-flight Tier 3 calls. A cancelled call counts as a Tier 3 failure. */
 	signal?: AbortSignal;
@@ -1868,6 +1885,7 @@ export class PromptDefense {
 
 		// Review each chunk in parallel. Failed chunks are dropped (per-chunk fail-open) unless
 		// onError is "block". Representative = a blocker if any, else the highest-score allow.
+		const callerContext = pickCallerContext(callOpts.context);
 		const reviewChunks = async (chunks: string[]) => {
 			const stopController = this.tier3StopOnFirstBlock ? new AbortController() : undefined;
 			const results = await Promise.all(
@@ -1876,7 +1894,7 @@ export class PromptDefense {
 						provider,
 						c,
 						{
-							...pickCallerContext(callOpts.context),
+							...callerContext,
 							toolName,
 							mode: "tier3_only",
 							chunk: { index, total: chunks.length },
