@@ -82,7 +82,7 @@ interface OrtTensorConstructor {
 /**
  * Module-level session cache — shared across all OnnxClassifier instances in this process.
  *
- * Keyed by model path. Populated on first successful _loadModel() call and reused by every
+ * Keyed by model path and thread count. Populated on first successful _loadModel() call and reused by every
  * subsequent instance. Sharing InferenceSession across concurrent run() calls is safe —
  * ONNX Runtime guarantees thread safety for concurrent Run() from v1.7.0. Sharing the
  * tokenizer is safe — tokenize() is synchronous and never mutates the tokenizer object.
@@ -151,6 +151,9 @@ export class OnnxClassifier {
 	 */
 	private degeneracyMaxTokenShare = 2 / 3;
 
+	/** ONNX Runtime intra-op threads; undefined = ONNX Runtime's default (one per core). */
+	private onnxThreads?: number;
+
 	/**
 	 * Cached [UNK] token id, resolved lazily from the loaded tokenizer.
 	 * `undefined` = not yet probed; `null` = tokenizer has no [UNK] concept
@@ -178,8 +181,14 @@ export class OnnxClassifier {
 	 */
 	private static readonly DEGENERACY_MAX_DISTINCT_TOKENS = 4;
 
-	constructor(modelPath?: string, temperatureT?: number, degeneracyMaxTokenShare?: number) {
+	constructor(modelPath?: string, temperatureT?: number, degeneracyMaxTokenShare?: number, onnxThreads?: number) {
 		this.modelPath = modelPath ?? getDefaultModelPath();
+		if (onnxThreads !== undefined) {
+			if (!Number.isInteger(onnxThreads) || onnxThreads < 1) {
+				throw new Error(`OnnxClassifier: onnxThreads must be a positive integer, got ${onnxThreads}`);
+			}
+			this.onnxThreads = onnxThreads;
+		}
 		if (temperatureT !== undefined) {
 			// T must be a positive finite number — calibration with T <= 0 is
 			// undefined behaviour (divide-by-zero or sign flip on logits) and
@@ -313,7 +322,8 @@ export class OnnxClassifier {
 	}
 
 	private async _loadModel(): Promise<void> {
-		const cached = _sessionCache.get(this.modelPath);
+		const cacheKey = `${this.modelPath}|${this.onnxThreads ?? ""}`;
+		const cached = _sessionCache.get(cacheKey);
 		if (cached) {
 			this.session = cached.session;
 			this.OrtTensor = cached.OrtTensor;
@@ -322,9 +332,10 @@ export class OnnxClassifier {
 		}
 
 		// Share a single in-flight load across concurrent instances targeting the same path
-		let inFlight = _loadingPromises.get(this.modelPath);
+		let inFlight = _loadingPromises.get(cacheKey);
 		if (!inFlight) {
 			const modelPath = this.modelPath;
+			const threads = this.onnxThreads;
 			inFlight = (async () => {
 				// Dynamic imports — these are optional peer dependencies
 				// eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -340,26 +351,32 @@ export class OnnxClassifier {
 				// eslint-disable-next-line @typescript-eslint/no-require-imports
 				const ort = (await import("onnxruntime-node")) as unknown as {
 					InferenceSession: {
-						create: (path: string) => Promise<OrtInferenceSession>;
+						create: (
+							path: string,
+							options?: { intraOpNumThreads?: number; interOpNumThreads?: number },
+						) => Promise<OrtInferenceSession>;
 					};
 					Tensor: OrtTensorConstructor;
 				};
 				const OrtTensor = ort.Tensor;
 				const onnxPath = resolve(modelPath, "model_quantized.onnx");
 				assertNotLfsPointer(onnxPath); // clear error instead of a cryptic protobuf parse failure
-				const session = await ort.InferenceSession.create(onnxPath);
+				const session = await ort.InferenceSession.create(
+					onnxPath,
+					threads === undefined ? undefined : { intraOpNumThreads: threads, interOpNumThreads: 1 },
+				);
 
-				_sessionCache.set(modelPath, { session, OrtTensor, tokenizer });
+				_sessionCache.set(cacheKey, { session, OrtTensor, tokenizer });
 			})();
-			_loadingPromises.set(this.modelPath, inFlight);
+			_loadingPromises.set(cacheKey, inFlight);
 			// Swallow .finally() rejection — the actual error propagates via `await inFlight` below.
 			// Without this, a rejected inFlight produces an unhandled rejection from the .finally() chain.
-			inFlight.finally(() => _loadingPromises.delete(this.modelPath)).catch(() => {});
+			inFlight.finally(() => _loadingPromises.delete(cacheKey)).catch(() => {});
 		}
 
 		await inFlight;
 
-		const loaded = _sessionCache.get(this.modelPath);
+		const loaded = _sessionCache.get(cacheKey);
 		if (loaded) {
 			this.session = loaded.session;
 			this.OrtTensor = loaded.OrtTensor;
