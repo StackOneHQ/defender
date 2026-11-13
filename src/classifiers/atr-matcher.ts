@@ -12,14 +12,20 @@ import { fileURLToPath } from "node:url";
 
 interface AtrPack {
 	version: string;
-	rules: Array<{ id: string; logic: "any" | "all"; patterns: Array<{ source: string; words: string[] | null }> }>;
+	rules: Array<{
+		id: string;
+		logic: "any" | "all";
+		patterns: Array<{ source: string; words: string[] | null; nonAscii?: boolean }>;
+	}>;
 }
 
 interface Matcher {
 	rules: Array<{ id: string; logic: "any" | "all"; patterns: number[] }>;
 	regexes: RegExp[];
-	/** Patterns that list no words: always run. */
+	/** Patterns that list no words: always run (the `nonAscii` ones only on non-ASCII text). */
 	always: number[];
+	/** Patterns that only match text with a non-ASCII character. */
+	nonAscii: Uint8Array;
 	/** Word id → patterns that list it. */
 	byWord: number[][];
 	/** Aho-Corasick: goto per node, failure links, word ids ending at each node (failure chain merged). */
@@ -35,6 +41,7 @@ interface Matcher {
 }
 
 let matcher: Matcher | null = null;
+const NON_ASCII = /[^\x00-\x7f]/;
 
 function build(pack: AtrPack): Matcher {
 	const regexes: RegExp[] = [];
@@ -42,6 +49,7 @@ function build(pack: AtrPack): Matcher {
 	const wordId = new Map<string, number>();
 	const byWord: number[][] = [];
 	const always: number[] = [];
+	const nonAscii: number[] = [];
 	const rules = pack.rules.map((r, ri) => ({
 		id: r.id,
 		logic: r.logic,
@@ -49,6 +57,7 @@ function build(pack: AtrPack): Matcher {
 			const pi = regexes.push(new RegExp(p.source, "i")) - 1;
 			ruleOf.push(ri);
 			if (!p.words) always.push(pi);
+			if (p.nonAscii) nonAscii.push(pi);
 			for (const w of p.words ?? []) {
 				let id = wordId.get(w);
 				if (id === undefined) {
@@ -102,7 +111,9 @@ function build(pack: AtrPack): Matcher {
 			ascii[node * width + column[c]] = to ?? (node === 0 ? 0 : ascii[fail[node] * width + column[c]]);
 		}
 	}
-	return { rules, regexes, always, byWord, next, fail, out, column, width, ascii, ruleOf };
+	const nonAsciiMask = new Uint8Array(regexes.length);
+	for (const p of nonAscii) nonAsciiMask[p] = 1;
+	return { rules, regexes, always, nonAscii: nonAsciiMask, byWord, next, fail, out, column, width, ascii, ruleOf };
 }
 
 /** The pack sits next to the bundle in dist/, and next to this file in src/. */
@@ -122,7 +133,8 @@ function load(): Matcher {
 export function matchAtrRules(text: string): string[] {
 	const m = load();
 	const lower = text.toLowerCase();
-	const candidates = new Set<number>(m.always);
+	const isAscii = !NON_ASCII.test(text);
+	const candidates = new Set<number>(isAscii ? m.always.filter((p) => !m.nonAscii[p]) : m.always);
 	const seen = new Set<number>();
 	let node = 0;
 	for (let i = 0; i < lower.length; i++) {
@@ -142,7 +154,7 @@ export function matchAtrRules(text: string): string[] {
 	const ids: string[] = [];
 	for (const ri of rules) {
 		const rule = m.rules[ri];
-		const hit = (p: number) => candidates.has(p) && m.regexes[p].test(text);
+		const hit = (p: number) => candidates.has(p) && !(isAscii && m.nonAscii[p]) && m.regexes[p].test(text);
 		if (rule.logic === "all" ? rule.patterns.every(hit) : rule.patterns.some(hit)) ids.push(rule.id);
 	}
 	return ids;

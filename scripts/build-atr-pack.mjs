@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkSync } from "recheck";
 import { parse } from "yaml";
-import { requiredWords } from "./atr-required-words.mjs";
+import { needsNonAscii, requiredWords } from "./atr-required-words.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rulesDir = resolve(process.argv[2] ?? join(root, "node_modules/agent-threat-rules/rules"));
@@ -132,7 +132,14 @@ for (const r of candidates) {
 		return safe.get(p);
 	});
 	if (ok.length === 0 || (r.logic === "all" && ok.length !== r.patterns.length)) continue;
-	rules.push({ ...r, patterns: ok.map((source) => ({ source, words: requiredWords(source) })) });
+	rules.push({
+		...r,
+		patterns: ok.map((source) => ({
+			source,
+			words: requiredWords(source),
+			...(needsNonAscii(source) ? { nonAscii: true } : {}),
+		})),
+	});
 }
 
 // MIT: the copyright and permission notice travel with the rules.

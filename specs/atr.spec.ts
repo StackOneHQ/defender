@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 import { createPromptDefense } from "../src";
 import { matchAtrRules } from "../src/classifiers/atr-matcher";
 
-const { requiredWords } = (await import("../scripts/atr-required-words.mjs")) as {
+const { needsNonAscii, requiredWords } = (await import("../scripts/atr-required-words.mjs")) as {
+	needsNonAscii: (source: string) => boolean;
 	requiredWords: (source: string) => string[] | null;
 };
 const pack = JSON.parse(readFileSync(resolve(__dirname, "../src/classifiers/atr-pack.json"), "utf8")) as {
 	version: string;
-	rules: Array<{ id: string; patterns: Array<{ source: string; words: string[] | null }> }>;
+	rules: Array<{ id: string; patterns: Array<{ source: string; words: string[] | null; nonAscii?: boolean }> }>;
 };
 
 describe("ATR prefilter words", () => {
@@ -29,8 +30,27 @@ describe("ATR prefilter words", () => {
 		expect(requiredWords(source)).toBeNull();
 	});
 
-	it("the pack's words are what the extractor gives", () => {
-		for (const rule of pack.rules) for (const p of rule.patterns) expect(p.words).toEqual(requiredWords(p.source));
+	it("an escaped control character is not read as letters", () => {
+		expect(requiredWords("\\x1b\\[[0-9;]*[HfJK]")).toBeNull();
+	});
+
+	it.each([
+		["[\\u200B\\u200C]{5,}", true],
+		["i[\\u200B]+g", true],
+		["(какой|скажи).{0,20}пароль", true],
+		["[a-z\\u0430]", false],
+		["[^\\u0400-\\u04FF]", false],
+		["(?:x|\\u0430)", false],
+	])("needsNonAscii(%s) is %s", (source, want) => {
+		expect(needsNonAscii(source)).toBe(want);
+	});
+
+	it("the pack's words and flags are what the extractor gives", () => {
+		for (const rule of pack.rules)
+			for (const p of rule.patterns) {
+				expect(p.words).toEqual(requiredWords(p.source));
+				expect(p.nonAscii ?? false).toBe(needsNonAscii(p.source));
+			}
 	});
 });
 
