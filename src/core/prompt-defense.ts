@@ -1050,6 +1050,7 @@ export interface PromptDefenseOptions {
 		 * (`maxChunks × maxTextLength`):
 		 *  - "skip" (default): review the content that FIT (union-of-blocks — a fitting injection still
 		 *    blocks) and allow the unreviewed overflow (fails OPEN on it; ~0.6% of real payloads, the largest).
+		 *    In cascade, Tier 2's verdict stands instead, since its flagged text may be in the overflow.
 		 *  - "block": block the payload without reviewing (un-reviewable = high risk; strict mode).
 		 *  - "scan_anyway": review what fit, then fail closed on the overflow (block in strict mode unless a
 		 *    fitting chunk already blocked).
@@ -1110,16 +1111,8 @@ export interface PromptDefenseOptions {
 		 */
 		onError?: "tier2" | "allow" | "block";
 		/**
-		 * Cascade mode only: what Tier 3 reviews when a result escalates.
-		 *  - `"chunk"` (default): the chunk that drove Tier 2's score, cut to `maxTextLength`.
-		 *  - `"result"`: the whole result, chunked as in tier3_only (`maxTextLength` per chunk, up to
-		 *    `maxChunks`). A blocking chunk blocks; an allow on every chunk counts as Tier 3's allow; a
-		 *    failed chunk is a Tier 3 failure (`onError`). Content past the ceiling follows `onOversize`:
-		 *    "block" blocks the result unreviewed, "scan_anyway" blocks unless a chunk already blocked, and
-		 *    "skip" keeps Tier 2's verdict, since the flagged text may be in the unreviewed part. With
-		 *    `onError` "block", `onOversize` defaults to "scan_anyway".
-		 * The judge reads whole chunks rather than the flagged sentence, so size `maxTextLength` for it.
-		 * Tier 1 detections block either way.
+		 * Cascade mode only: what Tier 3 reviews when a result escalates. `"chunk"` (default): the
+		 * chunk that drove Tier 2's score. `"result"`: the whole result, chunked as in tier3_only.
 		 */
 		cascadeReview?: "chunk" | "result";
 		/**
@@ -1232,6 +1225,8 @@ type WholeResultReview = {
 	abortedChunks: number;
 	/** Set when content past the ceiling went unreviewed: the number of chunks that were. */
 	overflowChunks?: number;
+	/** Some content went unreviewed for size, including when none of it fit. */
+	oversize: boolean;
 };
 
 export class PromptDefense {
@@ -2077,6 +2072,7 @@ export class PromptDefense {
 			firstChunkFailure,
 			abortedChunks,
 			overflowChunks,
+			oversize,
 		};
 	}
 
@@ -2771,11 +2767,11 @@ export class PromptDefense {
 				ask = "block";
 				skipReason = `Tool result exceeds review ceiling; ${review.overflowChunks} chunks scanned, overflow unreviewed`;
 				notes.push(skipReason);
-			} else if (review?.overflowChunks !== undefined && ask === "allow") {
-				// The flagged text may sit in the overflow Tier 3 never saw, so its allow can't clear Tier 2.
+			} else if (review?.oversize && ask === "allow") {
+				// The flagged text may sit in content Tier 3 never saw, so its allow can't clear Tier 2.
 				ask = undefined;
 				notes.push(
-					`Tool result exceeds review ceiling; ${review.overflowChunks} chunks scanned, Tier 2's verdict stands`,
+					`Tool result exceeds review ceiling; ${review.overflowChunks ?? 0} chunks scanned, Tier 2's verdict stands`,
 				);
 			}
 			tier3AbortedChunks = review?.abortedChunks ?? 0;

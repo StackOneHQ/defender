@@ -932,6 +932,19 @@ describe("tier3.cascadeReview", () => {
 		expect(r.allowed).toBe(false);
 	});
 
+	it('"result" keeps Tier 2\'s block when nothing fit the ceiling, even if a policy allows', async () => {
+		// One key longer than the whole ceiling: Tier 3 reviews nothing.
+		const r = await cascade(allowing(), {
+			cascadeReview: "result",
+			maxTextLength: 4000,
+			maxChunks: 1,
+			onOversize: "skip",
+			decide: () => "allow",
+		}).defendToolResult({ ["k".repeat(5000)]: INJ }, "t");
+		expect(r.tier3?.skipReason).toMatch(/no content fit/);
+		expect(r.allowed).toBe(false);
+	});
+
 	it('"result" flags coverage when stopOnFirstBlock skipped chunks and a policy allows', async () => {
 		// Chunk 0 blocks; the rest answer only once aborted.
 		const provider: Tier3Provider = {
