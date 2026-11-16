@@ -10,7 +10,7 @@ An LLM reviews the cases Tier 2 is unsure about, or every tool result. You choos
 
 Two modes, set with `defenderMode`:
 
-- **`"cascade"`** (default): T1 → T2 → T3. Tier 3 runs only when the Tier 2 score is in the gray band (default `[0.3, 0.85)`). A `"block"` adds a block. An `"allow"` can undo a Tier 2 block; `allowOverride` controls that.
+- **`"cascade"`** (default): T1 → T2 → T3. Tier 3 runs only when the Tier 2 score is in the gray band (default `[0.3, 0.85)`). A `"block"` adds a block. An `"allow"` can undo a Tier 2 block; `allowOverride` controls that. By default Tier 3 sees only the chunk that drove the Tier 2 score; with `cascadeReview: "result"` it reviews the whole result in chunks, as in `tier3_only`, and content past the ceiling keeps Tier 2's verdict unless `onOversize` blocks it.
 - **`"tier3_only"`**: the LLM reviews the whole tool result and makes the decision. Tier 1 still runs to fill `detections`, but doesn't block. Large results are split into chunks (≤ `maxTextLength` each, about `maxChunks` of them), and any blocking chunk blocks the call. Content past that ceiling, or past the shared `traversal.maxSize` bound, goes to `onOversize`.
 
 #### Use any OpenAI-compatible endpoint
@@ -99,7 +99,7 @@ setDefaultTier3Provider(myProvider);   // or pass it as tier3.provider
 
 The built-in LLM provider (`createLlmTier3Provider`) puts only `userGoal` and `toolDescription` in its prompt. To use `connector` or `args`, write your own provider and read them from `ctx`.
 
-In cascade, the text is the Tier 2 chunk that drove the score. In `tier3_only`, it's the tool result as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines). Keys are reviewed too: an object whose values are only numbers, booleans, `null` or empty values is still reviewed (like any payload, in up to `maxChunks` calls), because its keys can carry injected text.
+In cascade, the text is the Tier 2 chunk that drove the score. With `cascadeReview: "result"` and in `tier3_only`, it's the whole tool result, including fields `tier2Fields` leaves out, as `field: value` lines (nested keys dotted, arrays indexed, records separated by blank lines). Keys are reviewed too: an object whose values are only numbers, booleans, `null` or empty values is still reviewed (like any payload, in up to `maxChunks` calls), because its keys can carry injected text.
 
 It returns a `Tier3Verdict`:
 
@@ -122,13 +122,14 @@ const defense = createPromptDefense({
     provider,                                     // or setDefaultTier3Provider(...)
     escalationBand: { lower: 0.3, upper: 0.85 },  // cascade: when Tier 3 runs
     allowOverride: true,                          // cascade: can an "allow" undo a Tier 2 block?
+    cascadeReview: 'chunk',                       // cascade: 'chunk' | 'result' (the whole result)
     onError: 'tier2',                             // what a failure does
     timeoutMs: 5000,                              // per call; default none
     maxConcurrency: 8,                            // in-flight calls per instance; default unbounded
-    maxTextLength: 10000,                         // per call (per chunk in tier3_only)
-    maxChunks: 5,                                 // tier3_only
-    onOversize: 'skip',                           // tier3_only: 'skip' | 'block' | 'scan_anyway'
-    stopOnFirstBlock: false,                      // tier3_only: abort the other chunks after a block
+    maxTextLength: 10000,                         // per call (per chunk when reviewing the whole result)
+    maxChunks: 5,                                 // whole-result reviews
+    onOversize: 'skip',                           // whole-result reviews: 'skip' | 'block' | 'scan_anyway'
+    stopOnFirstBlock: false,                      // whole-result reviews: abort the other chunks after a block
     blockThreshold: 0.622,                        // optional; decide on score instead of the decision word
     includeRaw: true,                             // keep result.tier3.raw
     onEvent: (e) => metrics.record(e),            // one event per call; no content, reason or raw
@@ -189,7 +190,7 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - `result.tier3` is present when Tier 3 ran or was skipped. Use `"tier3" in result` to check.
 - With a verdict, `result.tier3` holds `decision`, `score`, `reason` and the other verdict fields. Otherwise it holds `skipReason`, which is short and redacted.
 - `errored: true` marks a real failure, not a planned skip.
-- `note` (tier3_only) says why the outcome isn't the verdict's alone, for example an oversize block or failed chunks.
+- `note` (whole-result reviews) says why the outcome isn't the verdict's alone, for example an oversize block or failed chunks.
 - In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
 - `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.

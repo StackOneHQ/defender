@@ -176,7 +176,7 @@ export interface Tier3Context extends Omit<Tier3CallerContext, "args"> {
 	/** Absolute deadline (ms since epoch), set when `tier3.timeoutMs` is configured. */
 	deadline?: number;
 	mode?: "cascade" | "tier3_only";
-	/** tier3_only: which chunk this call reviews. */
+	/** Whole-result reviews: which chunk this call reviews. */
 	chunk?: { index: number; total: number };
 }
 
@@ -193,8 +193,8 @@ export interface Tier3Provider {
 	 * Classify a text snippet for prompt-injection risk.
 	 *
 	 * @param text - Content to classify. In cascade mode this is the highest-
-	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode it is the tool
-	 *   result serialized as record-oriented `field: value` blocks (nested keys
+	 *   scoring Tier 2 chunk (`maxSentence`); in tier3_only mode, or cascade with
+	 *   `tier3.cascadeReview: "result"`, it is one chunk of the tool result serialized as record-oriented `field: value` blocks (nested keys
 	 *   dotted, arrays indexed, records blank-line separated), capped to
 	 *   `tier3.maxTextLength`, so structured values keep their field context.
 	 * @param ctx - Optional context the provider may use. Pass `ctx.signal` to
@@ -234,7 +234,7 @@ export interface Tier3DecisionInput {
 				decision: "block" | "allow";
 				score?: number;
 				refused: boolean;
-				/** tier3_only: chunks that failed or were aborted by stopOnFirstBlock. */
+				/** Whole-result reviews: chunks that failed or were aborted by stopOnFirstBlock. */
 				unreviewedChunks?: number;
 		  }
 		| { ran: false; errored: boolean; skipReason: string };

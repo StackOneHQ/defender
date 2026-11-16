@@ -214,7 +214,8 @@ export interface DefenseResult {
 	/** True when this call loaded the ONNX model (cold start). Present only when Tier 2 ran. */
 	coldLoad?: boolean;
 	/**
-	 * Present only when the tier3_only chunk path ran (same presence rule as `tier2Stats`).
+	 * Present only when Tier 3 reviewed the whole result in chunks: tier3_only, or cascade with
+	 * `tier3.cascadeReview: "result"` when the result escalated.
 	 * `chunks` = chunks reviewed in parallel; `blocked` = how many returned block; `blockingChunk`
 	 * = first blocking index; `oversize` = content exceeded the coverage ceiling (onOversize applied).
 	 */
@@ -1044,10 +1045,12 @@ export interface PromptDefenseOptions {
 		 */
 		maxTextLength?: number;
 		/**
-		 * tier3_only only. What to do when a tool result's serialized form exceeds the coverage ceiling
+		 * Whole-result reviews only (tier3_only, or cascadeReview "result"). What to do when a tool
+		 * result's serialized form exceeds the coverage ceiling
 		 * (`maxChunks × maxTextLength`):
 		 *  - "skip" (default): review the content that FIT (union-of-blocks — a fitting injection still
 		 *    blocks) and allow the unreviewed overflow (fails OPEN on it; ~0.6% of real payloads, the largest).
+		 *    In cascade, Tier 2's verdict stands instead, since its flagged text may be in the overflow.
 		 *  - "block": block the payload without reviewing (un-reviewable = high risk; strict mode).
 		 *  - "scan_anyway": review what fit, then fail closed on the overflow (block in strict mode unless a
 		 *    fitting chunk already blocked).
@@ -1062,7 +1065,7 @@ export interface PromptDefenseOptions {
 		 */
 		onOversize?: "skip" | "block" | "scan_anyway";
 		/**
-		 * tier3_only only. Target chunks reviewed in parallel per tool result; with `maxTextLength` it
+		 * Whole-result reviews only. Target chunks reviewed in parallel per tool result; with `maxTextLength` it
 		 * sets the coverage ceiling. A target, not a hard cap — uneven line lengths can add a chunk.
 		 *
 		 * Default: 5.
@@ -1108,6 +1111,12 @@ export interface PromptDefenseOptions {
 		 */
 		onError?: "tier2" | "allow" | "block";
 		/**
+		 * Cascade mode only: what Tier 3 reviews when a result escalates. `"chunk"` (default): the
+		 * chunk that drove Tier 2's score. `"result"`: the whole result, chunked as in tier3_only, so the
+		 * provider receives every field (including ones `tier2Fields` leaves out), up to the ceiling.
+		 */
+		cascadeReview?: "chunk" | "result";
+		/**
 		 * Custom policy, called once per call after Tier 3 ran or failed (cascade: only when
 		 * escalated). Return "block", "allow", or "default" to use the typed options. Sync only.
 		 * Replaces `allowOverride` and `onError` for that call. Tier-1 detections, `onOversize`
@@ -1121,7 +1130,7 @@ export interface PromptDefenseOptions {
 		 * Default: unbounded.
 		 */
 		maxConcurrency?: number;
-		/** tier3_only: abort the remaining chunk calls once one blocks. Default: false. */
+		/** Whole-result reviews (tier3_only, cascadeReview "result"): abort the remaining chunk calls once one blocks. Default: false. */
 		stopOnFirstBlock?: boolean;
 		/** Called once per provider call. Exceptions are swallowed. Payloads carry no content. */
 		onEvent?: (event: Tier3Event) => void;
@@ -1201,6 +1210,26 @@ type Tier3CallOutcome =
 	| { kind: "failed"; skipReason: string }
 	| { kind: "aborted" };
 
+type WholeResultReview = {
+	/** A blocking chunk's verdict if any, else the highest-score allow. */
+	verdict?: Tier3Verdict;
+	skipReason?: string;
+	/** onOversize blocked before review ("block", or "scan_anyway" with nothing fitting). */
+	oversizeBlock: boolean;
+	chunkSummary?: DefenseResult["tier3ChunkSummary"];
+	/** The payload couldn't be serialized, so nothing was reviewed. */
+	payloadError: boolean;
+	reviewRan: boolean;
+	chunkFailures: number;
+	chunkTotal: number;
+	firstChunkFailure?: string;
+	abortedChunks: number;
+	/** Set when content past the ceiling went unreviewed: the number of chunks that were. */
+	overflowChunks?: number;
+	/** Some content went unreviewed for size, including when none of it fit. */
+	oversize: boolean;
+};
+
 export class PromptDefense {
 	private config: PromptDefenseConfig;
 	private toolResultSanitizer: ToolResultSanitizer;
@@ -1225,6 +1254,7 @@ export class PromptDefense {
 	private tier3OnOversizeExplicit: boolean = false;
 	private tier3AllowOverride: Tier3AllowOverride = true;
 	private tier3OnError: "tier2" | "allow" | "block" | undefined = undefined;
+	private tier3CascadeReview: "chunk" | "result" = "chunk";
 	private tier3Decide: ((input: Tier3DecisionInput) => Tier3Decision) | undefined = undefined;
 	private tier3TimeoutMs: number | undefined = undefined;
 	private tier3Semaphore: Semaphore | undefined = undefined;
@@ -1496,12 +1526,27 @@ export class PromptDefense {
 				"[defender] tier3.maxConcurrency is set without tier3.timeoutMs: one provider call that never settles holds its slot forever and queued calls wait with it. Set timeoutMs.",
 			);
 		}
+		if (t3?.cascadeReview !== undefined) {
+			const cr = t3.cascadeReview;
+			if (cr === "chunk" || cr === "result") {
+				this.tier3CascadeReview = cr;
+				if (this.defenderMode === "tier3_only") {
+					console.warn("[defender] tier3.cascadeReview has no effect in tier3_only mode.");
+				}
+			} else {
+				console.warn(
+					`[defender] invalid tier3.cascadeReview ${String(cr)} — must be "chunk" or "result". Using "chunk".`,
+				);
+			}
+		}
 		this.tier3StopOnFirstBlock = t3?.stopOnFirstBlock === true;
 		if (typeof t3?.onEvent === "function") this.tier3OnEvent = t3.onEvent;
 		this.tier3IncludeRaw = t3?.includeRaw !== false;
 
-		// onError "block" in tier3_only closes the oversize door too, unless onOversize was chosen.
-		if (this.tier3OnError === "block" && this.defenderMode === "tier3_only" && !this.tier3OnOversizeExplicit) {
+		// onError "block" closes the oversize door too wherever Tier 3 reviews the whole result,
+		// unless onOversize was chosen.
+		const reviewsWholeResult = this.defenderMode === "tier3_only" || this.tier3CascadeReview === "result";
+		if (this.tier3OnError === "block" && reviewsWholeResult && !this.tier3OnOversizeExplicit) {
 			this.tier3OnOversize = "scan_anyway";
 		}
 	}
@@ -1853,21 +1898,19 @@ export class PromptDefense {
 	}
 
 	/**
-	 * tier3_only short-circuit. Builds one joined text from all extracted
-	 * strings and asks the provider for a verdict; that verdict drives the
-	 * entire decision. Tier 1 detection still runs to populate `detections`
-	 * metadata, but content is NOT rewritten (detect-and-gate) and Tier 1 risk
-	 * does NOT contribute to the block decision — tier3_only means tier3-decides.
-	 * Provider failures are dropped per chunk (fail open) unless `tier3.onError` is "block".
+	 * Tier 3 review of the whole tool result, shared by tier3_only and cascade's
+	 * `cascadeReview: "result"`. Serializes up to the coverage ceiling, chunks it and reviews every
+	 * chunk in parallel (union-of-blocks). Applies onOversize's pre-review policies; the caller applies
+	 * scan_anyway to the unreviewed overflow (`overflowChunks`) once its own decision is known.
 	 */
-	private async runTier3Only(
+	private async reviewWholeResult(
 		value: unknown,
 		provider: Tier3Provider,
 		toolName: string,
+		mode: "cascade" | "tier3_only",
 		depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
-		startTime: number,
-		callOpts: DefendToolResultOptions = {},
-	): Promise<DefenseResult> {
+		callOpts: DefendToolResultOptions,
+	): Promise<WholeResultReview> {
 		// ENG-2455: record-oriented `field: value` input so bare values keep field context.
 		// ENG-1339: serialize up to a coverage ceiling, chunk it, and review every chunk in parallel
 		// (union-of-blocks) instead of truncating — a deterministic truncation is precomputable/evadable.
@@ -1896,7 +1939,7 @@ export class PromptDefense {
 						{
 							...callerContext,
 							toolName,
-							mode: "tier3_only",
+							mode,
 							chunk: { index, total: chunks.length },
 						},
 						callOpts.signal,
@@ -2017,6 +2060,43 @@ export class PromptDefense {
 				overflowChunks = r.total;
 			}
 		}
+
+		return {
+			verdict,
+			skipReason,
+			oversizeBlock,
+			chunkSummary,
+			payloadError,
+			reviewRan,
+			chunkFailures,
+			chunkTotal,
+			firstChunkFailure,
+			abortedChunks,
+			overflowChunks,
+			oversize,
+		};
+	}
+
+	/**
+	 * tier3_only short-circuit. Builds one joined text from all extracted
+	 * strings and asks the provider for a verdict; that verdict drives the
+	 * entire decision. Tier 1 detection still runs to populate `detections`
+	 * metadata, but content is NOT rewritten (detect-and-gate) and Tier 1 risk
+	 * does NOT contribute to the block decision — tier3_only means tier3-decides.
+	 * Provider failures are dropped per chunk (fail open) unless `tier3.onError` is "block".
+	 */
+	private async runTier3Only(
+		value: unknown,
+		provider: Tier3Provider,
+		toolName: string,
+		depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
+		startTime: number,
+		callOpts: DefendToolResultOptions = {},
+	): Promise<DefenseResult> {
+		const review = await this.reviewWholeResult(value, provider, toolName, "tier3_only", depthFlag, callOpts);
+		const { verdict, chunkSummary, payloadError, reviewRan, chunkFailures, chunkTotal, firstChunkFailure } = review;
+		const { abortedChunks, overflowChunks } = review;
+		let { skipReason, oversizeBlock } = review;
 
 		// Tier 1 detection for `detections` metadata (LLM is authoritative in tier3_only).
 		// This walk is UNCAPPED, so a throw here can come from content past the review budget —
@@ -2569,8 +2649,12 @@ export class PromptDefense {
 		// (clearly safe or clearly dangerous) we skip the round trip.
 		// tier3OverrideBlock: true = Tier 3 adds a block; false = Tier 3 removes the Tier 2 threat;
 		// undefined = Tier 2's verdict stands.
+		// With cascadeReview "result", Tier 3 reviews the whole result in chunks instead.
 		let tier3Result: DefenseResult["tier3"];
 		let tier3OverrideBlock: boolean | undefined;
+		let tier3ChunkSummary: DefenseResult["tier3ChunkSummary"];
+		let tier3AbortedChunks = 0;
+		const reviewFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean } = { hit: false };
 		if (
 			this.tier3Enabled &&
 			this.defenderMode === "cascade" &&
@@ -2581,7 +2665,11 @@ export class PromptDefense {
 		) {
 			const provider = this.resolveTier3Provider();
 			let outcome: Tier3CallOutcome | undefined;
-			if (provider) {
+			let review: WholeResultReview | undefined;
+			if (provider && this.tier3CascadeReview === "result") {
+				this.warnIfRiskyOverride(provider);
+				review = await this.reviewWholeResult(value, provider, toolName, "cascade", reviewFlag, options);
+			} else if (provider) {
 				this.warnIfRiskyOverride(provider);
 				const boundedChunk = truncate(maxSentence, this.tier3MaxTextLength);
 				outcome = await this.callTier3(
@@ -2599,15 +2687,29 @@ export class PromptDefense {
 				}
 				this.emitTier3Event({ kind: "missing_provider", mode: "cascade" });
 			}
-			const verdict = outcome?.kind === "verdict" ? outcome.verdict : undefined;
-			// A missing provider is a failure only when the operator asked to fail closed.
-			const failed = outcome?.kind === "failed" || (outcome === undefined && this.tier3OnError === "block");
-			const skipReason =
-				outcome?.kind === "failed"
-					? outcome.skipReason
-					: outcome === undefined
-						? "No Tier 3 provider registered"
-						: "Tier 3 skipped";
+			let verdict: Tier3Verdict | undefined;
+			let failed: boolean;
+			let skipReason: string;
+			if (review) {
+				// A whole-result review fails when any chunk failed: an allow then covers only part of it.
+				verdict = review.verdict;
+				failed = review.chunkFailures > 0 || review.payloadError;
+				// Content Tier 3 couldn't read fails closed in strict mode, as in tier3_only.
+				payloadError ||= review.payloadError;
+				skipReason = review.skipReason ?? review.firstChunkFailure ?? "Tier 3 skipped";
+				tier3ChunkSummary = review.chunkSummary;
+			} else {
+				verdict = outcome?.kind === "verdict" ? outcome.verdict : undefined;
+				// A missing provider is a failure only when the operator asked to fail closed.
+				failed = outcome?.kind === "failed" || (outcome === undefined && this.tier3OnError === "block");
+				skipReason =
+					outcome?.kind === "failed"
+						? outcome.skipReason
+						: outcome === undefined
+							? "No Tier 3 provider registered"
+							: "Tier 3 skipped";
+			}
+			const verdictBlock = verdict !== undefined && this.isTier3Block(verdict);
 			const meta: Tier3ResultMeta = failed ? { errored: true } : {};
 
 			let ask: "block" | "allow" | undefined;
@@ -2629,9 +2731,10 @@ export class PromptDefense {
 					tier3: verdict
 						? {
 								ran: true,
-								decision: this.isTier3Block(verdict) ? "block" : "allow",
+								decision: verdictBlock ? "block" : "allow",
 								score: verdict.score,
 								refused: verdict.refused === true,
+								...(review ? { unreviewedChunks: review.chunkFailures + review.abortedChunks } : {}),
 							}
 						: { ran: false, errored: failed, skipReason },
 					toolName,
@@ -2641,15 +2744,44 @@ export class PromptDefense {
 				meta.decidedBy = viaPolicy ? "policy" : "options";
 			}
 			if (!viaPolicy) {
-				if (verdict) {
-					ask = this.isTier3Block(verdict) ? "block" : "allow";
+				if (verdictBlock) {
+					ask = "block";
 				} else if (failed) {
 					const onError = this.tier3OnError ?? "tier2";
 					if (onError === "allow") ask = "allow";
 					// Fail closed only on payloads Tier 2 already flagged, so an outage can't block the band.
 					else if (onError === "block" && tier2Index >= riskLevels.indexOf("medium")) ask = "block";
+				} else if (verdict) {
+					ask = "allow";
 				}
 			}
+			// onOversize governs a whole-result review's unreviewed content, whatever the policy says.
+			const notes: string[] = [];
+			if (review?.oversizeBlock) {
+				ask = "block";
+				notes.push(skipReason);
+			} else if (
+				review?.overflowChunks !== undefined &&
+				ask !== "block" &&
+				this.tier3OnOversize === "scan_anyway"
+			) {
+				ask = "block";
+				skipReason = `Tool result exceeds review ceiling; ${review.overflowChunks} chunks scanned, overflow unreviewed`;
+				notes.push(skipReason);
+			} else if (review?.oversize && ask === "allow") {
+				// The flagged text may sit in content Tier 3 never saw, so its allow can't clear Tier 2.
+				ask = undefined;
+				notes.push(
+					`Tool result exceeds review ceiling; ${review.overflowChunks ?? 0} chunks scanned, Tier 2's verdict stands`,
+				);
+			}
+			tier3AbortedChunks = review?.abortedChunks ?? 0;
+			if (verdict && review && review.chunkFailures > 0) {
+				notes.push(
+					`${review.chunkFailures} of ${review.chunkTotal} chunks failed${review.firstChunkFailure ? `: ${review.firstChunkFailure}` : ""}`,
+				);
+			}
+			if (verdict && notes.length > 0) meta.note = notes.join("; ");
 			if (ask === "block") {
 				tier3OverrideBlock = true;
 			} else if (ask === "allow") {
@@ -2752,14 +2884,19 @@ export class PromptDefense {
 			// DefenseResult docstring. An always-present-but-undefined key
 			// would silently flip that check to true for every call.
 			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
-			truncatedAtDepth: depthFlag.hit || undefined,
+			truncatedAtDepth: depthFlag.hit || reviewFlag.hit || undefined,
 			...(phaseTimings ? { phaseTimings } : {}),
 			...(tier2Stats ? { tier2Stats } : {}),
 			...(coldLoad !== undefined ? { coldLoad } : {}),
+			...(tier3ChunkSummary ? { tier3ChunkSummary } : {}),
 			tier1Ms,
 			coverageDegraded:
 				depthFlag.hit ||
 				payloadError ||
+				reviewFlag.hit ||
+				reviewFlag.coverageDegraded ||
+				// Chunks aborted by stopOnFirstBlock went unreviewed; that only matters if the call is allowed.
+				(allowed && tier3AbortedChunks > 0) ||
 				sanitized.metadata.analysisTruncated === true ||
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit ||
