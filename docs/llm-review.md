@@ -157,7 +157,7 @@ Use `false` or `{ maxTier2Score }` until you've tested your judge against text w
 
 Under `"block"`, a missing provider also counts as a failure, in `tier3_only` too (instead of falling back to the cascade). `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
 
-**`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated), and returns `"block"`, `"allow"` or `"default"` (use the options above):
+**`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated; in a whole-result review, only when there was something to review), and returns `"block"`, `"allow"` or `"default"` (use the options above):
 
 ```typescript
 tier3: {

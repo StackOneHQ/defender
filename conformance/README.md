@@ -8,7 +8,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `tier3-prompt.json` | `tier3-prompt` | Prompt rendering: the default prompt, delimiting of untrusted text, placeholder filling, template validation |
 | `tier3-parse.json` | `tier3-parse` | Strict verdict parsing |
 | `tier3-redact.json` | `tier3-redact` | Redaction of provider error text in `skipReason` |
-| `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`) with a scripted judge |
+| `tier3-policy.json` | `tier3-policy` | Decisions under the Tier-3 options (`allowOverride`, `onError`, `decide`, `blockThreshold`, `onOversize`, `stopOnFirstBlock`, `includeRaw`, `cascadeReview`) with a scripted judge |
 | `sfe-floor.json` | `sfe-floor` | Which string values SFE may drop: only empty values and single machine tokens |
 | `sfe-text.json` | `sfe-text` | The exact text SFE sends its model for each field, which must match the training input |
 | `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
