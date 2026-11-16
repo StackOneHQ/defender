@@ -163,11 +163,11 @@ Two modes, set with `defenderMode`:
 - `"cascade"` (default): Tier 3 runs only when the Tier 2 score is in the gray band (default `[0.3, 0.85)`). It reviews the chunk that drove the score, or the whole result with `tier3.cascadeReview: "result"`.
 - `"tier3_only"`: Tier 3 reviews every tool result and makes the decision. Tier 1 still fills `detections` but doesn't block.
 
-Cascade only escalates when Tier 2 is loaded: with `enableTier2: false` or a failed model load, Tier 3 never runs. Without a provider (`tier3.provider` or `setDefaultTier3Provider`), Defender warns once and runs Tier 1 + Tier 2 only. As with the other tiers, blocking needs `blockHighRisk: true`.
+Cascade only escalates when Tier 2 is loaded: with `enableTier2: false` or a failed model load, Tier 3 never runs. Without a provider (`tier3.provider` or `setDefaultTier3Provider`), Defender warns once and runs Tier 1 + Tier 2 only, unless `onError: "block"` makes it fail closed. As with the other tiers, blocking needs `blockHighRisk: true`.
 
 Before you turn it on:
 
-- **What leaves your process:** in cascade, one chunk of up to `maxTextLength` characters per escalated result. Whole-result reviews (`tier3_only`, or `cascadeReview: "result"`) send the serialized result, keys included, and fields `tier2Fields` leaves out, up to about `maxChunks × maxTextLength` (about 50,000 characters by default). By default anything past that is allowed unreviewed; `onOversize` changes that.
+- **What leaves your process:** in cascade, one chunk of up to `maxTextLength` characters per escalated result. Whole-result reviews (`tier3_only`, or `cascadeReview: "result"`) send the serialized result, keys included, and fields `tier2Fields` leaves out, up to about `maxChunks × maxTextLength` (about 50,000 characters by default). By default the rest goes unreviewed: `tier3_only` allows it, and cascade keeps Tier 2's verdict. `onOversize` changes that.
 - **Cost:** one call per escalated result in cascade. Whole-result reviews make up to about `maxChunks` (default 5) calls per result, and `tier3_only` does that for every result. Set `timeoutMs` and `maxConcurrency`.
 - **Failures:** by default a failure fails open. Cascade keeps Tier 2's verdict, and `tier3_only` drops the failed chunks, so an outage means `allow`. Set `onError: "block"` to fail closed.
 - **Overrides:** in cascade an `allow` can undo a Tier 2 block. The judge reads attacker text, so use `allowOverride: false` until you've tested it.
