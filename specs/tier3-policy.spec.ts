@@ -920,8 +920,34 @@ describe("tier3.cascadeReview", () => {
 		expect(closed.tier3ChunkSummary?.oversize).toBe(true);
 		expect(closed.tier3?.note).toMatch(/overflow unreviewed/);
 		expect(closed.coverageDegraded).toBe(true);
-		const open = await cascade(allowing(), { ...tier3, onOversize: "skip" }).defendToolResult(MULTI_INJ, "t");
-		expect(open.allowed).toBe(true);
+	});
+
+	it('"result" keeps Tier 2\'s block when content past the ceiling went unreviewed under onOversize "skip"', async () => {
+		// The injection comes last, past what one 4k chunk holds, so Tier 3 only sees benign records.
+		const late = { ...MULTI, tail: INJ };
+		const r = await cascade(allowing(), { cascadeReview: "result", maxTextLength: 4000, maxChunks: 1, onOversize: "skip" }).defendToolResult(late, "t");
+		expect(r.tier3?.decision).toBe("allow");
+		expect(r.tier3?.overrideApplied).toBeUndefined();
+		expect(r.tier3?.note).toMatch(/Tier 2's verdict stands/);
+		expect(r.allowed).toBe(false);
+	});
+
+	it('"result" flags coverage when stopOnFirstBlock skipped chunks and a policy allows', async () => {
+		// Chunk 0 blocks; the rest answer only once aborted.
+		const provider: Tier3Provider = {
+			classify: (_t, ctx) =>
+				ctx?.chunk?.index === 0
+					? Promise.resolve({ decision: "block" })
+					: new Promise((res) => ctx?.signal?.addEventListener("abort", () => res({ decision: "allow" }))),
+		};
+		const r = await cascade(provider, {
+			cascadeReview: "result",
+			maxTextLength: 4000,
+			stopOnFirstBlock: true,
+			decide: () => "allow",
+		}).defendToolResult(MULTI_INJ, "t");
+		expect(r.allowed).toBe(true);
+		expect(r.coverageDegraded).toBe(true);
 	});
 
 	it('"result" leaves Tier 1 detections final', async () => {

@@ -1113,9 +1113,12 @@ export interface PromptDefenseOptions {
 		 * Cascade mode only: what Tier 3 reviews when a result escalates.
 		 *  - `"chunk"` (default): the chunk that drove Tier 2's score, cut to `maxTextLength`.
 		 *  - `"result"`: the whole result, chunked as in tier3_only (`maxTextLength` per chunk, up to
-		 *    `maxChunks`, `onOversize` for the rest). A blocking chunk blocks; an allow on every chunk
-		 *    counts as Tier 3's allow; a failed chunk is a Tier 3 failure (`onError`). With `onError`
-		 *    "block", `onOversize` defaults to "scan_anyway".
+		 *    `maxChunks`). A blocking chunk blocks; an allow on every chunk counts as Tier 3's allow; a
+		 *    failed chunk is a Tier 3 failure (`onError`). Content past the ceiling follows `onOversize`:
+		 *    "block" blocks the result unreviewed, "scan_anyway" blocks unless a chunk already blocked, and
+		 *    "skip" keeps Tier 2's verdict, since the flagged text may be in the unreviewed part. With
+		 *    `onError` "block", `onOversize` defaults to "scan_anyway".
+		 * The judge reads whole chunks rather than the flagged sentence, so size `maxTextLength` for it.
 		 * Tier 1 detections block either way.
 		 */
 		cascadeReview?: "chunk" | "result";
@@ -1133,7 +1136,7 @@ export interface PromptDefenseOptions {
 		 * Default: unbounded.
 		 */
 		maxConcurrency?: number;
-		/** tier3_only: abort the remaining chunk calls once one blocks. Default: false. */
+		/** Whole-result reviews (tier3_only, cascadeReview "result"): abort the remaining chunk calls once one blocks. Default: false. */
 		stopOnFirstBlock?: boolean;
 		/** Called once per provider call. Exceptions are swallowed. Payloads carry no content. */
 		onEvent?: (event: Tier3Event) => void;
@@ -2653,6 +2656,7 @@ export class PromptDefense {
 		let tier3Result: DefenseResult["tier3"];
 		let tier3OverrideBlock: boolean | undefined;
 		let tier3ChunkSummary: DefenseResult["tier3ChunkSummary"];
+		let tier3AbortedChunks = 0;
 		const reviewFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean } = { hit: false };
 		if (
 			this.tier3Enabled &&
@@ -2765,7 +2769,14 @@ export class PromptDefense {
 				ask = "block";
 				skipReason = `Tool result exceeds review ceiling; ${review.overflowChunks} chunks scanned, overflow unreviewed`;
 				notes.push(skipReason);
+			} else if (review?.overflowChunks !== undefined && ask === "allow") {
+				// The flagged text may sit in the overflow Tier 3 never saw, so its allow can't clear Tier 2.
+				ask = undefined;
+				notes.push(
+					`Tool result exceeds review ceiling; ${review.overflowChunks} chunks scanned, Tier 2's verdict stands`,
+				);
 			}
+			tier3AbortedChunks = review?.abortedChunks ?? 0;
 			if (verdict && review && review.chunkFailures > 0) {
 				notes.push(
 					`${review.chunkFailures} of ${review.chunkTotal} chunks failed${review.firstChunkFailure ? `: ${review.firstChunkFailure}` : ""}`,
@@ -2885,6 +2896,8 @@ export class PromptDefense {
 				payloadError ||
 				reviewFlag.hit ||
 				reviewFlag.coverageDegraded ||
+				// Chunks aborted by stopOnFirstBlock went unreviewed; that only matters if the call is allowed.
+				(allowed && tier3AbortedChunks > 0) ||
 				sanitized.metadata.analysisTruncated === true ||
 				sanitized.metadata.sizeMetrics.depthLimitHit ||
 				sanitized.metadata.sizeMetrics.sizeLimitHit ||
