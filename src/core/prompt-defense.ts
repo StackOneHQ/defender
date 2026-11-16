@@ -1118,7 +1118,8 @@ export interface PromptDefenseOptions {
 		cascadeReview?: "chunk" | "result";
 		/**
 		 * Custom policy, called once per call after Tier 3 ran or failed (cascade: only when
-		 * escalated; whole-result reviews: only when there was something to review). Return "block", "allow", or "default" to use the typed options. Sync only.
+		 * escalated; whole-result reviews: only when at least one chunk was sent to the provider).
+		 * Return "block", "allow", or "default" to use the typed options. Sync only.
 		 * Replaces `allowOverride` and `onError` for that call. Tier-1 detections, `onOversize`
 		 * and `blockHighRisk: false` still apply. A throw or invalid return means "default".
 		 */
