@@ -2697,6 +2697,8 @@ export class PromptDefense {
 				// A whole-result review fails when any chunk failed: an allow then covers only part of it.
 				verdict = review.verdict;
 				failed = review.chunkFailures > 0 || review.payloadError;
+				// Content Tier 3 couldn't read fails closed in strict mode, as in tier3_only.
+				payloadError ||= review.payloadError;
 				skipReason = review.skipReason ?? review.firstChunkFailure ?? "Tier 3 skipped";
 				tier3ChunkSummary = review.chunkSummary;
 			} else {

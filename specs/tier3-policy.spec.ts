@@ -950,6 +950,26 @@ describe("tier3.cascadeReview", () => {
 		expect(r.coverageDegraded).toBe(true);
 	});
 
+	it('"result" fails closed when the result throws only once Tier 3 reads it', async () => {
+		// A getter that answers Tiers 1 and 2, then throws: count their reads with Tier 3 off.
+		let reads = 0;
+		let throwAfter = Number.POSITIVE_INFINITY;
+		const payload = () => ({
+			get body() {
+				if (++reads > throwAfter) throw new Error("gone");
+				return INJ;
+			},
+		});
+		await cascade(undefined, {}, { enableTier3: false }).defendToolResult(payload(), "t");
+		throwAfter = reads;
+		reads = 0;
+		const r = await cascade(allowing(), { cascadeReview: "result", onError: "allow" }).defendToolResult(payload(), "t");
+		expect(r.tier3).toMatchObject({ errored: true });
+		expect(r.tier3?.skipReason).toMatch(/serialization error/);
+		expect(r.coverageDegraded).toBe(true);
+		expect(r.allowed).toBe(false);
+	});
+
 	it('"result" leaves Tier 1 detections final', async () => {
 		const r = await cascade(allowing(), { cascadeReview: "result" }, { enableTier1: true }).defendToolResult({ body: INJ }, "t");
 		expect(r.detections.length).toBeGreaterThan(0);
