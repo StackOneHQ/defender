@@ -41,7 +41,7 @@ interface Matcher {
 }
 
 let matcher: Matcher | null = null;
-const NON_ASCII = /[^\x00-\x7f]/;
+const NON_ASCII = /[\u0080-\uffff]/;
 
 function build(pack: AtrPack): Matcher {
 	const regexes: RegExp[] = [];
