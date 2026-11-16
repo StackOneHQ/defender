@@ -123,6 +123,13 @@ export interface SanitizeToolResultOptions {
  * 5. Applying appropriate sanitization methods
  * 6. Tracking cumulative risk for fragmented attack detection
  */
+/** Adds ATR rule ids found in a field's text, its decoded text or a key, without duplicates. */
+function recordAtrRules(metadata: SanitizationMetadata, path: string, rules: string[] | undefined): void {
+	if (!rules?.length) return;
+	const byField = (metadata.atrRulesByField ??= {});
+	byField[path] = [...new Set([...(byField[path] ?? []), ...rules])];
+}
+
 export class ToolResultSanitizer {
 	private config: ToolResultSanitizerConfig;
 	private patternDetector: PatternDetector;
@@ -526,9 +533,7 @@ export class ToolResultSanitizer {
 			let tier1Patterns: string[] = [];
 			if (this.config.useTier1Classification) {
 				const classificationResult = this.patternDetector.analyze(analysisValue);
-				if (classificationResult.atrRules) {
-					(metadata.atrRulesByField ??= {})[context.path] = classificationResult.atrRules;
-				}
+				recordAtrRules(metadata, context.path, classificationResult.atrRules);
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
@@ -571,6 +576,7 @@ export class ToolResultSanitizer {
 				const { text: decoded, levels } = decodeAllLevels(analysisValue);
 				if (levels > 0 && decoded !== analysisValue) {
 					const encResult = this.patternDetector.analyze(decoded);
+					recordAtrRules(metadata, context.path, encResult.atrRules);
 					if (encResult.hasDetections && encResult.matches.length > 0) {
 						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
 						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
@@ -647,10 +653,11 @@ export class ToolResultSanitizer {
 		// path — an injection hidden past the cap in a key is unscanned.
 		if (key.length > cap) metadata.analysisTruncated = true;
 		const result = this.patternDetector.analyze(analysisKey);
+		const path = `${keyPath} (key)`;
+		recordAtrRules(metadata, path, result.atrRules);
 		if (!result.hasDetections || result.matches.length === 0) return;
 
 		const patterns = [...new Set(result.matches.map((m) => m.pattern))];
-		const path = `${keyPath} (key)`;
 		const methods: SanitizationMethod[] = ["pattern_removal"];
 		metadata.fieldsSanitized.push(path);
 		metadata.methodsByField[path] = methods;

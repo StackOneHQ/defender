@@ -1287,7 +1287,7 @@ export class PromptDefense {
 		this.sanitizeContent = options.sanitizeContent ?? true;
 		this.annotateBoundary = options.annotateBoundary ?? false;
 
-		this.patternDetector = createPatternDetector();
+		this.patternDetector = createPatternDetector({ atr: options.enableAtrPatterns ?? false });
 
 		// Tier 3 orchestration — off by default. The provider is resolved per call so a
 		// `setDefaultTier3Provider()` registration after construction still works.

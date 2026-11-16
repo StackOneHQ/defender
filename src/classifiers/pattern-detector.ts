@@ -68,17 +68,21 @@ export class PatternDetector {
 	analyze(text: string): Tier1Result {
 		const startTime = performance.now();
 
+		// Truncate very long text for performance (pattern matching only)
+		const rawText =
+			text && text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
+		// ATR rules are written for the text as it arrives; normalising (e.g. splitting emails and URLs)
+		// loses most of their matches. Short text is matched too: one invisible character can match.
+		const atrRules = this.config.atr && rawText ? matchAtrRules(rawText) : undefined;
+		const done = (r: Tier1Result): Tier1Result => (atrRules?.length ? { ...r, atrRules } : r);
+
 		// Handle empty or very short text
 		if (!text || text.length < 3) {
-			return this.createEmptyResult(startTime);
+			return done(this.createEmptyResult(startTime));
 		}
 
 		// Check length BEFORE truncation for structural detection
 		const originalLength = text.length;
-
-		// Truncate very long text for performance (pattern matching only)
-		const rawText =
-			text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
 
 		// Collapse obfuscation before pattern matching (shared with Tier 2), plus words split
 		// across lines or joined in pairs. Ambiguous text is also scanned in its other reading
@@ -88,10 +92,6 @@ export class PatternDetector {
 			splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(rawText, { alternate })));
 		const analysisText = tier1Copy(false);
 		const alternateText = tier1Copy(true);
-		// ATR rules are written for the text as it arrives; normalising (e.g. splitting emails and URLs)
-		// loses most of their matches.
-		const atrRules = this.config.atr ? matchAtrRules(rawText) : undefined;
-		const done = (r: Tier1Result): Tier1Result => (atrRules?.length ? { ...r, atrRules } : r);
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible
