@@ -1112,7 +1112,8 @@ export interface PromptDefenseOptions {
 		onError?: "tier2" | "allow" | "block";
 		/**
 		 * Cascade mode only: what Tier 3 reviews when a result escalates. `"chunk"` (default): the
-		 * chunk that drove Tier 2's score. `"result"`: the whole result, chunked as in tier3_only.
+		 * chunk that drove Tier 2's score. `"result"`: the whole result, chunked as in tier3_only, so the
+		 * provider receives every field (including ones `tier2Fields` leaves out), up to the ceiling.
 		 */
 		cascadeReview?: "chunk" | "result";
 		/**
@@ -2883,7 +2884,7 @@ export class PromptDefense {
 			// DefenseResult docstring. An always-present-but-undefined key
 			// would silently flip that check to true for every call.
 			...(tier3Result !== undefined ? { tier3: tier3Result } : {}),
-			truncatedAtDepth: depthFlag.hit || undefined,
+			truncatedAtDepth: depthFlag.hit || reviewFlag.hit || undefined,
 			...(phaseTimings ? { phaseTimings } : {}),
 			...(tier2Stats ? { tier2Stats } : {}),
 			...(coldLoad !== undefined ? { coldLoad } : {}),
