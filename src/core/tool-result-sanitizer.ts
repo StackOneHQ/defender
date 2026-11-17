@@ -527,7 +527,7 @@ export class ToolResultSanitizer {
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
-					metadata.tier1MatchTexts.push(analysisValue);
+					if (tier1Patterns.length > 0) metadata.tier1MatchTexts.push(analysisValue);
 
 					// Escalate risk based on classification
 					if (classificationResult.suggestedRisk === "critical") {
