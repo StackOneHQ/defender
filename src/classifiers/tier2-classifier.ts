@@ -642,6 +642,8 @@ export class Tier2Classifier {
 		chunks: string[];
 		skipped: boolean;
 		skipReason?: string;
+		/** True when text past `maxTextLength` was cut off, so Tier 2 didn't score all of it. */
+		truncated?: boolean;
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
 		// and tokenization so self-wrapped / spoofed tags don't corrupt scores.
@@ -651,7 +653,8 @@ export class Tier2Classifier {
 			return { chunks: [], skipped: true, skipReason: "Text below minTextLength" };
 		}
 		const modelMaxLen = this.onnxClassifier.getMaxLength();
-		const bounded = text.length > this.config.maxTextLength ? text.slice(0, this.config.maxTextLength) : text;
+		const truncated = text.length > this.config.maxTextLength;
+		const bounded = truncated ? text.slice(0, this.config.maxTextLength) : text;
 
 		try {
 			await this.onnxClassifier.warmup();
@@ -670,7 +673,7 @@ export class Tier2Classifier {
 		// short-to-medium field values. Warmup still runs so failures surface
 		// here (fail-safe) rather than propagating out of classifyChunksBatch.
 		if (bounded.length + 2 <= modelMaxLen) {
-			return { chunks: [bounded], skipped: false };
+			return { chunks: [bounded], skipped: false, truncated };
 		}
 
 		let totalTokens: number;
@@ -685,7 +688,7 @@ export class Tier2Classifier {
 		}
 
 		if (totalTokens <= modelMaxLen) {
-			return { chunks: [bounded], skipped: false };
+			return { chunks: [bounded], skipped: false, truncated };
 		}
 
 		const maxContentTokens = modelMaxLen - 2;
@@ -693,7 +696,7 @@ export class Tier2Classifier {
 		if (sentences.length === 0) {
 			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
 		}
-		return { chunks: this.packSentences(sentences, maxContentTokens), skipped: false };
+		return { chunks: this.packSentences(sentences, maxContentTokens), skipped: false, truncated };
 	}
 
 	/**

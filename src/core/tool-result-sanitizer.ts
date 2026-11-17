@@ -172,6 +172,7 @@ export class ToolResultSanitizer {
 			totalLatencyMs: 0,
 			sizeMetrics,
 			riskyFieldNames: [],
+			tier1MatchTexts: [],
 		};
 
 		// Sanitize the value. A top-level string IS the entire tool result, so run
@@ -526,6 +527,7 @@ export class ToolResultSanitizer {
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
+					metadata.tier1MatchTexts.push(analysisValue);
 
 					// Escalate risk based on classification
 					if (classificationResult.suggestedRisk === "critical") {
@@ -569,6 +571,7 @@ export class ToolResultSanitizer {
 						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
 						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
 						escalatedFromEncoding = true;
+						metadata.tier1MatchTexts.push(decoded);
 						if (encResult.suggestedRisk === "critical") riskLevel = "critical";
 						else if (encResult.suggestedRisk === "high" && riskLevel !== "critical") riskLevel = "high";
 						else if (encResult.suggestedRisk === "medium" && riskLevel === "low") riskLevel = "medium";
@@ -645,6 +648,7 @@ export class ToolResultSanitizer {
 
 		const patterns = [...new Set(result.matches.map((m) => m.pattern))];
 		const path = `${keyPath} (key)`;
+		metadata.tier1MatchTexts.push(analysisKey);
 		const methods: SanitizationMethod[] = ["pattern_removal"];
 		metadata.fieldsSanitized.push(path);
 		metadata.methodsByField[path] = methods;

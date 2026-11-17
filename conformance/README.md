@@ -12,6 +12,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `sfe-floor.json` | `sfe-floor` | Which string values SFE may drop: only empty values and single machine tokens |
 | `sfe-text.json` | `sfe-text` | The exact text SFE sends its model for each field, which must match the training input |
 | `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
+| `tier1-gate.json` | `tier1-gate` | When Tier 1 detections may block: Tier 2's undamped score, text Tier 2 didn't read, decoded text |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
 
@@ -74,6 +75,13 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
 - **`sfe-text`**:
   - Call `sfePreprocess(input.payload, { predictor })` with a predictor that records every text it is asked about and keeps every field.
   - Expect `texts`: the recorded texts, in order.
+- **`tier1-gate`**:
+  - `createPromptDefense({ blockHighRisk: true, enableTier2: input.tier2 ?? true }).defendToolResult(input.payload, input.toolName ?? "generic_get_record")`.
+  - Expect `allowed`, `tier1Gated` (a boolean; absent means `false`) and the sorted `detections`.
+  - Tier 1 detections count only when `tier2RawScore` >= 0.3, or when a text they were found in wasn't scored in full by Tier 2: an object key, a field cut at Tier 2's `maxTextLength`, a field Tier 2 skipped or didn't extract. No Tier 2 score, or a non-finite chunk score, keeps Tier 1's verdict.
+  - When gated, Tier 1's risk is capped at `medium` and its detections stop counting as threats.
+  - Tier 2 also scores the decoded text of every string that decodes (`decodeAllLevels`).
+  - All cases except `tier2-off` need the bundled Tier-2 model. Case texts score far from 0.3.
 - **`obfuscation`**:
   - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.
   - `tier2Text`: the copy Tier 2 scores (`normalizeForClassification(input.text)`). Same steps, with two differences, described after the list.

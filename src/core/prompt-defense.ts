@@ -13,6 +13,7 @@ import {
 } from "../classifiers/tier2-classifier";
 import { getDefaultTier3Provider, isGenericLlmProvider } from "../classifiers/tier3-orchestrator";
 import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
+import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type {
 	DataBoundary,
@@ -113,10 +114,16 @@ export interface DefenseResult {
 	/**
 	 * Raw max-chunk main score before density adjustment. Diverges from
 	 * `tier2Score` only on multi-string payloads where the density damping
-	 * factor < 1. Useful for forensics / threshold tuning; do not use as a
-	 * primary block signal — it does NOT match the decision under density.
+	 * factor < 1. It does not decide Tier 2's own block (`tier2Score` does), but it
+	 * decides whether Tier 1 detections may block: see `tier1Gated`.
 	 */
 	tier2RawScore?: number;
+	/**
+	 * True when Tier 1 found patterns but they did not count toward the verdict, because Tier 2's
+	 * `tier2RawScore` was below 0.3 and Tier 2 read every text the patterns were found in.
+	 * `detections` still lists them. Absent otherwise.
+	 */
+	tier1Gated?: true;
 	/**
 	 * Tier 2 auxiliary head score (multi-head models only), reported for the
 	 * chunk that produced `tier2Score`. High aux + `multihead` config → veto.
@@ -377,6 +384,8 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 // content budget. Consecutive chunks share ~overlap chars so a boundary-straddling injection lands in both.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
+// A Tier 1 match blocks only when Tier 2's undamped score is at least this (ENG-4207).
+const TIER1_GATE_SCORE = 0.3;
 
 function tier3ChunkOverlap(perChunk: number): number {
 	return Math.min(TIER3_CHUNK_OVERLAP_CHARS, Math.floor(perChunk / 4));
@@ -2355,6 +2364,10 @@ export class PromptDefense {
 		let tier2Stats: DefenseResult["tier2Stats"];
 		let coldLoad: boolean | undefined;
 		let tier2Available: boolean | undefined;
+		// Texts Tier 2 scored in full, and whether any chunk score was unusable. Both decide
+		// whether Tier 1 detections may be gated on Tier 2.
+		const readByTier2 = new Set<string>();
+		let tier2NonFinite = false;
 
 		if (this.tier2Classifier) {
 			// Ensure the model/runtime is loaded before classifying. A load
@@ -2387,6 +2400,11 @@ export class PromptDefense {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+					// Tier 2 also scores decoded text (base64, hex, ROT13…), which Tier 1 already scans.
+					for (const s of [...strings]) {
+						const { text, levels } = decodeAllLevels(s);
+						if (levels > 0 && text !== s) strings.push(text);
+					}
 				} catch (err) {
 					payloadError = true;
 					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
@@ -2419,7 +2437,8 @@ export class PromptDefense {
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();
-				for (const prep of preps) {
+				for (const [i, prep] of preps.entries()) {
+					if (!prep.skipped && !prep.truncated) readByTier2.add(strings[i]);
 					if (prep.skipped) {
 						if (prep.skipReason) skipReasons.add(prep.skipReason);
 						stringRanges.push({ start: -1, end: -1 });
@@ -2515,6 +2534,7 @@ export class PromptDefense {
 							for (let j = start; j < end; j++) {
 								const raw = allScores[j];
 								const safeScore = Number.isFinite(raw) ? raw : 0;
+								if (!Number.isFinite(raw)) tier2NonFinite = true;
 								if (safeScore > sMax) {
 									sMax = safeScore;
 									sMaxChunk = allChunks[j] ?? "";
@@ -2633,8 +2653,21 @@ export class PromptDefense {
 			}
 		}
 
+		// Tier 1 can't block alone: its detections count only if Tier 2 agrees, or if Tier 2 didn't
+		// read the text they were found in (a key, a field past Tier 2's cap, a field Tier 2 skipped).
+		// No Tier 2 score, or an unusable one, keeps Tier 1's verdict.
+		const tier1Gated =
+			detections.length > 0 &&
+			tier2RawScore !== undefined &&
+			!tier2NonFinite &&
+			tier2RawScore < TIER1_GATE_SCORE &&
+			sanitized.metadata.tier1MatchTexts.every((t) => readByTier2.has(t));
+
 		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
-		const tier1Index = riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
+		// A gated Tier 1 keeps its tool-rule base risk (medium at most) but not its escalation.
+		const tier1Index = tier1Gated
+			? Math.min(riskLevels.indexOf(sanitized.metadata.overallRiskLevel), riskLevels.indexOf("medium"))
+			: riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
 		const tier2Index = riskLevels.indexOf(tier2Risk);
 		// Would Tier 2 alone block? In multi-head mode the rule replaces the threshold check:
 		// a flagged chunk under (main >= mainThr AND aux < auxThr) is a Tier 2 threat; the aux
@@ -2720,8 +2753,8 @@ export class PromptDefense {
 				const d = this.runTier3Decide({
 					mode: "cascade",
 					tier1: {
-						detected: detections.length > 0 || tier1FlaggedFields.length > 0,
-						riskLevel: sanitized.metadata.overallRiskLevel,
+						detected: !tier1Gated && (detections.length > 0 || tier1FlaggedFields.length > 0),
+						riskLevel: riskLevels[tier1Index],
 					},
 					tier2: {
 						wouldBlock: tier2HasThreat,
@@ -2813,8 +2846,7 @@ export class PromptDefense {
 		const tier3OverrodeToAllow = tier3OverrideBlock === false;
 		const tier3OverrodeToBlock = tier3OverrideBlock === true;
 		const hasThreats =
-			detections.length > 0 ||
-			tier1FlaggedFields.length > 0 ||
+			(!tier1Gated && (detections.length > 0 || tier1FlaggedFields.length > 0)) ||
 			(tier2HasThreat && !tier3OverrodeToAllow) ||
 			tier3OverrodeToBlock;
 
@@ -2875,6 +2907,7 @@ export class PromptDefense {
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier2Score: tier2EffectiveScore,
 			tier2RawScore,
+			...(tier1Gated ? { tier1Gated: true as const } : {}),
 			tier2AuxScore,
 			tier2MultiheadBlocked,
 			tier2SkipReason,
