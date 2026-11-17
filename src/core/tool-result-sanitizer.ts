@@ -64,6 +64,8 @@ export interface ToolResultSanitizerConfig {
 	 * `metadata.analysisTruncated` is set. Default: 50000.
 	 */
 	maxFieldAnalysisLength: number;
+	/** Run the opt-in ATR rule pack on each field (detect-only). Default: false. */
+	enableAtrPatterns: boolean;
 	/** Cumulative risk thresholds */
 	cumulativeRiskThresholds: {
 		medium: number;
@@ -84,6 +86,7 @@ export const DEFAULT_TOOL_RESULT_SANITIZER_CONFIG: ToolResultSanitizerConfig = {
 	useTier1Classification: true,
 	annotateBoundary: false,
 	maxFieldAnalysisLength: DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
+	enableAtrPatterns: false,
 	cumulativeRiskThresholds: {
 		medium: 3,
 		high: 1,
@@ -120,13 +123,20 @@ export interface SanitizeToolResultOptions {
  * 5. Applying appropriate sanitization methods
  * 6. Tracking cumulative risk for fragmented attack detection
  */
+/** Adds ATR rule ids found in a field's text, its decoded text or a key, without duplicates. */
+function recordAtrRules(metadata: SanitizationMetadata, path: string, rules: string[] | undefined): void {
+	if (!rules?.length) return;
+	const byField = (metadata.atrRulesByField ??= {});
+	byField[path] = [...new Set([...(byField[path] ?? []), ...rules])];
+}
+
 export class ToolResultSanitizer {
 	private config: ToolResultSanitizerConfig;
 	private patternDetector: PatternDetector;
 
 	constructor(config: Partial<ToolResultSanitizerConfig> = {}) {
 		this.config = { ...DEFAULT_TOOL_RESULT_SANITIZER_CONFIG, ...config };
-		this.patternDetector = createPatternDetector();
+		this.patternDetector = createPatternDetector({ atr: this.config.enableAtrPatterns });
 	}
 
 	/**
@@ -523,6 +533,7 @@ export class ToolResultSanitizer {
 			let tier1Patterns: string[] = [];
 			if (this.config.useTier1Classification) {
 				const classificationResult = this.patternDetector.analyze(analysisValue);
+				recordAtrRules(metadata, context.path, classificationResult.atrRules);
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
@@ -565,6 +576,7 @@ export class ToolResultSanitizer {
 				const { text: decoded, levels } = decodeAllLevels(analysisValue);
 				if (levels > 0 && decoded !== analysisValue) {
 					const encResult = this.patternDetector.analyze(decoded);
+					recordAtrRules(metadata, context.path, encResult.atrRules);
 					if (encResult.hasDetections && encResult.matches.length > 0) {
 						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
 						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
@@ -641,10 +653,11 @@ export class ToolResultSanitizer {
 		// path — an injection hidden past the cap in a key is unscanned.
 		if (key.length > cap) metadata.analysisTruncated = true;
 		const result = this.patternDetector.analyze(analysisKey);
+		const path = `${keyPath} (key)`;
+		recordAtrRules(metadata, path, result.atrRules);
 		if (!result.hasDetections || result.matches.length === 0) return;
 
 		const patterns = [...new Set(result.matches.map((m) => m.pattern))];
-		const path = `${keyPath} (key)`;
 		const methods: SanitizationMethod[] = ["pattern_removal"];
 		metadata.fieldsSanitized.push(path);
 		metadata.methodsByField[path] = methods;

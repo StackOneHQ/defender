@@ -67,6 +67,8 @@ export interface Tier1Result {
 	suggestedRisk: RiskLevel;
 	/** Processing time in milliseconds */
 	latencyMs: number;
+	/** ATR rule ids that matched, when the opt-in ATR pack is on. Detect-only. */
+	atrRules?: string[];
 }
 
 /**
@@ -366,6 +368,8 @@ export interface SanitizationMetadata {
 	methodsByField: Record<string, SanitizationMethod[]>;
 	/** Patterns detected per field (detected, not removed — content is preserved) */
 	patternsRemovedByField: Record<string, string[]>;
+	/** ATR rule ids matched per field, when the opt-in ATR pack is on. Detect-only. */
+	atrRulesByField?: Record<string, string[]>;
 	/** Final risk level for the entire result */
 	overallRiskLevel: RiskLevel;
 	/** Whether cumulative risk caused escalation */

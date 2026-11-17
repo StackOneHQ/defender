@@ -7,6 +7,7 @@
 
 import { joinLineSplitWords, normalizeForDetection, splitJoinedWordPairs } from "../sanitizers/normalizer";
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
+import { matchAtrRules } from "./atr-matcher";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
 /**
@@ -25,6 +26,8 @@ export interface PatternDetectorConfig {
 	maxFieldLength: number;
 	/** Custom patterns to add */
 	customPatterns?: PatternDefinition[];
+	/** Also run the opt-in ATR rule pack (detect-only) on the normalised text. */
+	atr?: boolean;
 }
 
 /**
@@ -65,17 +68,21 @@ export class PatternDetector {
 	analyze(text: string): Tier1Result {
 		const startTime = performance.now();
 
+		// Truncate very long text for performance (pattern matching only)
+		const rawText =
+			text && text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
+		// ATR rules are written for the text as it arrives; normalising (e.g. splitting emails and URLs)
+		// loses most of their matches. Short text is matched too: one invisible character can match.
+		const atrRules = this.config.atr && rawText ? matchAtrRules(rawText) : undefined;
+		const done = (r: Tier1Result): Tier1Result => (atrRules?.length ? { ...r, atrRules } : r);
+
 		// Handle empty or very short text
 		if (!text || text.length < 3) {
-			return this.createEmptyResult(startTime);
+			return done(this.createEmptyResult(startTime));
 		}
 
 		// Check length BEFORE truncation for structural detection
 		const originalLength = text.length;
-
-		// Truncate very long text for performance (pattern matching only)
-		const rawText =
-			text.length > this.config.maxAnalysisLength ? text.slice(0, this.config.maxAnalysisLength) : text;
 
 		// Collapse obfuscation before pattern matching (shared with Tier 2), plus words split
 		// across lines or joined in pairs. Ambiguous text is also scanned in its other reading
@@ -99,7 +106,7 @@ export class PatternDetector {
 		if (!rawHasKeywords && !normHasKeywords && !altHasKeywords) {
 			// Still check structural issues even without keyword matches
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
-			return this.createResult([], structuralFlags, startTime);
+			return done(this.createResult([], structuralFlags, startTime));
 		}
 
 		// Optimisation: if normalisation produced no change, a single pass is sufficient.
@@ -107,7 +114,7 @@ export class PatternDetector {
 		if (rawText === analysisText && alternateText === analysisText) {
 			const matches = rawHasKeywords ? this.detectPatterns(rawText) : [];
 			const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
-			return this.createResult(matches, structuralFlags, startTime);
+			return done(this.createResult(matches, structuralFlags, startTime));
 		}
 
 		// Run patterns on raw text — catches obfuscation-specific patterns
@@ -139,7 +146,7 @@ export class PatternDetector {
 		// Structural detection runs on raw text for accurate entropy and length checks.
 		const structuralFlags = this.detectStructuralIssues(rawText, originalLength);
 
-		return this.createResult(mergedMatches, structuralFlags, startTime);
+		return done(this.createResult(mergedMatches, structuralFlags, startTime));
 	}
 
 	/**
