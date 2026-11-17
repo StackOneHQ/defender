@@ -157,7 +157,7 @@ Use `false` or `{ maxTier2Score }` until you've tested your judge against text w
 
 Under `"block"`, a missing provider also counts as a failure, in `tier3_only` too (instead of falling back to the cascade). `"allow"` in cascade means anyone who can make Tier 3 fail gets the effect of an `allow`, so pair it with `allowOverride: false` or `{ maxTier2Score }`.
 
-**`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated), and returns `"block"`, `"allow"` or `"default"` (use the options above):
+**`decide`**. For cases the options above don't cover, pass a policy function. It runs once per call after Tier 3 ran or failed (in cascade, only when escalated; in a whole-result review, only when at least one chunk was sent to the provider), and returns `"block"`, `"allow"` or `"default"` (use the options above):
 
 ```typescript
 tier3: {
@@ -192,7 +192,7 @@ This needs a provider that reports `score` as a real P(block). A model's self-re
 - `errored: true` marks a real failure, not a planned skip.
 - `note` (whole-result reviews) says why the outcome isn't the verdict's alone, for example an oversize block or failed chunks.
 - In cascade, `overrideApplied` / `overrideSuppressed` say whether an `allow` undid a Tier 2 block.
-- `decidedBy` (`"policy"` or `"options"`) is set when `decide` is configured.
+- `decidedBy` (`"policy"` or `"options"`) is set when `decide` ran.
 - `allowed` is the final answer. With `allowOverride: false`, `tier3.decision` can be `"allow"` while `allowed` is `false`.
 - Defender logs one warning after 20 consecutive provider failures on one instance, which usually means a bad key or model name. Caller cancellations don't count. A separate warning fires after 20 consecutive refusals or unusable replies, which usually means the model doesn't follow the JSON format or runs out of `maxTokens`. Use `onEvent` for proper alerting.
 - `maxConcurrency` counts a call until the provider really finishes, even after a timeout, so a slow provider can't exceed it. A call that never finishes gives its slot back after 10 × `timeoutMs`. Waiting for a slot is limited to 10 × `timeoutMs` too, so a deep queue of healthy calls doesn't fail, and a hung provider can't stall callers forever. When the queue is overloaded, `onError` decides: use `"block"` to fail closed. Set `timeoutMs` whenever you set `maxConcurrency`: without it, a call that never settles holds its slot forever (defender warns about this).
