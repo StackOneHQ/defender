@@ -81,6 +81,7 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - Tier 1 detections count only when `tier2RawScore` >= 0.3, or when a text they were found in wasn't scored in full by Tier 2: an object key, a field cut at Tier 2's `maxTextLength`, a sentence longer than the model window (cut by the tokenizer), a field with any chunk the degeneracy guard scored 0, a field Tier 2 skipped or didn't extract. No Tier 2 score, or a non-finite chunk score, keeps Tier 1's verdict.
   - When gated, Tier 1's risk is capped at `medium` and its detections stop counting as threats.
   - Tier 2 also scores the decoded text of every string that decodes (`decodeAllLevels`).
+  - When Tier 2 splits a long string into sentences, it packs sentences of any length into chunks. Only a whole string under `minTextLength` is skipped.
   - All cases except `tier2-off` need the bundled Tier-2 model. Case texts score far from 0.3.
 - **`obfuscation`**:
   - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.

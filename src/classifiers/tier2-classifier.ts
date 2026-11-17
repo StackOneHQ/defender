@@ -692,7 +692,9 @@ export class Tier2Classifier {
 		}
 
 		const maxContentTokens = modelMaxLen - 2;
-		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
+		// Short sentences are packed with their neighbours, not dropped: an instruction split
+		// over short lines must still be read.
+		const sentences = this.splitIntoSentences(bounded);
 		if (sentences.length === 0) {
 			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
 		}
