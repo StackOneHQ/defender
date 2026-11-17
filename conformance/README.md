@@ -78,7 +78,7 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
 - **`tier1-gate`**:
   - `createPromptDefense({ blockHighRisk: true, enableTier2: input.tier2 ?? true }).defendToolResult(input.payload, input.toolName ?? "generic_get_record")`.
   - Expect `allowed`, `tier1Gated` (a boolean; absent means `false`) and the sorted `detections`.
-  - Tier 1 detections count only when `tier2RawScore` >= 0.3, or when a text they were found in wasn't scored in full by Tier 2: an object key, a field cut at Tier 2's `maxTextLength`, a field Tier 2 skipped or didn't extract. No Tier 2 score, or a non-finite chunk score, keeps Tier 1's verdict.
+  - Tier 1 detections count only when `tier2RawScore` >= 0.3, or when a text they were found in wasn't scored in full by Tier 2: an object key, a field cut at Tier 2's `maxTextLength`, a sentence longer than the model window (cut by the tokenizer), a field with any chunk the degeneracy guard scored 0, a field Tier 2 skipped or didn't extract. No Tier 2 score, or a non-finite chunk score, keeps Tier 1's verdict.
   - When gated, Tier 1's risk is capped at `medium` and its detections stop counting as threats.
   - Tier 2 also scores the decoded text of every string that decodes (`decodeAllLevels`).
   - All cases except `tier2-off` need the bundled Tier-2 model. Case texts score far from 0.3.

@@ -590,7 +590,7 @@ export class Tier2Classifier {
 			};
 		}
 
-		const chunks = this.packSentences(sentences, maxContentTokens);
+		const { chunks } = this.packSentences(sentences, maxContentTokens);
 		let scores: number[];
 		try {
 			scores = await this.onnxClassifier.classifyBatch(chunks);
@@ -642,7 +642,7 @@ export class Tier2Classifier {
 		chunks: string[];
 		skipped: boolean;
 		skipReason?: string;
-		/** True when text past `maxTextLength` was cut off, so Tier 2 didn't score all of it. */
+		/** True when Tier 2 won't score all of the text: cut at `maxTextLength`, or a sentence longer than the model window. */
 		truncated?: boolean;
 	}> {
 		// See comment in `classify()` — strip boundary markers before sizing
@@ -696,7 +696,8 @@ export class Tier2Classifier {
 		if (sentences.length === 0) {
 			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
 		}
-		return { chunks: this.packSentences(sentences, maxContentTokens), skipped: false, truncated };
+		const { chunks, overlong } = this.packSentences(sentences, maxContentTokens);
+		return { chunks, skipped: false, truncated: truncated || overlong };
 	}
 
 	/**
@@ -752,9 +753,10 @@ export class Tier2Classifier {
 	/**
 	 * Greedy sentence packer — returns chunks each fitting within maxContentTokens.
 	 * Sentences exceeding maxContentTokens become their own chunk and are
-	 * truncated by the tokenizer at inference (best effort on pathological input).
+	 * truncated by the tokenizer at inference; `overlong` reports that.
 	 */
-	private packSentences(sentences: string[], maxContentTokens: number): string[] {
+	private packSentences(sentences: string[], maxContentTokens: number): { chunks: string[]; overlong: boolean } {
+		let overlong = false;
 		const chunks: string[] = [];
 		let current: string[] = [];
 		let currentTokens = 0;
@@ -765,6 +767,7 @@ export class Tier2Classifier {
 			const sContentTokens = Math.max(0, sTokens - 2);
 
 			if (sContentTokens > maxContentTokens) {
+				overlong = true;
 				if (current.length > 0) {
 					chunks.push(current.join(" "));
 					current = [];
@@ -796,7 +799,7 @@ export class Tier2Classifier {
 		if (current.length > 0) {
 			chunks.push(current.join(" "));
 		}
-		return chunks;
+		return { chunks, overlong };
 	}
 
 	/** The text Tier 2 scores, normalised with this model's tokenizer. */

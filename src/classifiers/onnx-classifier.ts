@@ -24,6 +24,8 @@ export interface BatchTokenStats {
 	realTokens: number;
 	/** Sum of tokens actually run through ONNX, including padding. */
 	paddedTokens: number;
+	/** Indices of rows the degeneracy guard scored 0 instead of trusting the model. */
+	degenerateRows?: number[];
 }
 
 export function getDefaultModelPath(): string {
@@ -548,6 +550,7 @@ export class OnnxClassifier {
 		for (let i = 0; i < tokenized.length; i++) {
 			if (this.isDegenerate(tokenized[i].inputIds)) {
 				pairs[i] = { main: 0, aux: null };
+				stats?.degenerateRows?.push(i);
 			}
 		}
 

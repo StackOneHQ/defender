@@ -12,7 +12,7 @@ import {
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
 import { getDefaultTier3Provider, isGenericLlmProvider } from "../classifiers/tier3-orchestrator";
-import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
+import { createConfig, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH, MAX_TRAVERSAL_DEPTH } from "../config";
 import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type {
@@ -2400,10 +2400,12 @@ export class PromptDefense {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
-					// Tier 2 also scores decoded text (base64, hex, ROT13…), which Tier 1 already scans.
+					// Tier 2 also scores decoded text (base64, hex, ROT13…), decoded from the same head
+					// Tier 1 decodes, so the texts match.
 					for (const s of [...strings]) {
-						const { text, levels } = decodeAllLevels(s);
-						if (levels > 0 && text !== s) strings.push(text);
+						const head = s.slice(0, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH);
+						const { text, levels } = decodeAllLevels(head);
+						if (levels > 0 && text !== head) strings.push(text);
 					}
 				} catch (err) {
 					payloadError = true;
@@ -2437,8 +2439,7 @@ export class PromptDefense {
 				const allChunks: string[] = [];
 				const stringRanges: Array<{ start: number; end: number }> = [];
 				const skipReasons = new Set<string>();
-				for (const [i, prep] of preps.entries()) {
-					if (!prep.skipped && !prep.truncated) readByTier2.add(strings[i]);
+				for (const prep of preps) {
 					if (prep.skipped) {
 						if (prep.skipReason) skipReasons.add(prep.skipReason);
 						stringRanges.push({ start: -1, end: -1 });
@@ -2461,7 +2462,7 @@ export class PromptDefense {
 					// classifyByChunks contract).
 					const tInferStart = performance.now();
 					coldLoad = wasCold;
-					const padding = { realTokens: 0, paddedTokens: 0 };
+					const padding = { realTokens: 0, paddedTokens: 0, degenerateRows: [] as number[] };
 
 					// Dedupe before inference: identical chunk strings score identically
 					// (fixed-width buckets make scores neighbour-independent), so classify
@@ -2525,9 +2526,14 @@ export class PromptDefense {
 						// reported `tier2AuxScore` points at the chunk that came
 						// closest to blocking.
 						let auxOfMaxMain: number | undefined;
+						const degenerate = new Set(padding.degenerateRows);
 						for (let i = 0; i < strings.length; i++) {
 							const { start, end } = stringRanges[i];
 							if (start < 0) continue;
+							// Read in full: nothing cut off, and no chunk zeroed by the degeneracy guard.
+							let fullyRead = !preps[i].truncated;
+							for (let j = start; j < end; j++) if (degenerate.has(dedupeIndex[j])) fullyRead = false;
+							if (fullyRead) readByTier2.add(strings[i]);
 							let sMax = 0;
 							let sMaxChunk = "";
 							let sMaxAux: number | undefined;
