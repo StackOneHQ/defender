@@ -639,12 +639,14 @@ const isShapeOnly = (value: string): boolean => {
 };
 
 /**
- * A string as Tier 3 reads it: decoded when it holds encoded text (base64, hex, ROT13…, chained),
- * from the same head Tier 1 and Tier 2 decode. Only the reviewer's copy changes.
+ * A string as Tier 3 reads it: encoded spans (base64, hex, URL, entities…, chained) decoded, from the
+ * same head Tier 1 and Tier 2 decode. ROT13 and ROT47 are left alone: they rewrite the whole string,
+ * so plain text with one ROT13 word in it would reach the reviewer scrambled. Tier 1 and Tier 2
+ * still decode them. Only the reviewer's copy changes.
  */
 function decodeForReview(s: string): string {
 	const head = s.slice(0, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH);
-	const { text, levels } = decodeAllLevels(head);
+	const { text, levels } = decodeAllLevels(head, 5, { decodeRot13: false, decodeRot47: false });
 	return levels > 0 && text !== head ? text + s.slice(head.length) : s;
 }
 

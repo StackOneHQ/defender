@@ -172,6 +172,8 @@ export function detectEncoding(text: string, config: Partial<EncodingDetectorCon
  */
 // Strict UTF-8; a leading BOM is kept, as Python's bytes.decode("utf-8") keeps it.
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+const CONTROL_CHARS = /[\x00-\x08\x0E-\x1F\x7F-\x9F]/g;
 
 /**
  * Decode standard or URL-safe base64 to UTF-8 text. Undefined when it is valid base64 but not valid
@@ -187,19 +189,18 @@ function atobUrlSafe(candidate: string): string | undefined | null {
 		return null;
 	}
 	try {
-		return UTF8.decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+		// Control characters other than JavaScript's `\s` ones become spaces, so a NUL appended to an
+		// encoded instruction can't keep it encoded.
+		return UTF8.decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))).replace(CONTROL_CHARS, " ");
 	} catch {
 		return undefined;
 	}
 }
 
-// Text, not binary: non-empty, with no control characters other than JavaScript's `\s` ones
-// (tab, LF, VT, FF, CR). Any other Unicode character counts, so accented letters, dashes and curly
-// quotes in a decoded email body keep the decode.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
-const CONTROL_CHARS = /[\x00-\x08\x0E-\x1F\x7F-\x9F]/;
-const isPrintableText = (s: string | null | undefined): s is string =>
-	typeof s === "string" && s.length > 0 && !CONTROL_CHARS.test(s);
+// Text, not binary: valid UTF-8 (atobUrlSafe returns undefined otherwise) with something other than
+// whitespace in it. Any Unicode character counts, so accented letters, dashes and curly quotes in a
+// decoded email body keep the decode.
+const isPrintableText = (s: string | null | undefined): s is string => typeof s === "string" && /\S/.test(s);
 
 // Retries per candidate when a word joined by - or _ makes the whole run undecodable.
 const MAX_BASE64_RETRIES = 16;
@@ -713,7 +714,11 @@ export function containsSuspiciousEncoding(text: string): boolean {
  * @param maxIterations - Maximum decode passes (default 5)
  * @returns Object with the fully decoded text and the number of levels applied
  */
-export function decodeAllLevels(text: string, maxIterations = 5): { text: string; levels: number } {
+export function decodeAllLevels(
+	text: string,
+	maxIterations = 5,
+	config: Partial<EncodingDetectorConfig> = {},
+): { text: string; levels: number } {
 	if (!text) return { text, levels: 0 };
 
 	const maxLength = text.length * 10;
@@ -721,7 +726,7 @@ export function decodeAllLevels(text: string, maxIterations = 5): { text: string
 	let levels = 0;
 
 	for (let i = 0; i < maxIterations; i++) {
-		const result = detectEncoding(current, { action: "decode" });
+		const result = detectEncoding(current, { ...config, action: "decode" });
 
 		// No encoding found — stable
 		if (!result.processedText || result.processedText === current) break;
