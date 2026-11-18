@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/StackOneHQ/defender/compare/defender-v0.9.5...defender-v0.10.0) (2026-11-18)
+
+
+### Features
+
+* **ENG-3692:** let cascade's Tier 3 review the whole result ([#150](https://github.com/StackOneHQ/defender/issues/150)) ([fd4be30](https://github.com/StackOneHQ/defender/commit/fd4be301e6ac06ed7f7ae5a608a65c80a7f9117b))
+* **ENG-4207:** block on Tier 1 only when Tier 2 agrees ([#155](https://github.com/StackOneHQ/defender/issues/155)) ([de4af52](https://github.com/StackOneHQ/defender/commit/de4af5258b3818fc2d8ad1b074de74065768f485))
+
+
+### Bug Fixes
+
+* **ENG-3692:** skip decide when a cascade whole-result review had nothing to review ([#154](https://github.com/StackOneHQ/defender/issues/154)) ([e644e83](https://github.com/StackOneHQ/defender/commit/e644e83b5a53da1a547143019839d8551d2501d9))
+
 ## [0.9.5](https://github.com/StackOneHQ/defender/compare/defender-v0.9.4...defender-v0.9.5) (2026-11-13)
 
 
