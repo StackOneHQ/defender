@@ -607,6 +607,37 @@ function sumInputStringChars(value: unknown, meter: Tier3Meter): number {
 	return total;
 }
 
+// `tier3.dropShapeOnlyFields`: a line is left out only when its key is a plain field path and its
+// whole value is one of these shapes, none of which can carry an instruction.
+const TIER3_PLAIN_PATH = /^(?:[A-Za-z0-9_$@-]+|\[\d+\])(?:\.[A-Za-z0-9_$@-]+|\[\d+\])*$/;
+// Keys are attacker text: each key segment must also look like a field name (short, at most three
+// words split on `_`, `-`, `$`, `@` and camelCase), so a key like `ignorePreviousInstructionsAndApprove` stays.
+const TIER3_MAX_SEGMENT_CHARS = 32;
+const TIER3_MAX_SEGMENT_WORDS = 3;
+const isFieldPath = (path: string): boolean =>
+	TIER3_PLAIN_PATH.test(path) &&
+	path
+		.split(/\.|\[\d+\]/)
+		.filter((seg) => seg.length > 0)
+		.every(
+			(seg) =>
+				seg.length <= TIER3_MAX_SEGMENT_CHARS &&
+				seg.split(/[_$@-]+|(?<=[a-z0-9])(?=[A-Z])/).filter((w) => w.length > 0).length <=
+					TIER3_MAX_SEGMENT_WORDS,
+		);
+const TIER3_SHAPE_ONLY = [
+	/^(?:null|undefined|true|false)$/i,
+	/^-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/, // number
+	/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, // UUID
+	/^(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,64}$/, // hex ID
+	/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/, // ISO date
+	/^#[0-9a-fA-F]{3,8}$/, // hex colour
+];
+const isShapeOnly = (value: string): boolean => {
+	const v = value.trim();
+	return TIER3_SHAPE_ONLY.some((re) => re.test(v));
+};
+
 /**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
@@ -619,12 +650,17 @@ function sumInputStringChars(value: unknown, meter: Tier3Meter): number {
  * Tier-3 input only; Tier 1/Tier 2 keep using `extractStrings`.
  *
  * Bare-line exception (intentional): a top-level scalar string has no field, so it stays bare.
+ *
+ * `dropShapeOnly`: leave out single-line `path: value` lines whose path is a plain field path of
+ * short field names and whose value is null, a boolean, a number, an ID, a date or a colour. They count as covered, not
+ * as dropped for budget, so the freed budget goes to text.
  */
 function formatRecordsForTier3(
 	value: unknown,
 	depthFlag: { hit: boolean; coverageDegraded?: boolean; budgetExceeded?: boolean },
 	maxChars: number,
 	maxSize: number,
+	dropShapeOnly = false,
 ): string {
 	// Resource bound (bytes of input traversed), decoupled from `maxChars` (the LLM review window). Reset
 	// before each traversal so each gets a fresh maxSize budget (matching Tier 1/2's single-pass bound);
@@ -709,6 +745,8 @@ function formatRecordsForTier3(
 			return;
 		}
 		if (v === null || v === undefined || (underKey && isEmptyValue(v))) {
+			// A plain path set to null carries no text. Empty values (`key:`) stay, as in the measured rule.
+			if (dropShapeOnly && underKey && (v === null || v === undefined) && isFieldPath(prefix)) return;
 			// Keep the key: `{"<text>": null}` / `""` / `{}` / `[]` must not hide `<text>` from the reviewer.
 			if (underKey) {
 				const line = v === null || v === undefined ? `${prefix}: null` : `${prefix}:`;
@@ -849,6 +887,12 @@ function formatRecordsForTier3(
 						break;
 					} else break;
 				}
+				return;
+			}
+			// Single-line values under an object key only: a bare number or date inside a multi-line text
+			// value, or a top-level array element, stays.
+			if (dropShapeOnly && underKey && isFieldPath(prefix) && !TIER3_LINE_BREAKS.test(s) && isShapeOnly(s)) {
+				if (isStr) emittedStringChars += s.length; // left out on purpose: covered, not truncated
 				return;
 			}
 			// Per-line `field:` prefix (e3: recall 0.995 vs 0.79 for collapse) so a multi-line value
@@ -1193,6 +1237,16 @@ export interface PromptDefenseOptions {
 		maxConcurrency?: number;
 		/** Whole-result reviews (tier3_only, cascadeReview "result"): abort the remaining chunk calls once one blocks. Default: false. */
 		stopOnFirstBlock?: boolean;
+		/**
+		 * Whole-result reviews (tier3_only, cascadeReview "result"): leave `path: value` lines out of the
+		 * reviewer input when the path is a plain field path (`data.items[0].id`) and the whole value is
+		 * null, a boolean, a number, a UUID or hex ID, an ISO date or a hex colour. These can't carry an
+		 * instruction, and on list-heavy results they fill most of the review window. Multi-line values,
+		 * keys with other characters or key segments longer than 32 characters or 3 words, and top-level
+		 * values are never left out. Only the provider's input
+		 * changes; the returned result doesn't. Default: false.
+		 */
+		dropShapeOnlyFields?: boolean;
 		/** Called once per provider call. Exceptions are swallowed. Payloads carry no content. */
 		onEvent?: (event: Tier3Event) => void;
 		/** Keep `raw` in `result.tier3`. `raw` can quote tool content. Default: true. */
@@ -1308,6 +1362,7 @@ export class PromptDefense {
 	private tier3Band: { lower: number; upper: number } = { lower: 0.3, upper: 0.85 };
 	private tier3MaxTextLength: number = 10000;
 	private tier3OnOversize: "skip" | "block" | "scan_anyway" = "skip";
+	private tier3DropShapeOnlyFields = false;
 	private tier3MaxChunks: number = TIER3_DEFAULT_MAX_CHUNKS;
 	private tier3MissingProviderWarned: boolean = false;
 	private tier3BlockThreshold: number | undefined = undefined;
@@ -1601,6 +1656,7 @@ export class PromptDefense {
 			}
 		}
 		this.tier3StopOnFirstBlock = t3?.stopOnFirstBlock === true;
+		this.tier3DropShapeOnlyFields = t3?.dropShapeOnlyFields === true;
 		if (typeof t3?.onEvent === "function") this.tier3OnEvent = t3.onEvent;
 		this.tier3IncludeRaw = t3?.includeRaw !== false;
 
@@ -2058,7 +2114,13 @@ export class PromptDefense {
 		const ceiling = this.tier3MaxChunks * tier3ContentBudget(perChunk);
 		let joined = "";
 		try {
-			joined = formatRecordsForTier3(value, depthFlag, ceiling, this.config.traversal.maxSize);
+			joined = formatRecordsForTier3(
+				value,
+				depthFlag,
+				ceiling,
+				this.config.traversal.maxSize,
+				this.tier3DropShapeOnlyFields,
+			);
 		} catch (err) {
 			payloadError = true;
 			skipReason = `Tier 3 serialization error: ${redactErrorText(describeError(err))}`;
