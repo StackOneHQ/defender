@@ -56,6 +56,7 @@ function hasOccurrenceNotIn(copy: string, raw: string, k: string): boolean {
 
 /** Risk levels in ascending order, for max-comparison. */
 const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
+const maxRisk = (a: RiskLevel, b: RiskLevel): RiskLevel => (RISK_ORDER.indexOf(b) > RISK_ORDER.indexOf(a) ? b : a);
 
 /**
  * Configuration for the tool result sanitizer
@@ -238,6 +239,7 @@ export class ToolResultSanitizer {
 				return this.sanitizeStringField(value, context, metadata, detect);
 			}
 			updateSizeMetrics(metadata.sizeMetrics, value);
+			this.scanEncodedField(value, context, metadata, detect);
 			return value;
 		}
 
@@ -582,45 +584,12 @@ export class ToolResultSanitizer {
 			// a benign base64 body (e.g. a Gmail message that merely contains the word
 			// "ignore") NOT a false positive, while a base64-wrapped injection still
 			// escalates, with its real patterns reported in `detections`.
-			let escalatedFromEncoding = false;
-			if (this.config.useTier1Classification) {
-				const { text: decoded, levels } = decodeAllLevels(analysisValue);
-				if (levels > 0 && decoded !== analysisValue) {
-					const encResult = this.patternDetector.analyze(decoded);
-					if (encResult.hasDetections && encResult.matches.length > 0) {
-						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
-						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
-						escalatedFromEncoding = true;
-						this.recordTier1Match(metadata, decoded, encResult.matches);
-						if (encResult.suggestedRisk === "critical") riskLevel = "critical";
-						else if (encResult.suggestedRisk === "high" && riskLevel !== "critical") riskLevel = "high";
-						else if (encResult.suggestedRisk === "medium" && riskLevel === "low") riskLevel = "medium";
-						if (context.cumulativeRisk) {
-							this.updateCumulativeRisk(context.cumulativeRisk, encResult.suggestedRisk, encPatterns);
-						}
-					}
-				}
+			const enc = this.scanDecoded(analysisValue, context, metadata);
+			if (enc) {
+				tier1Patterns = [...new Set([...tier1Patterns, ...enc.patterns])];
+				riskLevel = maxRisk(riskLevel, enc.risk);
 			}
-
-			// Propagate this field's (possibly escalated) risk into the overall
-			// result risk. Raising per field lets a single `critical` field surface
-			// as `critical` overall — cumulative escalation alone only reaches `high`.
-			// No-op for benign fields (risk stays at the "low" default).
-			this.raiseOverallRisk(metadata, riskLevel);
-
-			// Record detection metadata, sourced from the detector (not from mutation
-			// side-effects), so every detected pattern is reported — including
-			// medium-severity matches and matches found only on normalised text.
-			if (tier1Patterns.length > 0 || escalatedFromEncoding) {
-				metadata.fieldsSanitized.push(context.path);
-				const methods: SanitizationMethod[] = [];
-				if (tier1Patterns.length > 0) methods.push("pattern_removal");
-				if (escalatedFromEncoding) methods.push("encoding_detection");
-				metadata.methodsByField[context.path] = methods;
-				if (tier1Patterns.length > 0) {
-					metadata.patternsRemovedByField[context.path] = tier1Patterns;
-				}
-			}
+			this.recordFieldDetections(metadata, context, riskLevel, tier1Patterns, enc !== undefined);
 		}
 
 		// Detect-and-gate: return the ORIGINAL content, never rewritten. Wrap it
@@ -672,6 +641,69 @@ export class ToolResultSanitizer {
 				metadata.tier1NormalisedCopies.push({ of: text, text: copy });
 			}
 		}
+	}
+
+	/**
+	 * Decode an encoded value (base64, hex, ROT13…, chained) and run the pattern detector on the
+	 * decoded text. Evidence-driven: a decode counts only when it trips a real attack pattern, so a
+	 * benign base64 body that merely contains the word "ignore" isn't flagged.
+	 */
+	private scanDecoded(
+		analysisValue: string,
+		context: SanitizationContext,
+		metadata: SanitizationMetadata,
+		cumulative = true,
+	): { patterns: string[]; risk: RiskLevel } | undefined {
+		if (!this.config.useTier1Classification) return undefined;
+		const { text: decoded, levels } = decodeAllLevels(analysisValue);
+		if (levels === 0 || decoded === analysisValue) return undefined;
+		const encResult = this.patternDetector.analyze(decoded);
+		if (!encResult.hasDetections || encResult.matches.length === 0) return undefined;
+		const patterns = [...new Set(encResult.matches.map((m) => m.pattern))];
+		this.recordTier1Match(metadata, decoded, encResult.matches);
+		if (cumulative && context.cumulativeRisk)
+			this.updateCumulativeRisk(context.cumulativeRisk, encResult.suggestedRisk, patterns);
+		return { patterns, risk: encResult.suggestedRisk };
+	}
+
+	/** Raise the overall risk and record which patterns and methods fired on this field. */
+	private recordFieldDetections(
+		metadata: SanitizationMetadata,
+		context: SanitizationContext,
+		riskLevel: RiskLevel,
+		patterns: string[],
+		fromEncoding: boolean,
+	): void {
+		// Raising per field lets a single `critical` field surface as `critical` overall.
+		this.raiseOverallRisk(metadata, riskLevel);
+		if (patterns.length === 0 && !fromEncoding) return;
+		metadata.fieldsSanitized.push(context.path);
+		const methods: SanitizationMethod[] = [];
+		if (patterns.length > 0) methods.push("pattern_removal");
+		if (fromEncoding) methods.push("encoding_detection");
+		metadata.methodsByField[context.path] = methods;
+		if (patterns.length > 0) metadata.patternsRemovedByField[context.path] = patterns;
+	}
+
+	/**
+	 * A field that isn't risky by name isn't pattern-scanned, but an encoded value in it is decoded
+	 * and scanned (ENG-4342): an attack can hide in any field as base64, e.g. a Gmail body in
+	 * `payload.body.data`.
+	 */
+	private scanEncodedField(
+		value: string,
+		context: SanitizationContext,
+		metadata: SanitizationMetadata,
+		detect: boolean,
+	): void {
+		if (!detect) return;
+		const cap = this.config.maxFieldAnalysisLength;
+		const analysisValue = value.length > cap ? value.slice(0, cap) : value;
+		// Only this field escalates: these fields aren't counted as processed in the cumulative tracker,
+		// so feeding it their matches would skew its fractions.
+		const enc = this.scanDecoded(analysisValue, context, metadata, false);
+		if (enc)
+			this.recordFieldDetections(metadata, context, maxRisk(context.riskLevel, enc.risk), enc.patterns, true);
 	}
 
 	private detectInKey(

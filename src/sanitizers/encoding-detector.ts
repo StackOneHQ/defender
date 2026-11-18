@@ -170,18 +170,37 @@ export function detectEncoding(text: string, config: Partial<EncodingDetectorCon
 /**
  * Detect Base64 encoded strings
  */
-/** Decode standard or URL-safe base64; null when it isn't valid base64. */
-function atobUrlSafe(candidate: string): string | null {
+// Strict UTF-8; a leading BOM is kept, as Python's bytes.decode("utf-8") keeps it.
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+const CONTROL_CHARS = /[\x00-\x08\x0E-\x1F\x7F-\x9F]/g;
+
+/**
+ * Decode standard or URL-safe base64 to UTF-8 text. Undefined when it is valid base64 but not valid
+ * UTF-8 (binary data); null when it isn't valid base64.
+ */
+function atobUrlSafe(candidate: string): string | undefined | null {
+	let binary: string;
 	try {
 		// atob() takes only the standard alphabet: map base64url back and re-pad
 		const unpadded = candidate.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
-		return atob(unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4));
+		binary = atob(unpadded + "=".repeat((4 - (unpadded.length % 4)) % 4));
 	} catch {
 		return null;
 	}
+	try {
+		// Control characters other than JavaScript's `\s` ones become spaces, so a NUL appended to an
+		// encoded instruction can't keep it encoded.
+		return UTF8.decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))).replace(CONTROL_CHARS, " ");
+	} catch {
+		return undefined;
+	}
 }
 
-const isPrintableText = (s: string | null): s is string => s !== null && /^[\x20-\x7E\s]+$/.test(s);
+// Text, not binary: valid UTF-8 (atobUrlSafe returns undefined otherwise) with something other than
+// whitespace in it. Any Unicode character counts, so accented letters, dashes and curly quotes in a
+// decoded email body keep the decode.
+const isPrintableText = (s: string | null | undefined): s is string => typeof s === "string" && /\S/.test(s);
 
 // Retries per candidate when a word joined by - or _ makes the whole run undecodable.
 const MAX_BASE64_RETRIES = 16;
@@ -214,7 +233,7 @@ function detectBase64(text: string, minLength: number): EncodingDetection[] {
 				}
 			}
 		}
-		if (raw === null) continue; // not valid base64
+		if (raw === null) continue; // not valid base64 (valid base64 of binary data is still reported)
 
 		const decoded = isPrintableText(raw) ? raw : undefined;
 		detections.push({
@@ -695,7 +714,11 @@ export function containsSuspiciousEncoding(text: string): boolean {
  * @param maxIterations - Maximum decode passes (default 5)
  * @returns Object with the fully decoded text and the number of levels applied
  */
-export function decodeAllLevels(text: string, maxIterations = 5): { text: string; levels: number } {
+export function decodeAllLevels(
+	text: string,
+	maxIterations = 5,
+	config: Partial<EncodingDetectorConfig> = {},
+): { text: string; levels: number } {
 	if (!text) return { text, levels: 0 };
 
 	const maxLength = text.length * 10;
@@ -703,7 +726,7 @@ export function decodeAllLevels(text: string, maxIterations = 5): { text: string
 	let levels = 0;
 
 	for (let i = 0; i < maxIterations; i++) {
-		const result = detectEncoding(current, { action: "decode" });
+		const result = detectEncoding(current, { ...config, action: "decode" });
 
 		// No encoding found — stable
 		if (!result.processedText || result.processedText === current) break;

@@ -566,7 +566,7 @@ type Tier3Meter = { bytes: number; limit: number; hit: boolean };
 // signal — independent of every drop site. A throwing getter propagates → payloadError → fail closed.
 // Metered: stops (and sets `meter.hit`) once the shared byte budget is exhausted — over-budget input is
 // oversize anyway, so a partial sum is harmless (the caller flags it).
-function sumStringContent(v: unknown, depth: number, meter: Tier3Meter): number {
+function sumStringContent(v: unknown, depth: number, meter: Tier3Meter, text: (s: string) => string): number {
 	if (depth > MAX_TRAVERSAL_DEPTH || meter.hit) return 0;
 	meter.bytes += estimateSize(v as never);
 	if (meter.bytes > meter.limit) {
@@ -575,21 +575,21 @@ function sumStringContent(v: unknown, depth: number, meter: Tier3Meter): number 
 	}
 	if (typeof v === "string") {
 		let s = 0;
-		for (const line of v.split(TIER3_LINE_BREAKS)) s += line.length;
+		for (const line of text(v).split(TIER3_LINE_BREAKS)) s += line.length;
 		return s;
 	}
 	if (v === null || typeof v !== "object" || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return 0;
 	if (Array.isArray(v)) {
 		let s = 0;
 		for (const x of v) {
-			s += sumStringContent(x, depth + 1, meter);
+			s += sumStringContent(x, depth + 1, meter, text);
 			if (meter.hit) break;
 		}
 		return s;
 	}
 	let s = 0;
 	for (const val of Object.values(v as Record<string, unknown>)) {
-		s += sumStringContent(val, depth + 1, meter);
+		s += sumStringContent(val, depth + 1, meter, text);
 		if (meter.hit) break;
 	}
 	return s;
@@ -597,11 +597,11 @@ function sumStringContent(v: unknown, depth: number, meter: Tier3Meter): number 
 
 // Top-level records serialize at depth 0 (a top-level array's elements ARE the records), so mirror that
 // entry rather than treating the whole array as one depth-0 node.
-function sumInputStringChars(value: unknown, meter: Tier3Meter): number {
+function sumInputStringChars(value: unknown, meter: Tier3Meter, text: (s: string) => string): number {
 	const records = Array.isArray(value) ? value : [value];
 	let total = 0;
 	for (const r of records) {
-		total += sumStringContent(r, 0, meter);
+		total += sumStringContent(r, 0, meter, text);
 		if (meter.hit) break;
 	}
 	return total;
@@ -639,6 +639,18 @@ const isShapeOnly = (value: string): boolean => {
 };
 
 /**
+ * A string as Tier 3 reads it: encoded spans (base64, hex, URL, entities…, chained) decoded, from the
+ * same head Tier 1 and Tier 2 decode. ROT13 and ROT47 are left alone: they rewrite the whole string,
+ * so plain text with one ROT13 word in it would reach the reviewer scrambled. Tier 1 and Tier 2
+ * still decode them. Only the reviewer's copy changes.
+ */
+function decodeForReview(s: string): string {
+	const head = s.slice(0, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH);
+	const { text, levels } = decodeAllLevels(head, 5, { decodeRot13: false, decodeRot47: false });
+	return levels > 0 && text !== head ? text + s.slice(head.length) : s;
+}
+
+/**
  * Serialize a tool result into the Tier-3 reviewer input as record-oriented `field: value`
  * blocks (ENG-2455). A flat value stream drops field names, so bare values (`create`, a tag
  * name) read as directives and false-positive-block; the per-leaf `key:` framing prevents that
@@ -667,6 +679,17 @@ function formatRecordsForTier3(
 	// `sizeLimitHit` OR-accumulates across passes and flags oversize → onOversize governs it.
 	const meter: Tier3Meter = { bytes: 0, limit: maxSize, hit: false };
 	let sizeLimitHit = false;
+	// The reviewer reads encoded strings decoded (ENG-4342): a base64 email body is text to the judge.
+	// Cached, since the serializer may run twice and the coverage count reads every string again.
+	const decodedText = new Map<string, string>();
+	const tier3Text = (s: string): string => {
+		let t = decodedText.get(s);
+		if (t === undefined) {
+			t = decodeForReview(s);
+			decodedText.set(s, t);
+		}
+		return t;
+	};
 	const resetMeter = (): void => {
 		meter.bytes = 0;
 		meter.hit = false;
@@ -856,8 +879,8 @@ function formatRecordsForTier3(
 			cap = outerCap;
 			objParts?.apply();
 		} else {
-			const s = String(v);
 			const isStr = typeof v === "string";
+			const s = isStr ? tier3Text(v) : String(v);
 			// Strings get the full item cap; non-string scalars only their reserved slice, itself
 			// bounded by this item's cap (anti-crowd-out at both the record and the field level).
 			const limit = isStr ? cap : Math.min(cap, nonStringCap);
@@ -1010,7 +1033,7 @@ function formatRecordsForTier3(
 	// makes emitted < input → oversize. Positive accounting fails SAFE — a mis-count under-reports emitted
 	// (→ over-flag, harmless: the fitting content is still reviewed) rather than silently missing a drop.
 	resetMeter();
-	const inputStringChars = sumInputStringChars(value, meter);
+	const inputStringChars = sumInputStringChars(value, meter, tier3Text);
 	if (meter.hit) sizeLimitHit = true;
 	// Oversize when string content was dropped/truncated OR the byte budget was hit anywhere.
 	if (emittedStringChars < inputStringChars || sizeLimitHit || droppedKeyed) depthFlag.budgetExceeded = true;
@@ -2853,7 +2876,8 @@ export class PromptDefense {
 				review = await this.reviewWholeResult(value, provider, toolName, "cascade", reviewFlag, options);
 			} else if (provider) {
 				this.warnIfRiskyOverride(provider);
-				const boundedChunk = truncate(maxSentence, this.tier3MaxTextLength);
+				// The chunk can be an encoded copy Tier 2 also scored; the reviewer reads it decoded.
+				const boundedChunk = truncate(decodeForReview(maxSentence), this.tier3MaxTextLength);
 				outcome = await this.callTier3(
 					provider,
 					boundedChunk,

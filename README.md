@@ -113,7 +113,7 @@ When Tier 2 is on, Tier 1 can't block alone. Its detections count only when Tier
 
 - **Role markers**: detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
 - **Injection patterns**: detects phrases like "ignore previous instructions"
-- **Encoding**: decodes supported encodings, then escalates risk only when the decoded text matches an attack pattern. Tier 2 scores the decoded text too
+- **Encoding**: decodes supported encodings in every string field, including UTF-8 text in base64 (an email body in `payload.body.data`, for example), then escalates risk only when the decoded text matches an attack pattern. Tier 2 scores the decoded text too, and Tier 3 reads it in place of the encoded value. The returned content is never decoded
 - **Obfuscation normalization**: analysis-only. Undoes Greek and Cyrillic look-alikes, leetspeak, words joined by `-` `_` `.`, spaced-out letters and control characters, so obfuscated variants are still detected. Tier 2 scores the same normalized text. The returned content is never normalized
 - **Boundary annotation**: opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
 
