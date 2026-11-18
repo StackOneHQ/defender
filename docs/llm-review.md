@@ -130,12 +130,15 @@ const defense = createPromptDefense({
     maxChunks: 5,                                 // whole-result reviews
     onOversize: 'skip',                           // whole-result reviews: 'skip' | 'block' | 'scan_anyway'
     stopOnFirstBlock: false,                      // whole-result reviews: abort the other chunks after a block
+    dropShapeOnlyFields: false,                   // whole-result reviews: leave out IDs, numbers, dates, nulls
     blockThreshold: 0.622,                        // optional; decide on score instead of the decision word
     includeRaw: true,                             // keep result.tier3.raw
     onEvent: (e) => metrics.record(e),            // one event per call; no content, reason or raw
   },
 });
 ```
+
+**`dropShapeOnlyFields`** (whole-result reviews). List-heavy results are mostly lines like `data.nodes[0].id: <uuid>`, `…canceledAt: null` or `…progress: 0`. They can't carry an instruction, but they fill the review window, so text past `maxChunks × maxTextLength` goes unreviewed. With this on, the reviewer input leaves out a line when its key is a plain field path and its whole value is null, a boolean, a number, a UUID or hex ID, an ISO date or a hex colour. Multi-line values, keys with spaces or other text, empty values and top-level values always stay. Only the reviewer's input changes; the returned result and Tier 1/Tier 2 don't. Off by default.
 
 **`allowOverride`** (cascade). The judge reads attacker text, so a general-purpose LLM can be talked into `allow`. This setting limits what that `allow` can do:
 

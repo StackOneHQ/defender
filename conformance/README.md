@@ -41,6 +41,7 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
   - Lines split on `\r`, `\n`, U+2028, U+2029 and U+0085 only.
   - Object keys follow JavaScript order: integer-like keys first, ascending, then insertion order.
   - Numbers render like JavaScript `String(n)`: `-0` → `0`, `1.0` → `1`, `1e16` → `10000000000000000`, `1e21` → `1e+21`.
+  - `tier3.dropShapeOnlyFields` leaves a line out when all of these hold: the value is a single-line scalar under a path (never a top-level value or a line of a multi-line value); the path matches `^(?:[A-Za-z0-9_$@-]+|\[\d+\])(?:\.[A-Za-z0-9_$@-]+|\[\d+\])*$` (ASCII only); and the trimmed value is `null`/`undefined`/`true`/`false` (any case), a number `-?\d+(\.\d+)?([eE][-+]?\d+)?`, a UUID, a hex ID `(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,64}`, an ISO date or date-time, or a hex colour `#[0-9a-fA-F]{3,8}`. Empty values (`key:`) stay. A left-out string counts as covered, not as dropped for budget.
 - **`tier3-prompt`**:
   - `buildTier3Messages(input.prompt ?? DEFAULT_TIER3_PROMPT, input.text, input.ctx)`. When `input.prompt` is set, validate it first, as `createLlmTier3Provider` does.
   - Expect `{ messages: [{ role, content }] }`, with the 16-hex id inside every real `<<<NAME id=…>>>` marker replaced by `<ID1>`, `<ID2>`… in order of first appearance. That still pins that an open/close pair shares an id and that separate blocks get separate ids. Expect `{ error: true }` when the template is rejected.
