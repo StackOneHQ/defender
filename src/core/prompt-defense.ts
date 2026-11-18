@@ -386,9 +386,9 @@ const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
 /**
  * Whether Tier 2 read each matched phrase where Tier 1 found it: every occurrence in the source text
- * sits whole in one of that text's own chunks, and so does every occurrence in a normalised copy
- * that holds more of them than the source. So the same phrase quoted in another field or sentence,
- * or once literally next to a split or leet occurrence, doesn't count. An empty phrase is unread.
+ * sits whole in one of that text's own chunks, and so does every occurrence in each normalised copy
+ * Tier 2 scored. So the same phrase quoted in another field or sentence, or once literally next to a
+ * split or leet occurrence, doesn't count. An empty phrase is unread.
  */
 function allPhrasesRead(
 	phrases: Array<{ of: string; phrase: string }>,
@@ -425,7 +425,7 @@ function allPhrasesRead(
 		let found = rawCount > 0;
 		if (found && !covered(of, k)) return false;
 		for (const c of copies) {
-			if (c.of !== of || countOf(key(c.text), k) <= rawCount) continue;
+			if (c.of !== of || countOf(key(c.text), k) === 0) continue;
 			found = true;
 			if (!covered(c.text, k)) return false;
 		}

@@ -37,7 +37,19 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
-import { countOf, phraseKey } from "../utils/text";
+import { phraseKey } from "../utils/text";
+
+// Characters of context on each side that make an occurrence in a copy the same as one in the raw text.
+const OCCURRENCE_CONTEXT = 16;
+
+/** Whether some occurrence of `k` in `copy`, with its context, isn't in `raw`. */
+function hasOccurrenceNotIn(copy: string, raw: string, k: string): boolean {
+	for (let i = copy.indexOf(k); i >= 0; i = copy.indexOf(k, i + k.length)) {
+		const around = copy.slice(Math.max(0, i - OCCURRENCE_CONTEXT), i + k.length + OCCURRENCE_CONTEXT);
+		if (!raw.includes(around)) return true;
+	}
+	return false;
+}
 
 /** Risk levels in ascending order, for max-comparison. */
 const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
@@ -638,7 +650,8 @@ export class ToolResultSanitizer {
 	 */
 	/**
 	 * Record what Tier 1 matched, for the Tier 2 gate. Tier 1's normalised copy (leet, split or joined
-	 * words) can hold occurrences of a phrase the raw text doesn't, so Tier 2 also gets that copy.
+	 * words) can hold occurrences of a phrase the raw text doesn't. When any occurrence in the copy,
+	 * with its context, isn't in the raw text, Tier 2 also gets that copy.
 	 */
 	private recordTier1Match(metadata: SanitizationMetadata, text: string, matches: PatternMatch[]): void {
 		metadata.tier1MatchTexts.push(text);
@@ -652,7 +665,7 @@ export class ToolResultSanitizer {
 		const raw = phraseKey(text);
 		for (const copy of new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)])) {
 			const key = phraseKey(copy);
-			if (copy !== text && keys.some((k) => countOf(key, k) > countOf(raw, k))) {
+			if (copy !== text && keys.some((k) => hasOccurrenceNotIn(key, raw, k))) {
 				metadata.tier1NormalisedCopies.push({ of: text, text: copy });
 			}
 		}

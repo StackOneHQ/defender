@@ -10,6 +10,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { normalizeForClassification } from "../src/classifiers/tier2-classifier";
 import {
 	buildTier3Messages,
 	createLlmTier3Provider,
@@ -23,7 +24,6 @@ import {
 	type Tier3PromptTemplate,
 	type Tier3Provider,
 } from "../src/index";
-import { normalizeForClassification } from "../src/classifiers/tier2-classifier";
 import { normalizeForDetection } from "../src/sanitizers/normalizer";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance");
