@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.6](https://github.com/StackOneHQ/defender/compare/defender-v0.9.5...defender-v0.9.6) (2026-11-18)
+
+
+### Features
+
+* **ENG-3692:** let cascade's Tier 3 review the whole result ([#150](https://github.com/StackOneHQ/defender/issues/150)) ([fd4be30](https://github.com/StackOneHQ/defender/commit/fd4be301e6ac06ed7f7ae5a608a65c80a7f9117b))
+* **ENG-4207:** block on Tier 1 only when Tier 2 agrees ([#155](https://github.com/StackOneHQ/defender/issues/155)) ([de4af52](https://github.com/StackOneHQ/defender/commit/de4af5258b3818fc2d8ad1b074de74065768f485))
+* **ENG-4342:** decode UTF-8 encoded values in every field, for every tier ([#160](https://github.com/StackOneHQ/defender/issues/160)) ([c9931e9](https://github.com/StackOneHQ/defender/commit/c9931e942f0cabc6ac1550e2a6e25dd349dfda94))
+* **ENG-4364:** opt-in tier3.dropShapeOnlyFields for whole-result reviews ([#157](https://github.com/StackOneHQ/defender/issues/157)) ([fe80823](https://github.com/StackOneHQ/defender/commit/fe80823aa5bd9123dc912f80ea626311fcc46b61))
+
+
+### Bug Fixes
+
+* **ENG-3692:** skip decide when a cascade whole-result review had nothing to review ([#154](https://github.com/StackOneHQ/defender/issues/154)) ([e644e83](https://github.com/StackOneHQ/defender/commit/e644e83b5a53da1a547143019839d8551d2501d9))
+* **ENG-4207:** check occurrences only Tier 1's normalised copy holds ([#156](https://github.com/StackOneHQ/defender/issues/156)) ([da9c05f](https://github.com/StackOneHQ/defender/commit/da9c05fecce112740df7534dbe1cc81492cf4f42))
+
 ## [0.9.5](https://github.com/StackOneHQ/defender/compare/defender-v0.9.4...defender-v0.9.5) (2026-11-13)
 
 
