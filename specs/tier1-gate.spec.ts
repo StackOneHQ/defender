@@ -61,6 +61,20 @@ describe("Tier 1 gate (Tier 2 stubbed)", () => {
 		expect(r.allowed).toBe(false);
 	});
 
+	it("checks an occurrence only Tier 1's normalised copy holds, next to a literal one", async () => {
+		const text = `${BENIGN} The guarantor has unre\nstricted access to the ledger.`;
+		// The raw text's chunk holds the literal occurrence; the copy's chunk drops the joined one.
+		stubTier2(0.05, (t) => (t === text ? [t] : [t.slice(0, t.indexOf(".") + 1)]));
+		const r = await run({ description: text });
+		expect(r.detections).toContain("uncensored");
+		expect(r.tier1Gated).toBeUndefined();
+		expect(r.allowed).toBe(false);
+		vi.restoreAllMocks();
+		stubTier2(0.05);
+		const whole = await run({ description: text });
+		expect(whole.tier1Gated).toBe(true);
+	});
+
 	it("keeps Tier 1's block when no chunk holds the matched phrase whole", async () => {
 		stubTier2(0.05, (t) => {
 			const i = t.indexOf("restricted");

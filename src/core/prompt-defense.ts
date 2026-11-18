@@ -31,7 +31,7 @@ import { generateDataBoundary } from "../utils/boundary";
 import { redactErrorText } from "../utils/redact";
 import { Semaphore } from "../utils/semaphore";
 import { estimateSize } from "../utils/structure";
-import { phraseKey, safeEnd, safeStart, truncate } from "../utils/text";
+import { countOf, phraseKey, safeEnd, safeStart, truncate } from "../utils/text";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
@@ -384,18 +384,11 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 // content budget. Consecutive chunks share ~overlap chars so a boundary-straddling injection lands in both.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
-/** Non-overlapping occurrences of `needle` in `hay`. */
-function countOf(hay: string, needle: string): number {
-	let n = 0;
-	for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
-	return n;
-}
-
 /**
  * Whether Tier 2 read each matched phrase where Tier 1 found it: every occurrence in the source text
- * (or, for a phrase only Tier 1's normalised copy holds, in that copy) sits whole in one of that
- * text's own chunks. So the same phrase quoted in another field or sentence doesn't count.
- * An empty phrase counts as unread.
+ * sits whole in one of that text's own chunks, and so does every occurrence in a normalised copy
+ * that holds more of them than the source. So the same phrase quoted in another field or sentence,
+ * or once literally next to a split or leet occurrence, doesn't count. An empty phrase is unread.
  */
 function allPhrasesRead(
 	phrases: Array<{ of: string; phrase: string }>,
@@ -428,8 +421,15 @@ function allPhrasesRead(
 		const id = `${k}\u0000${of}`;
 		if (checked.has(id)) continue;
 		checked.add(id);
-		const read = countOf(key(of), k) > 0 ? covered(of, k) : copies.some((c) => c.of === of && covered(c.text, k));
-		if (!read) return false;
+		const rawCount = countOf(key(of), k);
+		let found = rawCount > 0;
+		if (found && !covered(of, k)) return false;
+		for (const c of copies) {
+			if (c.of !== of || countOf(key(c.text), k) <= rawCount) continue;
+			found = true;
+			if (!covered(c.text, k)) return false;
+		}
+		if (!found) return false;
 	}
 	return true;
 }

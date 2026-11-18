@@ -37,7 +37,7 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
-import { phraseKey } from "../utils/text";
+import { countOf, phraseKey } from "../utils/text";
 
 /** Risk levels in ascending order, for max-comparison. */
 const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
@@ -637,23 +637,22 @@ export class ToolResultSanitizer {
 	 * filter short-circuits, so this is cheap on identifier-shaped keys).
 	 */
 	/**
-	 * Record what Tier 1 matched, for the Tier 2 gate. A phrase matched only on Tier 1's normalised
-	 * copy (leet, split or joined words) isn't in the raw text, so Tier 2 also gets that copy.
+	 * Record what Tier 1 matched, for the Tier 2 gate. Tier 1's normalised copy (leet, split or joined
+	 * words) can hold occurrences of a phrase the raw text doesn't, so Tier 2 also gets that copy.
 	 */
 	private recordTier1Match(metadata: SanitizationMetadata, text: string, matches: PatternMatch[]): void {
 		metadata.tier1MatchTexts.push(text);
-		const raw = phraseKey(text);
-		const missing: string[] = [];
+		const keys: string[] = [];
 		for (const phrase of new Set(matches.map((m) => m.matched))) {
 			metadata.tier1MatchPhrases.push({ of: text, phrase });
 			const k = phraseKey(phrase);
-			if (k && !raw.includes(k)) missing.push(k);
+			if (k) keys.push(k);
 		}
-		if (missing.length === 0) return;
-		const copies = new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)]);
-		for (const copy of copies) {
+		if (keys.length === 0 || !matches.some((m) => m.normalised)) return;
+		const raw = phraseKey(text);
+		for (const copy of new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)])) {
 			const key = phraseKey(copy);
-			if (copy !== text && missing.some((k) => key.includes(k))) {
+			if (copy !== text && keys.some((k) => countOf(key, k) > countOf(raw, k))) {
 				metadata.tier1NormalisedCopies.push({ of: text, text: copy });
 			}
 		}
