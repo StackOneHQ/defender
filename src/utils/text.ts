@@ -31,3 +31,10 @@ export function truncate(s: string, max: number): string {
 export function phraseKey(s: string): string {
 	return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
+
+/** Non-overlapping occurrences of `needle` (non-empty) in `hay`. */
+export function countOf(hay: string, needle: string): number {
+	let n = 0;
+	for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
+	return n;
+}
