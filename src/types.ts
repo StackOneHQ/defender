@@ -386,6 +386,21 @@ export interface SanitizationMetadata {
 	 * returned in full — only detection coverage was capped.
 	 */
 	analysisTruncated?: boolean;
+	/**
+	 * The texts Tier 1 found patterns in: field values (up to the analysis cap), decoded text and
+	 * object keys. Tier 1 can only block when Tier 2 agrees, and only for text Tier 2 also read.
+	 */
+	tier1MatchTexts: string[];
+	/**
+	 * The phrases Tier 1 matched and the text (`of`) each was found in. Tier 2 must have scored every
+	 * occurrence whole, each in one chunk of that text.
+	 */
+	tier1MatchPhrases: Array<{ of: string; phrase: string }>;
+	/**
+	 * Tier 1's normalised copy of a text (`of`) where a matched phrase appears only after
+	 * normalisation (leet, line-split or joined words). Tier 2 scores these copies too.
+	 */
+	tier1NormalisedCopies: Array<{ of: string; text: string }>;
 }
 
 /**

@@ -12,7 +12,8 @@ import {
 	type Tier2ClassifierConfig,
 } from "../classifiers/tier2-classifier";
 import { getDefaultTier3Provider, isGenericLlmProvider } from "../classifiers/tier3-orchestrator";
-import { createConfig, MAX_TRAVERSAL_DEPTH } from "../config";
+import { createConfig, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH, MAX_TRAVERSAL_DEPTH } from "../config";
+import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import { getDefaultPredictor, type SfePredictor, sfePreprocess } from "../sfe/preprocess";
 import type {
 	DataBoundary,
@@ -30,7 +31,7 @@ import { generateDataBoundary } from "../utils/boundary";
 import { redactErrorText } from "../utils/redact";
 import { Semaphore } from "../utils/semaphore";
 import { estimateSize } from "../utils/structure";
-import { safeEnd, safeStart, truncate } from "../utils/text";
+import { phraseKey, safeEnd, safeStart, truncate } from "../utils/text";
 import { cleanHighRiskContent } from "./sentence-cleaner";
 import { createToolResultSanitizer, type ToolResultSanitizer } from "./tool-result-sanitizer";
 
@@ -113,10 +114,16 @@ export interface DefenseResult {
 	/**
 	 * Raw max-chunk main score before density adjustment. Diverges from
 	 * `tier2Score` only on multi-string payloads where the density damping
-	 * factor < 1. Useful for forensics / threshold tuning; do not use as a
-	 * primary block signal — it does NOT match the decision under density.
+	 * factor < 1. It does not decide Tier 2's own block (`tier2Score` does), but it
+	 * decides whether Tier 1 detections may block: see `tier1Gated`.
 	 */
 	tier2RawScore?: number;
+	/**
+	 * True when Tier 1 found patterns but they did not count toward the verdict, because Tier 2's
+	 * `tier2RawScore` was below 0.3 and Tier 2 read every text the patterns were found in.
+	 * `detections` still lists them. Absent otherwise.
+	 */
+	tier1Gated?: true;
 	/**
 	 * Tier 2 auxiliary head score (multi-head models only), reported for the
 	 * chunk that produced `tier2Score`. High aux + `multihead` config → veto.
@@ -377,6 +384,59 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 // content budget. Consecutive chunks share ~overlap chars so a boundary-straddling injection lands in both.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
+/** Non-overlapping occurrences of `needle` in `hay`. */
+function countOf(hay: string, needle: string): number {
+	let n = 0;
+	for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
+	return n;
+}
+
+/**
+ * Whether Tier 2 read each matched phrase where Tier 1 found it: every occurrence in the source text
+ * (or, for a phrase only Tier 1's normalised copy holds, in that copy) sits whole in one of that
+ * text's own chunks. So the same phrase quoted in another field or sentence doesn't count.
+ * An empty phrase counts as unread.
+ */
+function allPhrasesRead(
+	phrases: Array<{ of: string; phrase: string }>,
+	copies: Array<{ of: string; text: string }>,
+	chunksByText: Map<string, string[]>,
+): boolean {
+	const keys = new Map<string, string>();
+	const key = (s: string) => {
+		let k = keys.get(s);
+		if (k === undefined) {
+			k = phraseKey(s);
+			keys.set(s, k);
+		}
+		return k;
+	};
+	const covered = (text: string, k: string) => {
+		const need = countOf(key(text), k);
+		if (need === 0) return false;
+		let have = 0;
+		for (const c of chunksByText.get(text) ?? []) {
+			have += countOf(key(c), k);
+			if (have >= need) return true;
+		}
+		return false;
+	};
+	const checked = new Set<string>();
+	for (const { of, phrase } of phrases) {
+		const k = phraseKey(phrase);
+		if (k === "") return false;
+		const id = `${k}\u0000${of}`;
+		if (checked.has(id)) continue;
+		checked.add(id);
+		const read = countOf(key(of), k) > 0 ? covered(of, k) : copies.some((c) => c.of === of && covered(c.text, k));
+		if (!read) return false;
+	}
+	return true;
+}
+
+// A Tier 1 match blocks only when Tier 2's undamped score is at least this (ENG-4207).
+// Calibrated on the bundled model; a different model needs its own value.
+const TIER1_GATE_SCORE = 0.3;
 
 function tier3ChunkOverlap(perChunk: number): number {
 	return Math.min(TIER3_CHUNK_OVERLAP_CHARS, Math.floor(perChunk / 4));
@@ -2338,7 +2398,7 @@ export class PromptDefense {
 		//     reassigned to the rule-trigger chunk's main under multi-head
 		//     rule fire. NOT surfaced directly on the result.
 		//   - tier2RawScore: max-chunk main pre-density, pre-rule-reassignment.
-		//     Surfaced as `result.tier2RawScore` for forensics.
+		//     Surfaced as `result.tier2RawScore`; decides whether Tier 1 may block.
 		//   - tier2EffectiveScore: the score that drives the block decision.
 		//     Under single-head this is post-density `tier2Score`. Under
 		//     multi-head rule fire this is the rule-trigger chunk's main.
@@ -2355,6 +2415,11 @@ export class PromptDefense {
 		let tier2Stats: DefenseResult["tier2Stats"];
 		let coldLoad: boolean | undefined;
 		let tier2Available: boolean | undefined;
+		// Texts Tier 2 scored in full, their chunks, and whether any chunk score was unusable.
+		// They decide whether Tier 1 detections may be gated on Tier 2.
+		const readByTier2 = new Set<string>();
+		const chunksByText = new Map<string, string[]>();
+		let tier2NonFinite = false;
 
 		if (this.tier2Classifier) {
 			// Ensure the model/runtime is loaded before classifying. A load
@@ -2382,11 +2447,35 @@ export class PromptDefense {
 			// being visible to the LLM. Scanning all strings is the safe default.
 			const fieldsForTier2 = this.tier2Fields;
 			let strings: string[] = [];
+			// The extracted string each scored text came from (decoded text and Tier 1's copies
+			// share their source's index), so density damping counts each field once.
+			const origin: number[] = [];
 			if (tier2Ready) {
 				try {
 					// extractStrings walks non-plain objects too (unlike sanitize), so a throwing
 					// getter can surface here even when Tier 1 passed. Un-analyzable → payloadError.
 					strings = extractStrings(sfeFilteredValue, fieldsForTier2, depthFlag).filter((s) => s.length > 0);
+					// Tier 2 also scores decoded text (base64, hex, ROT13…), decoded from the same head
+					// Tier 1 decodes, so the texts match.
+					const extracted = strings.length;
+					for (let i = 0; i < extracted; i++) {
+						origin.push(i);
+						const head = strings[i].slice(0, DEFAULT_MAX_FIELD_ANALYSIS_LENGTH);
+						const { text, levels } = decodeAllLevels(head);
+						if (levels > 0 && text !== head) {
+							strings.push(text);
+							origin.push(i);
+						}
+					}
+					// And Tier 1's normalised copies of the texts it matched, for those Tier 2 scores.
+					const index = new Map(strings.map((s, i) => [s, origin[i]]));
+					for (const { of, text } of sanitized.metadata.tier1NormalisedCopies) {
+						const o = index.get(of);
+						if (o === undefined || index.has(text)) continue;
+						index.set(text, o);
+						strings.push(text);
+						origin.push(o);
+					}
 				} catch (err) {
 					payloadError = true;
 					tier2SkipReason = `Tier 2 extraction error: ${describeError(err)}`;
@@ -2442,7 +2531,7 @@ export class PromptDefense {
 					// classifyByChunks contract).
 					const tInferStart = performance.now();
 					coldLoad = wasCold;
-					const padding = { realTokens: 0, paddedTokens: 0 };
+					const padding = { realTokens: 0, paddedTokens: 0, degenerateRows: [] as number[] };
 
 					// Dedupe before inference: identical chunk strings score identically
 					// (fixed-width buckets make scores neighbour-independent), so classify
@@ -2492,7 +2581,8 @@ export class PromptDefense {
 
 					if (allScores) {
 						// Phase 3: compute per-string max; track global max + chunk.
-						const perStringScores: number[] = [];
+						// Per source field, for density damping (a field and its decoded copy count once).
+						const perFieldScores = new Map<number, number>();
 						// Multi-head: track whether any chunk independently triggers
 						// the (main >= mainThr AND aux < auxThr) rule, and remember
 						// the strongest such chunk so the result surfaces it.
@@ -2506,15 +2596,24 @@ export class PromptDefense {
 						// reported `tier2AuxScore` points at the chunk that came
 						// closest to blocking.
 						let auxOfMaxMain: number | undefined;
+						const degenerate = new Set(padding.degenerateRows);
 						for (let i = 0; i < strings.length; i++) {
 							const { start, end } = stringRanges[i];
 							if (start < 0) continue;
+							// Read in full: nothing cut off, and no chunk zeroed by the degeneracy guard.
+							let fullyRead = !preps[i].truncated;
+							for (let j = start; j < end; j++) if (degenerate.has(dedupeIndex[j])) fullyRead = false;
+							if (fullyRead) {
+								readByTier2.add(strings[i]);
+								chunksByText.set(strings[i], allChunks.slice(start, end));
+							}
 							let sMax = 0;
 							let sMaxChunk = "";
 							let sMaxAux: number | undefined;
 							for (let j = start; j < end; j++) {
 								const raw = allScores[j];
 								const safeScore = Number.isFinite(raw) ? raw : 0;
+								if (!Number.isFinite(raw)) tier2NonFinite = true;
 								if (safeScore > sMax) {
 									sMax = safeScore;
 									sMaxChunk = allChunks[j] ?? "";
@@ -2540,7 +2639,7 @@ export class PromptDefense {
 									}
 								}
 							}
-							perStringScores.push(sMax);
+							perFieldScores.set(origin[i], Math.max(perFieldScores.get(origin[i]) ?? 0, sMax));
 							if (sMax >= this.config.tier2.highRiskThreshold) highRiskValues.add(strings[i]);
 							if (tier2Score === undefined || sMax > tier2Score) {
 								tier2Score = sMax;
@@ -2550,9 +2649,8 @@ export class PromptDefense {
 						}
 
 						// Capture the raw max-chunk main score before any density adjustment
-						// or multi-head rule reassignment. Surfaced as `tier2RawScore` on the
-						// result for forensics / threshold tuning. Decision-relevant scoring
-						// is in `tier2EffectiveScore`.
+						// or multi-head rule reassignment. Surfaced as `tier2RawScore`; it decides
+						// whether Tier 1 may block. Tier 2's own block uses `tier2EffectiveScore`.
 						tier2RawScore = tier2Score;
 
 						if (multiheadCfg && allPairs) {
@@ -2602,6 +2700,7 @@ export class PromptDefense {
 							tier2EffectiveScore = tier2Score;
 							const T = this.tier2Classifier.getTemperature() ?? 1;
 							const DENSITY_SUB_THRESHOLD = T === 1 ? 0.75 : 1 / (1 + Math.exp(-Math.log(3) / T));
+							const perStringScores = [...perFieldScores.values()];
 							if (perStringScores.length > 2) {
 								const highCount = perStringScores.filter((s) => s >= DENSITY_SUB_THRESHOLD).length;
 								if (highCount > 0) {
@@ -2633,8 +2732,28 @@ export class PromptDefense {
 			}
 		}
 
+		// Tier 1 can't block alone: its detections count only if Tier 2 agrees, or if Tier 2 didn't
+		// read what they matched: the text they were found in (a key, a field past Tier 2's cap, a
+		// field Tier 2 skipped), or a matched phrase no single scored chunk holds whole (split across
+		// chunks or short lines, or visible only to Tier 1, like hidden characters).
+		// No Tier 2 score, or an unusable one, keeps Tier 1's verdict.
+		const tier1Gated =
+			detections.length > 0 &&
+			tier2RawScore !== undefined &&
+			!tier2NonFinite &&
+			tier2RawScore < TIER1_GATE_SCORE &&
+			sanitized.metadata.tier1MatchTexts.every((t) => readByTier2.has(t)) &&
+			allPhrasesRead(
+				sanitized.metadata.tier1MatchPhrases,
+				sanitized.metadata.tier1NormalisedCopies,
+				chunksByText,
+			);
+
 		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
-		const tier1Index = riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
+		// A gated Tier 1 keeps its tool-rule base risk (medium at most) but not its escalation.
+		const tier1Index = tier1Gated
+			? Math.min(riskLevels.indexOf(sanitized.metadata.overallRiskLevel), riskLevels.indexOf("medium"))
+			: riskLevels.indexOf(sanitized.metadata.overallRiskLevel);
 		const tier2Index = riskLevels.indexOf(tier2Risk);
 		// Would Tier 2 alone block? In multi-head mode the rule replaces the threshold check:
 		// a flagged chunk under (main >= mainThr AND aux < auxThr) is a Tier 2 threat; the aux
@@ -2720,8 +2839,8 @@ export class PromptDefense {
 				const d = this.runTier3Decide({
 					mode: "cascade",
 					tier1: {
-						detected: detections.length > 0 || tier1FlaggedFields.length > 0,
-						riskLevel: sanitized.metadata.overallRiskLevel,
+						detected: !tier1Gated && (detections.length > 0 || tier1FlaggedFields.length > 0),
+						riskLevel: riskLevels[tier1Index],
 					},
 					tier2: {
 						wouldBlock: tier2HasThreat,
@@ -2813,8 +2932,7 @@ export class PromptDefense {
 		const tier3OverrodeToAllow = tier3OverrideBlock === false;
 		const tier3OverrodeToBlock = tier3OverrideBlock === true;
 		const hasThreats =
-			detections.length > 0 ||
-			tier1FlaggedFields.length > 0 ||
+			(!tier1Gated && (detections.length > 0 || tier1FlaggedFields.length > 0)) ||
 			(tier2HasThreat && !tier3OverrodeToAllow) ||
 			tier3OverrodeToBlock;
 
@@ -2839,8 +2957,8 @@ export class PromptDefense {
 		// The multi-head aux veto path sets `tier2EffectiveScore = 0` (not
 		// undefined), keeping the triple coherent: tier2Score=0 / riskLevel
 		// low / allowed=true. `tier2RawScore` is the pre-density / pre-rule
-		// max-chunk main score for forensics — never use it to make decisions;
-		// it diverges from `tier2Score` on multi-string payloads and under
+		// max-chunk main score. It decides only whether Tier 1 may block; it
+		// diverges from `tier2Score` on multi-string payloads and under
 		// multi-head aux veto.
 
 		// `sanitized` is a sentence-cleaned copy of the detect-only payload's
@@ -2875,6 +2993,7 @@ export class PromptDefense {
 			detectedFieldCount: Object.keys(patternsRemovedByField).length,
 			tier2Score: tier2EffectiveScore,
 			tier2RawScore,
+			...(tier1Gated ? { tier1Gated: true as const } : {}),
 			tier2AuxScore,
 			tier2MultiheadBlocked,
 			tier2SkipReason,

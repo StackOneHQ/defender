@@ -26,3 +26,8 @@ export function safeStart(s: string, start: number): number {
 export function truncate(s: string, max: number): string {
 	return s.length > max ? s.slice(0, safeEnd(s, max)) : s;
 }
+
+/** Lower-cased, whitespace collapsed: how a Tier 1 matched phrase is looked up in Tier 2's chunks. */
+export function phraseKey(s: string): string {
+	return s.toLowerCase().replace(/\s+/g, " ").trim();
+}

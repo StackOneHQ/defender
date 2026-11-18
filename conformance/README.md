@@ -12,6 +12,7 @@ Shared input → expected-output cases that the TypeScript package (`@stackone/d
 | `sfe-floor.json` | `sfe-floor` | Which string values SFE may drop: only empty values and single machine tokens |
 | `sfe-text.json` | `sfe-text` | The exact text SFE sends its model for each field, which must match the training input |
 | `obfuscation.json` | `obfuscation` | The normalised text Tier 1 scans, the text Tier 2 scores, and the Tier 1 patterns found |
+| `tier1-gate.json` | `tier1-gate` | When Tier 1 detections may block: Tier 2's undamped score, text Tier 2 didn't read, decoded text |
 
 Timing behavior (timeouts, concurrency, slot holding) is not here. It stays in each package's own tests.
 
@@ -74,6 +75,15 @@ Each area maps to the public API. `specs/conformance.spec.ts` is the reference r
 - **`sfe-text`**:
   - Call `sfePreprocess(input.payload, { predictor })` with a predictor that records every text it is asked about and keeps every field.
   - Expect `texts`: the recorded texts, in order.
+- **`tier1-gate`**:
+  - `createPromptDefense({ blockHighRisk: true, enableTier2: input.tier2 ?? true }).defendToolResult(input.payload, input.toolName ?? "generic_get_record")`.
+  - Expect `allowed`, `tier1Gated` (a boolean; absent means `false`) and the sorted `detections`.
+  - Tier 1 detections count only when `tier2RawScore` >= 0.3, or when a text they were found in wasn't scored in full by Tier 2: an object key, a field cut at Tier 2's `maxTextLength` (UTF-16 units of the normalised text), a sentence longer than the model window (cut by the tokenizer), a field with any chunk the degeneracy guard scored 0, a field Tier 2 skipped or didn't extract. They also count when a matched phrase (`PatternMatch.matched`, lower-cased with whitespace collapsed) isn't read where it was found: the text it was matched in (or, when only Tier 1's normalised copy holds it, that copy) must be fully read, and its chunks together must hold at least as many non-overlapping occurrences of the phrase as that text, each inside one chunk. Chunks of other texts don't count. An empty phrase counts as unread. No Tier 2 score, or a non-finite chunk score, keeps Tier 1's verdict.
+  - When gated, Tier 1's risk is capped at `medium` and its detections stop counting as threats.
+  - Tier 2 also scores the decoded text of every string that decodes (`decodeAllLevels`), from the same first 50,000 characters Tier 1 decodes. A decode is kept only when it is non-empty and every character is printable ASCII (U+0020–U+007E) or matches JavaScript's `\s`: tab, LF, VT, FF, CR, space, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF.
+  - When Tier 2 splits a long string into sentences, it drops sentences under `minTextLength`, so a phrase spread over them counts as unread.
+  - When a matched phrase appears only in Tier 1's normalised copy of a text (not in the raw text), Tier 2 also scores that copy (both readings: `alternate` false and true, each kept only if it holds such a phrase). Copies of texts Tier 2 doesn't extract are not scored.
+  - All cases except `tier2-off` need the bundled Tier-2 model. Case texts score far from 0.3.
 - **`obfuscation`**:
   - `normalised`: the analysis copy Tier 1 matches (`normalizeForDetection(input.text)` in TS). It is internal, so a port calls its own equivalent.
   - `tier2Text`: the copy Tier 2 scores (`normalizeForClassification(input.text)`). Same steps, with two differences, described after the list.

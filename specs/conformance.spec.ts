@@ -224,6 +224,15 @@ const ADAPTERS: Record<string, (input: FixtureInput) => Promise<unknown>> = {
 		return { texts };
 	},
 
+	// payload → whether Tier 1's detections were gated on Tier 2, and the verdict.
+	"tier1-gate": async (input) => {
+		const r = await createPromptDefense({ blockHighRisk: true, enableTier2: input.tier2 ?? true }).defendToolResult(
+			input.payload,
+			input.toolName ?? "generic_get_record",
+		);
+		return { allowed: r.allowed, tier1Gated: r.tier1Gated === true, detections: [...r.detections].sort() };
+	},
+
 	// text → the normalised analysis copy both tiers scan, and the Tier 1 patterns found.
 	obfuscation: async (input) => {
 		const r = await createPromptDefense({ enableTier2: false }).defendToolResult(

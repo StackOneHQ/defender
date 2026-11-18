@@ -109,9 +109,11 @@ The default open source scan combines two local detection layers:
 
 Tier 1 uses patterns to score content and escalate risk. It does not rewrite the payload.
 
+When Tier 2 is on, Tier 1 can't block alone. Its detections count only when Tier 2's undamped score (`tier2RawScore`) is at least 0.3, or when Tier 2 didn't read what they matched: an object key, a field longer than Tier 2's 10,000-character cap, text Tier 2 cut or set aside as unreadable, or a matched phrase that no single Tier 2 chunk holds whole (split across chunks or short lines, or made of hidden characters Tier 2 removes). When a phrase appears only after Tier 1's normalization, Tier 2 also scores that normalized copy. Otherwise `detections` still lists them, `tier1Gated` is `true` and Tier 1's risk is capped at `medium`. With Tier 2 off or unavailable, Tier 1 blocks alone. The 0.3 bar is set for the bundled model.
+
 - **Role markers**: detects `SYSTEM:`, `ASSISTANT:`, `<system>`, `[INST]` markers
 - **Injection patterns**: detects phrases like "ignore previous instructions"
-- **Encoding**: decodes supported encodings, then escalates risk only when the decoded text matches an attack pattern
+- **Encoding**: decodes supported encodings, then escalates risk only when the decoded text matches an attack pattern. Tier 2 scores the decoded text too
 - **Obfuscation normalization**: analysis-only. Undoes Greek and Cyrillic look-alikes, leetspeak, words joined by `-` `_` `.`, spaced-out letters and control characters, so obfuscated variants are still detected. Tier 2 scores the same normalized text. The returned content is never normalized
 - **Boundary annotation**: opt-in; wraps untrusted content in `[UD-{id}]...[/UD-{id}]` tags when `annotateBoundary: true` is passed to `createPromptDefense`. Off by default; pair with `generateBoundaryInstructions()` in your system prompt if you enable it.
 
