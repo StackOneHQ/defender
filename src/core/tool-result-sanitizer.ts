@@ -652,6 +652,7 @@ export class ToolResultSanitizer {
 		analysisValue: string,
 		context: SanitizationContext,
 		metadata: SanitizationMetadata,
+		cumulative = true,
 	): { patterns: string[]; risk: RiskLevel } | undefined {
 		if (!this.config.useTier1Classification) return undefined;
 		const { text: decoded, levels } = decodeAllLevels(analysisValue);
@@ -660,7 +661,7 @@ export class ToolResultSanitizer {
 		if (!encResult.hasDetections || encResult.matches.length === 0) return undefined;
 		const patterns = [...new Set(encResult.matches.map((m) => m.pattern))];
 		this.recordTier1Match(metadata, decoded, encResult.matches);
-		if (context.cumulativeRisk)
+		if (cumulative && context.cumulativeRisk)
 			this.updateCumulativeRisk(context.cumulativeRisk, encResult.suggestedRisk, patterns);
 		return { patterns, risk: encResult.suggestedRisk };
 	}
@@ -698,7 +699,9 @@ export class ToolResultSanitizer {
 		if (!detect) return;
 		const cap = this.config.maxFieldAnalysisLength;
 		const analysisValue = value.length > cap ? value.slice(0, cap) : value;
-		const enc = this.scanDecoded(analysisValue, context, metadata);
+		// Only this field escalates: these fields aren't counted as processed in the cumulative tracker,
+		// so feeding it their matches would skew its fractions.
+		const enc = this.scanDecoded(analysisValue, context, metadata, false);
 		if (enc)
 			this.recordFieldDetections(metadata, context, maxRisk(context.riskLevel, enc.risk), enc.patterns, true);
 	}

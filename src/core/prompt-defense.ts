@@ -2876,7 +2876,8 @@ export class PromptDefense {
 				review = await this.reviewWholeResult(value, provider, toolName, "cascade", reviewFlag, options);
 			} else if (provider) {
 				this.warnIfRiskyOverride(provider);
-				const boundedChunk = truncate(maxSentence, this.tier3MaxTextLength);
+				// The chunk can be an encoded copy Tier 2 also scored; the reviewer reads it decoded.
+				const boundedChunk = truncate(decodeForReview(maxSentence), this.tier3MaxTextLength);
 				outcome = await this.callTier3(
 					provider,
 					boundedChunk,
