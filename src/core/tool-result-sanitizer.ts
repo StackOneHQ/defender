@@ -6,7 +6,7 @@
  * appropriate sanitization based on risk level.
  */
 
-import { createPatternDetector, type PatternDetector } from "../classifiers/pattern-detector";
+import { createPatternDetector, type PatternDetector, tier1AnalysisCopy } from "../classifiers/pattern-detector";
 import {
 	DANGEROUS_KEYS,
 	DEFAULT_MAX_FIELD_ANALYSIS_LENGTH,
@@ -17,6 +17,7 @@ import { decodeAllLevels } from "../sanitizers/encoding-detector";
 import type {
 	CumulativeRiskTracker,
 	DataBoundary,
+	PatternMatch,
 	RiskLevel,
 	RiskyFieldConfig,
 	SanitizableValue,
@@ -36,6 +37,7 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
+import { phraseKey } from "../utils/text";
 
 /** Risk levels in ascending order, for max-comparison. */
 const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
@@ -173,6 +175,8 @@ export class ToolResultSanitizer {
 			sizeMetrics,
 			riskyFieldNames: [],
 			tier1MatchTexts: [],
+			tier1MatchPhrases: [],
+			tier1NormalisedCopies: [],
 		};
 
 		// Sanitize the value. A top-level string IS the entire tool result, so run
@@ -527,7 +531,8 @@ export class ToolResultSanitizer {
 
 				if (classificationResult.hasDetections) {
 					tier1Patterns = [...new Set(classificationResult.matches.map((m) => m.pattern))];
-					if (tier1Patterns.length > 0) metadata.tier1MatchTexts.push(analysisValue);
+					if (tier1Patterns.length > 0)
+						this.recordTier1Match(metadata, analysisValue, classificationResult.matches);
 
 					// Escalate risk based on classification
 					if (classificationResult.suggestedRisk === "critical") {
@@ -571,7 +576,7 @@ export class ToolResultSanitizer {
 						const encPatterns = [...new Set(encResult.matches.map((m) => m.pattern))];
 						tier1Patterns = [...new Set([...tier1Patterns, ...encPatterns])];
 						escalatedFromEncoding = true;
-						metadata.tier1MatchTexts.push(decoded);
+						this.recordTier1Match(metadata, decoded, encResult.matches);
 						if (encResult.suggestedRisk === "critical") riskLevel = "critical";
 						else if (encResult.suggestedRisk === "high" && riskLevel !== "critical") riskLevel = "high";
 						else if (encResult.suggestedRisk === "medium" && riskLevel === "low") riskLevel = "medium";
@@ -631,6 +636,28 @@ export class ToolResultSanitizer {
 	 * detected value field. No-op for short/benign keys (the detector's fast
 	 * filter short-circuits, so this is cheap on identifier-shaped keys).
 	 */
+	/**
+	 * Record what Tier 1 matched, for the Tier 2 gate. A phrase matched only on Tier 1's normalised
+	 * copy (leet, split or joined words) isn't in the raw text, so Tier 2 also gets that copy.
+	 */
+	private recordTier1Match(metadata: SanitizationMetadata, text: string, matches: PatternMatch[]): void {
+		metadata.tier1MatchTexts.push(text);
+		const raw = phraseKey(text);
+		const missing: string[] = [];
+		for (const m of matches) {
+			metadata.tier1MatchPhrases.push(m.matched);
+			const k = phraseKey(m.matched);
+			if (m.normalised && k && !raw.includes(k)) missing.push(k);
+		}
+		if (missing.length === 0) return;
+		for (const alternate of [false, true]) {
+			const copy = tier1AnalysisCopy(text, alternate);
+			if (copy === text || metadata.tier1NormalisedCopies.some((c) => c.text === copy)) continue;
+			const key = phraseKey(copy);
+			if (missing.some((k) => key.includes(k))) metadata.tier1NormalisedCopies.push({ of: text, text: copy });
+		}
+	}
+
 	private detectInKey(
 		key: string,
 		keyPath: string,

@@ -49,7 +49,7 @@ interface DefenseResult {
   // Tier 2 signals
   tier2Score?: number;                    // ML score that drove the decision (post-density / post-rule)
   tier2RawScore?: number;                 // Raw max-chunk main score, pre-density. Tier 1 detections block only when this is >= 0.3 (see tier1Gated)
-  tier1Gated?: true;                      // Tier 1 found patterns but they didn't count: tier2RawScore < 0.3 and Tier 2 read every matched text
+  tier1Gated?: true;                      // Tier 1 found patterns but they didn't count: tier2RawScore < 0.3 and Tier 2 read every matched text and phrase
   tier2AuxScore?: number;                 // Multi-head auxiliary score for the reported chunk
   tier2MultiheadBlocked?: boolean;        // True when the multi-head rule (main >= mainThr AND aux < auxThr) fired
   tier2SkipReason?: string;               // Reason Tier 2 was skipped (e.g. "No strings extracted")

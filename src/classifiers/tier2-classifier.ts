@@ -692,9 +692,9 @@ export class Tier2Classifier {
 		}
 
 		const maxContentTokens = modelMaxLen - 2;
-		// Short sentences are packed with their neighbours, not dropped: an instruction split
-		// over short lines must still be read.
-		const sentences = this.splitIntoSentences(bounded);
+		// Sentences under minTextLength are dropped. A Tier 1 match spread over them isn't in any
+		// chunk, so the gate counts it as unread.
+		const sentences = this.splitIntoSentences(bounded).filter((s) => s.length >= this.config.minTextLength);
 		if (sentences.length === 0) {
 			return { chunks: [], skipped: true, skipReason: "No classifiable sentences" };
 		}

@@ -6,6 +6,12 @@
  */
 
 import { joinLineSplitWords, normalizeForDetection, splitJoinedWordPairs } from "../sanitizers/normalizer";
+
+/** The normalised copy Tier 1 matches patterns on (`alternate`: the other reading of ambiguous text). */
+export function tier1AnalysisCopy(text: string, alternate: boolean): string {
+	return splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(text, { alternate })));
+}
+
 import type { PatternMatch, RiskLevel, StructuralFlag, Tier1Result } from "../types";
 import { ALL_PATTERNS, containsFilterKeywords, type PatternDefinition } from "./patterns";
 
@@ -81,10 +87,8 @@ export class PatternDetector {
 		// across lines or joined in pairs. Ambiguous text is also scanned in its other reading
 		// (invisible characters as spaces, leet in ID-like tokens): patterns are specific
 		// enough that scanning both costs little. Analysis-only.
-		const tier1Copy = (alternate: boolean) =>
-			splitJoinedWordPairs(joinLineSplitWords(normalizeForDetection(rawText, { alternate })));
-		const analysisText = tier1Copy(false);
-		const alternateText = tier1Copy(true);
+		const analysisText = tier1AnalysisCopy(rawText, false);
+		const alternateText = tier1AnalysisCopy(rawText, true);
 
 		// Fast filter: short-circuit if neither raw nor normalised text contains keywords.
 		// Raw text is checked to preserve detection of obfuscation patterns (e.g. invisible
