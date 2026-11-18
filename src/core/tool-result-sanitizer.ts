@@ -644,17 +644,18 @@ export class ToolResultSanitizer {
 		metadata.tier1MatchTexts.push(text);
 		const raw = phraseKey(text);
 		const missing: string[] = [];
-		for (const m of matches) {
-			metadata.tier1MatchPhrases.push(m.matched);
-			const k = phraseKey(m.matched);
-			if (m.normalised && k && !raw.includes(k)) missing.push(k);
+		for (const phrase of new Set(matches.map((m) => m.matched))) {
+			metadata.tier1MatchPhrases.push({ of: text, phrase });
+			const k = phraseKey(phrase);
+			if (k && !raw.includes(k)) missing.push(k);
 		}
 		if (missing.length === 0) return;
-		for (const alternate of [false, true]) {
-			const copy = tier1AnalysisCopy(text, alternate);
-			if (copy === text || metadata.tier1NormalisedCopies.some((c) => c.text === copy)) continue;
+		const copies = new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)]);
+		for (const copy of copies) {
 			const key = phraseKey(copy);
-			if (missing.some((k) => key.includes(k))) metadata.tier1NormalisedCopies.push({ of: text, text: copy });
+			if (copy !== text && missing.some((k) => key.includes(k))) {
+				metadata.tier1NormalisedCopies.push({ of: text, text: copy });
+			}
 		}
 	}
 

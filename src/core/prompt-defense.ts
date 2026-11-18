@@ -384,14 +384,54 @@ function tier3ItemCap(outerCap: number, usedNow: number, remaining: number): num
 // content budget. Consecutive chunks share ~overlap chars so a boundary-straddling injection lands in both.
 const TIER3_CHUNK_OVERLAP_CHARS = 500;
 const TIER3_DEFAULT_MAX_CHUNKS = 5;
-/** Whether every matched phrase sits whole in one chunk Tier 2 scored. An empty phrase counts as unread. */
-function allPhrasesRead(phrases: string[], chunks: string[]): boolean {
-	if (phrases.length === 0) return true;
-	const keys = chunks.map(phraseKey);
-	return phrases.every((p) => {
-		const k = phraseKey(p);
-		return k !== "" && keys.some((c) => c.includes(k));
-	});
+/** Non-overlapping occurrences of `needle` in `hay`. */
+function countOf(hay: string, needle: string): number {
+	let n = 0;
+	for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
+	return n;
+}
+
+/**
+ * Whether Tier 2 read each matched phrase where Tier 1 found it: every occurrence in the source text
+ * (or, for a phrase only Tier 1's normalised copy holds, in that copy) sits whole in one of that
+ * text's own chunks. So the same phrase quoted in another field or sentence doesn't count.
+ * An empty phrase counts as unread.
+ */
+function allPhrasesRead(
+	phrases: Array<{ of: string; phrase: string }>,
+	copies: Array<{ of: string; text: string }>,
+	chunksByText: Map<string, string[]>,
+): boolean {
+	const keys = new Map<string, string>();
+	const key = (s: string) => {
+		let k = keys.get(s);
+		if (k === undefined) {
+			k = phraseKey(s);
+			keys.set(s, k);
+		}
+		return k;
+	};
+	const covered = (text: string, k: string) => {
+		const need = countOf(key(text), k);
+		if (need === 0) return false;
+		let have = 0;
+		for (const c of chunksByText.get(text) ?? []) {
+			have += countOf(key(c), k);
+			if (have >= need) return true;
+		}
+		return false;
+	};
+	const checked = new Set<string>();
+	for (const { of, phrase } of phrases) {
+		const k = phraseKey(phrase);
+		if (k === "") return false;
+		const id = `${k}\u0000${of}`;
+		if (checked.has(id)) continue;
+		checked.add(id);
+		const read = countOf(key(of), k) > 0 ? covered(of, k) : copies.some((c) => c.of === of && covered(c.text, k));
+		if (!read) return false;
+	}
+	return true;
 }
 
 // A Tier 1 match blocks only when Tier 2's undamped score is at least this (ENG-4207).
@@ -2378,7 +2418,7 @@ export class PromptDefense {
 		// Texts Tier 2 scored in full, their chunks, and whether any chunk score was unusable.
 		// They decide whether Tier 1 detections may be gated on Tier 2.
 		const readByTier2 = new Set<string>();
-		const readChunks: string[] = [];
+		const chunksByText = new Map<string, string[]>();
 		let tier2NonFinite = false;
 
 		if (this.tier2Classifier) {
@@ -2565,7 +2605,7 @@ export class PromptDefense {
 							for (let j = start; j < end; j++) if (degenerate.has(dedupeIndex[j])) fullyRead = false;
 							if (fullyRead) {
 								readByTier2.add(strings[i]);
-								for (let j = start; j < end; j++) readChunks.push(allChunks[j]);
+								chunksByText.set(strings[i], allChunks.slice(start, end));
 							}
 							let sMax = 0;
 							let sMaxChunk = "";
@@ -2703,7 +2743,11 @@ export class PromptDefense {
 			!tier2NonFinite &&
 			tier2RawScore < TIER1_GATE_SCORE &&
 			sanitized.metadata.tier1MatchTexts.every((t) => readByTier2.has(t)) &&
-			allPhrasesRead(sanitized.metadata.tier1MatchPhrases, readChunks);
+			allPhrasesRead(
+				sanitized.metadata.tier1MatchPhrases,
+				sanitized.metadata.tier1NormalisedCopies,
+				chunksByText,
+			);
 
 		const riskLevels: RiskLevel[] = ["low", "medium", "high", "critical"];
 		// A gated Tier 1 keeps its tool-rule base risk (medium at most) but not its escalation.

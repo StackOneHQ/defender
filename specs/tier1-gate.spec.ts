@@ -44,6 +44,23 @@ describe("Tier 1 gate (Tier 2 stubbed)", () => {
 		expect(r.allowed).toBe(false);
 	});
 
+	it("doesn't count the phrase read from another field's chunk", async () => {
+		stubTier2(0.05, (t) => {
+			const i = t.indexOf("restricted");
+			return t.startsWith("The borrower") ? [t.slice(0, i), t.slice(i)] : [t];
+		});
+		const r = await run({ description: BENIGN, notes: "Note that unrestricted access needs approval." });
+		expect(r.tier1Gated).toBeUndefined();
+		expect(r.allowed).toBe(false);
+	});
+
+	it("needs every occurrence of the phrase in a chunk", async () => {
+		stubTier2(0.05, () => [BENIGN]);
+		const r = await run({ description: `${BENIGN} ${BENIGN}` });
+		expect(r.tier1Gated).toBeUndefined();
+		expect(r.allowed).toBe(false);
+	});
+
 	it("keeps Tier 1's block when no chunk holds the matched phrase whole", async () => {
 		stubTier2(0.05, (t) => {
 			const i = t.indexOf("restricted");
