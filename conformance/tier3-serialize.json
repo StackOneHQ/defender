@@ -4019,6 +4019,38 @@
 				"coverageDegraded": false,
 				"skipReason": null
 			}
+		},
+		{
+			"id": "shape-only-top-level-array-kept",
+			"description": "tier3.dropShapeOnlyFields leaves out only values with an object key on their path. Elements of a top-level array (`[0]`) stay.",
+			"input": {
+				"tier3": {
+					"dropShapeOnlyFields": true
+				},
+				"payload": [
+					"0b9f2c1e-3d4a-4c5b-8e6f-7a8b9c0d1e2f",
+					null,
+					"deadbeef01",
+					[
+						7
+					],
+					{
+						"id": "deadbeef02",
+						"title": "Weekly sync"
+					}
+				]
+			},
+			"expect": {
+				"calls": [
+					"[0]: 0b9f2c1e-3d4a-4c5b-8e6f-7a8b9c0d1e2f\n\n[2]: deadbeef01\n\n[3][0]: 7\n\ntitle: Weekly sync"
+				],
+				"chunkSummary": {
+					"chunks": 1,
+					"blocked": 0
+				},
+				"coverageDegraded": false,
+				"skipReason": null
+			}
 		}
 	]
 }

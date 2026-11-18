@@ -746,7 +746,7 @@ function formatRecordsForTier3(
 		}
 		if (v === null || v === undefined || (underKey && isEmptyValue(v))) {
 			// A plain path set to null carries no text. Empty values (`key:`) stay, as in the measured rule.
-			if (dropShapeOnly && (v === null || v === undefined) && isFieldPath(prefix)) return;
+			if (dropShapeOnly && underKey && (v === null || v === undefined) && isFieldPath(prefix)) return;
 			// Keep the key: `{"<text>": null}` / `""` / `{}` / `[]` must not hide `<text>` from the reviewer.
 			if (underKey) {
 				const line = v === null || v === undefined ? `${prefix}: null` : `${prefix}:`;
@@ -889,8 +889,9 @@ function formatRecordsForTier3(
 				}
 				return;
 			}
-			// Single-line values only: a bare number or date inside a multi-line text value stays.
-			if (dropShapeOnly && isFieldPath(prefix) && !TIER3_LINE_BREAKS.test(s) && isShapeOnly(s)) {
+			// Single-line values under an object key only: a bare number or date inside a multi-line text
+			// value, or a top-level array element, stays.
+			if (dropShapeOnly && underKey && isFieldPath(prefix) && !TIER3_LINE_BREAKS.test(s) && isShapeOnly(s)) {
 				if (isStr) emittedStringChars += s.length; // left out on purpose: covered, not truncated
 				return;
 			}

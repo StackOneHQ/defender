@@ -100,6 +100,11 @@ describe("tier3.dropShapeOnlyFields", () => {
 		expect(text).toBe("word: deadbeef");
 	});
 
+	it("keeps top-level array elements, which have no object key", async () => {
+		const { text } = await review(["0b9f2c1e-3d4a-4c5b-8e6f-7a8b9c0d1e2f", "deadbeef01", [7]], on);
+		expect(text).toBe(["[0]: 0b9f2c1e-3d4a-4c5b-8e6f-7a8b9c0d1e2f", "[1]: deadbeef01", "[2][0]: 7"].join("\n\n"));
+	});
+
 	it("keeps a number or date line inside a multi-line value", async () => {
 		const { text } = await review({ body: "Totals below\n42\n2026-01-02" }, on);
 		expect(text).toBe(["body: Totals below", "body: 42", "body: 2026-01-02"].join("\n"));
