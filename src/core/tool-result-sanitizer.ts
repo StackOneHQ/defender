@@ -37,16 +37,19 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
-import { phraseKey } from "../utils/text";
+import { countOf, phraseKey } from "../utils/text";
 
 // Characters of context on each side that make an occurrence in a copy the same as one in the raw text.
 const OCCURRENCE_CONTEXT = 16;
 
-/** Whether some occurrence of `k` in `copy`, with its context, isn't in `raw`. */
+/**
+ * Whether some occurrence of `k` in `copy`, with its context, isn't in `raw`: the copy holds that
+ * occurrence-with-context more often than the raw text, so a repeated context can't vouch for it.
+ */
 function hasOccurrenceNotIn(copy: string, raw: string, k: string): boolean {
 	for (let i = copy.indexOf(k); i >= 0; i = copy.indexOf(k, i + k.length)) {
 		const around = copy.slice(Math.max(0, i - OCCURRENCE_CONTEXT), i + k.length + OCCURRENCE_CONTEXT);
-		if (!raw.includes(around)) return true;
+		if (countOf(copy, around) > countOf(raw, around)) return true;
 	}
 	return false;
 }
