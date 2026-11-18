@@ -37,7 +37,22 @@ import {
 	shouldContinueTraversal,
 	updateSizeMetrics,
 } from "../utils/structure";
-import { phraseKey } from "../utils/text";
+import { countOf, phraseKey } from "../utils/text";
+
+// Characters of context on each side that make an occurrence in a copy the same as one in the raw text.
+const OCCURRENCE_CONTEXT = 16;
+
+/**
+ * Whether some occurrence of `k` in `copy`, with its context, isn't in `raw`: the copy holds that
+ * occurrence-with-context more often than the raw text, so a repeated context can't vouch for it.
+ */
+function hasOccurrenceNotIn(copy: string, raw: string, k: string): boolean {
+	for (let i = copy.indexOf(k); i >= 0; i = copy.indexOf(k, i + k.length)) {
+		const around = copy.slice(Math.max(0, i - OCCURRENCE_CONTEXT), i + k.length + OCCURRENCE_CONTEXT);
+		if (countOf(copy, around) > countOf(raw, around)) return true;
+	}
+	return false;
+}
 
 /** Risk levels in ascending order, for max-comparison. */
 const RISK_ORDER: RiskLevel[] = ["low", "medium", "high", "critical"];
@@ -637,23 +652,23 @@ export class ToolResultSanitizer {
 	 * filter short-circuits, so this is cheap on identifier-shaped keys).
 	 */
 	/**
-	 * Record what Tier 1 matched, for the Tier 2 gate. A phrase matched only on Tier 1's normalised
-	 * copy (leet, split or joined words) isn't in the raw text, so Tier 2 also gets that copy.
+	 * Record what Tier 1 matched, for the Tier 2 gate. Tier 1's normalised copy (leet, split or joined
+	 * words) can hold occurrences of a phrase the raw text doesn't. When any occurrence in the copy,
+	 * with its context, isn't in the raw text, Tier 2 also gets that copy.
 	 */
 	private recordTier1Match(metadata: SanitizationMetadata, text: string, matches: PatternMatch[]): void {
 		metadata.tier1MatchTexts.push(text);
-		const raw = phraseKey(text);
-		const missing: string[] = [];
+		const keys: string[] = [];
 		for (const phrase of new Set(matches.map((m) => m.matched))) {
 			metadata.tier1MatchPhrases.push({ of: text, phrase });
 			const k = phraseKey(phrase);
-			if (k && !raw.includes(k)) missing.push(k);
+			if (k) keys.push(k);
 		}
-		if (missing.length === 0) return;
-		const copies = new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)]);
-		for (const copy of copies) {
+		if (keys.length === 0 || !matches.some((m) => m.normalised)) return;
+		const raw = phraseKey(text);
+		for (const copy of new Set([tier1AnalysisCopy(text, false), tier1AnalysisCopy(text, true)])) {
 			const key = phraseKey(copy);
-			if (copy !== text && missing.some((k) => key.includes(k))) {
+			if (copy !== text && keys.some((k) => hasOccurrenceNotIn(key, raw, k))) {
 				metadata.tier1NormalisedCopies.push({ of: text, text: copy });
 			}
 		}
